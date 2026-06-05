@@ -24,6 +24,14 @@
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>LSUIElement</key>
 	<true/>
+	<!-- Allow plain-HTTP requests to the local Ollama server (http://localhost:11434).
+	     App Transport Security blocks cleartext HTTP by default; NSAllowsLocalNetworking
+	     exempts loopback/.local so URLSession can reach Ollama. All traffic stays on this Mac. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSHumanReadableCopyright</key>
 	<string>Lasso — on-device screen intelligence.</string>
 	<key>NSScreenCaptureUsageDescription</key>
