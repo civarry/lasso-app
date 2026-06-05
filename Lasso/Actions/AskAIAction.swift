@@ -26,30 +26,37 @@ private struct AskAIView: View {
     @State private var answer = ""
     @State private var isStreaming = false
     @State private var task: Task<Void, Never>?
+    @FocusState private var fieldFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 TextField("Ask about this selection…", text: $question)
                     .textFieldStyle(.roundedBorder)
+                    .focused($fieldFocused)
                     .onSubmit(ask)
                 Button("Ask", action: ask)
                     .disabled(question.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             if isStreaming || !answer.isEmpty {
                 ScrollView {
-                    Text(answer.isEmpty ? "…" : answer)
-                        .font(.callout)
+                    Text(answer.isEmpty ? AttributedString("…") : AttributedString.fromMarkdown(answer))
+                        .font(.body)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxHeight: 200)
+                .frame(maxHeight: 240)
             }
             Text(intelligence.privacyNote)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
         .frame(width: 400)
+        .onAppear {
+            // Focus the field so the user can type immediately. Deferred so the view is in the
+            // window's responder chain first.
+            DispatchQueue.main.async { fieldFocused = true }
+        }
         .onDisappear { task?.cancel() }
     }
 

@@ -36,15 +36,17 @@ struct ResultPane: View {
                         .foregroundStyle(.orange)
                 } else {
                     ScrollView {
-                        Text(result.text.isEmpty && result.isStreaming ? "…" : result.text)
-                            .font(.callout)
+                        Text(result.text.isEmpty && result.isStreaming
+                             ? AttributedString("…")
+                             : AttributedString.fromMarkdown(result.text))
+                            .font(.body)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxHeight: 220)
+                    .frame(minHeight: 80, maxHeight: 340)
                 }
             }
-            .frame(width: 420)
+            .frame(maxWidth: .infinity)
         }
     }
 }

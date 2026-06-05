@@ -52,6 +52,17 @@ extension CGImage {
     }
 }
 
+extension AttributedString {
+    /// Parse Markdown for display, preserving line breaks. Renders inline styling
+    /// (**bold**, *italic*, `code`, links); falls back to plain text if parsing fails.
+    static func fromMarkdown(_ string: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        return (try? AttributedString(markdown: string, options: options))
+            ?? AttributedString(string)
+    }
+}
+
 extension NSColor {
     var hexString: String {
         guard let rgb = usingColorSpace(.sRGB) else { return "#000000" }

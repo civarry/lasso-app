@@ -71,28 +71,26 @@ struct CaptureSessionView: View {
         let panelWidth: CGFloat = 460
         let margin: CGFloat = 12
         let gap: CGFloat = 14
+        // Conservative max panel height used only to decide below-vs-pinned placement.
+        let estimatedHeight: CGFloat = 440
 
         // Horizontal: align to the selection's left edge, clamped fully on-screen.
         let x = min(max(rect.minX, margin), max(margin, size.width - panelWidth - margin))
 
-        // If the selection is low on screen, grow the panel UPWARD from above the selection;
-        // otherwise place it below. Uses alignment + padding so no height measurement is needed.
-        let placeAbove = rect.maxY > size.height * 0.55
+        // Vertical: place just below the selection if it fits; otherwise pin near the top so the
+        // panel is fully visible. `.offset` moves without shrinking the panel, so the result text
+        // keeps its full height (padding/anchored frames would compress the scroll view).
+        let belowY = rect.maxY + gap
+        let y = (belowY + estimatedHeight <= size.height) ? belowY : margin
 
-        let panel = VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 10) {
             ActionBar(coordinator: coordinator)
             if coordinator.result.visible {
                 ResultPane(coordinator: coordinator)
             }
         }
         .frame(width: panelWidth, alignment: .leading)
-
-        Color.clear.overlay(alignment: placeAbove ? .bottomLeading : .topLeading) {
-            panel
-                .padding(.leading, x)
-                .padding(placeAbove ? .bottom : .top,
-                         placeAbove ? (size.height - rect.minY + gap) : (rect.maxY + gap))
-        }
+        .offset(x: x, y: y)
     }
 }
 
