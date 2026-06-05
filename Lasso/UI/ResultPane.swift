@@ -45,6 +45,16 @@ struct ResultPane: View {
                     }
                     .frame(minHeight: 80, maxHeight: 340)
                 }
+
+                if result.isAI, let intelligence = coordinator.intelligence,
+                   !intelligence.lastProviderName.isEmpty {
+                    Divider()
+                    Label(intelligence.lastProviderName,
+                          systemImage: intelligence.lastProviderIsAppleOnDevice
+                            ? "cpu" : "server.rack")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
             .frame(maxWidth: .infinity)
         }

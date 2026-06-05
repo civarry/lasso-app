@@ -11,6 +11,8 @@ struct ResultState {
     var isStreaming = false
     var custom: AnyView?
     var note: String?
+    /// True for streamed AI output — the pane shows which model produced it.
+    var isAI = false
 
     static var hidden: ResultState { ResultState() }
 }
@@ -154,6 +156,7 @@ final class CaptureCoordinator {
                 case .text(let t):
                     result.text = t; result.isStreaming = false
                 case .stream(let stream):
+                    result.isAI = true
                     for try await delta in stream {
                         if Task.isCancelled { break }
                         result.text += delta

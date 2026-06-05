@@ -49,6 +49,11 @@ final class IntelligenceCoordinator {
     /// this stays false — surfaced by the privacy badge.
     private(set) var usedOffDeviceThisSession = false
 
+    /// Name of the provider that served the most recent request (reflects fallback). Shown as
+    /// attribution under AI results.
+    private(set) var lastProviderName = ""
+    private(set) var lastProviderIsAppleOnDevice = true
+
     private let onDevice = OnDeviceProvider()
     private var ollama: OllamaProvider { OllamaProvider(model: ollamaModel) }
 
@@ -85,6 +90,8 @@ final class IntelligenceCoordinator {
             let task = Task { [weak self] in
                 guard let self else { continuation.finish(); return }
                 let provider = await self.activeProvider()
+                self.lastProviderName = provider.name
+                self.lastProviderIsAppleOnDevice = provider.isAppleOnDevice
                 do {
                     for try await delta in provider.respond(prompt: prompt, context: context) {
                         continuation.yield(delta)

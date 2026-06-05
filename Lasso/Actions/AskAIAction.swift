@@ -47,9 +47,16 @@ private struct AskAIView: View {
                 }
                 .frame(maxHeight: 240)
             }
-            Text(intelligence.privacyNote)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            if intelligence.lastProviderName.isEmpty {
+                Text(intelligence.privacyNote)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Label("\(intelligence.lastProviderName) · on this Mac",
+                      systemImage: intelligence.lastProviderIsAppleOnDevice ? "cpu" : "server.rack")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
         .frame(width: 400)
         .onAppear {
