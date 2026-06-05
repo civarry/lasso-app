@@ -1,0 +1,24 @@
+# Xcode / Swift
+*.xcodeproj/
+!project.yml
+xcuserdata/
+DerivedData/
+build/
+.build/
+*.xcuserstate
+*.xcscmblueprint
+*.moved-aside
+
+# XcodeGen generates Lasso.xcodeproj from project.yml — do not commit it.
+
+# SwiftPM
+.swiftpm/
+Package.resolved
+
+# macOS
+.DS_Store
+._*
+
+# Misc
+*.log
+/tmp/

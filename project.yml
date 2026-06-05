@@ -1,0 +1,79 @@
+name: Lasso
+
+options:
+  bundleIdPrefix: com.cjcarito
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    # Sign with the Apple Development cert (not ad-hoc) so TCC grants — Screen Recording in
+    # particular — persist across rebuilds. Ad-hoc signatures change every build and re-trigger
+    # the permission prompt each time.
+    DEVELOPMENT_TEAM: "5R6K9FYBSV"
+    CODE_SIGN_STYLE: Manual
+    # Exact SHA-1 of the "Apple Development: your-apple-id" keychain cert. Using the hash
+    # (not the "Apple Development" name) avoids xcodebuild resolving it to a "Mac Development"
+    # profile, which fails since no Apple ID is added to Xcode. macOS dev signing needs no profile.
+    CODE_SIGN_IDENTITY: "610C5228B8987C393A78C76D0F4F82E7E73062E8"
+    PROVISIONING_PROFILE_SPECIFIER: ""
+    ENABLE_HARDENED_RUNTIME: YES
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+packages:
+  KeyboardShortcuts:
+    url: https://github.com/sindresorhus/KeyboardShortcuts
+    from: 2.2.0
+
+targets:
+  Lasso:
+    type: application
+    platform: macOS
+    sources:
+      - path: Lasso
+    dependencies:
+      - package: KeyboardShortcuts
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cjcarito.Lasso
+        PRODUCT_NAME: Lasso
+        INFOPLIST_FILE: Lasso/App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Lasso/App/Lasso.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_PREVIEWS: YES
+        COMBINE_HIDPI_IMAGES: YES
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/../Frameworks"
+
+  LassoTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: LassoTests
+    dependencies:
+      - target: Lasso
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cjcarito.LassoTests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  Lasso:
+    build:
+      targets:
+        Lasso: all
+        LassoTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - LassoTests

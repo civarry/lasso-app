@@ -1,0 +1,38 @@
+import AppKit
+import ServiceManagement
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var registry: ActionRegistry?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Agent app: no Dock icon, no app menu (also set via LSUIElement in Info.plist).
+        NSApp.setActivationPolicy(.accessory)
+
+        let registry = ActionRegistry.makeDefault(intelligence: .shared)
+        self.registry = registry
+        CaptureCoordinator.shared.configure(registry: registry, intelligence: .shared)
+        TriggerService.shared.setUp()
+
+        Log.app.notice("Lasso launched. Capture hotkey active.")
+    }
+}
+
+/// Launch-at-login via the modern Service Management API (Spec §5).
+enum LoginItem {
+    static var isEnabled: Bool {
+        SMAppService.mainApp.status == .enabled
+    }
+
+    static func set(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+        } catch {
+            Log.app.error("Login item update failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+}
