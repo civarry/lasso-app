@@ -4,6 +4,7 @@ import KeyboardShortcuts
 struct SettingsView: View {
     @Bindable var intelligence: IntelligenceCoordinator
     @State private var launchAtLogin = LoginItem.isEnabled
+    @AppStorage("translation.pretranslate") private var pretranslate = true
 
     var body: some View {
         TabView {
@@ -25,6 +26,11 @@ struct SettingsView: View {
                 .onChange(of: launchAtLogin) { _, newValue in
                     LoginItem.set(newValue)
                 }
+
+            Toggle("Pre-translate selections", isOn: $pretranslate)
+            Text("Translate foreign text in the background as you select it, so tapping Translate is instant. On-device only; skipped on large selections and in Low Power Mode.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             Text("Press the shortcut to freeze the screen and select a region.")
                 .font(.caption)

@@ -75,7 +75,15 @@ struct InlineTranslationView: View {
         .frame(width: geo.size.width, height: geo.size.height)
         .task {
             detectedSource = detectSourceLanguage()
-            rebuildConfig()
+            // If the background pre-translation already finished for this target, reuse it instantly
+            // and skip re-translating.
+            let shared = CaptureCoordinator.shared
+            if sourceOverride == nil, !shared.pretranslated.isEmpty, shared.pretranslatedTarget == target {
+                translations = shared.pretranslated
+                lastDuration = shared.pretranslatedDuration
+            } else {
+                rebuildConfig()
+            }
         }
         .onChange(of: target) { _, _ in rebuildConfig() }
         .onChange(of: sourceOverride) { _, _ in rebuildConfig() }

@@ -2,14 +2,23 @@ import SwiftUI
 import Translation
 import NaturalLanguage
 
-/// Invisible helper shown during the action-bar phase: as soon as OCR finds foreign text, it
-/// quietly preloads the on-device translation model for the detected language pair so that tapping
-/// Translate skips the model-load cost. Only warms when the model is already **installed**, so it
-/// never triggers a language-download prompt before the user asks to translate.
+/// Invisible helper shown during the action-bar phase. As soon as OCR finds foreign text it either:
+///   • **speculatively translates** the selection in the background and caches the result on the
+///     coordinator, so tapping Translate is instant, or
+///   • **pre-warms** the model only (loads it) when full pre-translation isn't worth it.
+///
+/// Guards keep the speculative path cheap: only for foreign text, only when the model is already
+/// installed (no download prompt), only for reasonably small selections, off in Low Power Mode, and
+/// cancelled automatically when the view goes away (e.g. the user opens the translate overlay or
+/// re-selects). Controlled by the "Pre-translate selections" setting.
 struct TranslationPrewarmer: View {
     let lines: [OCRLine]
 
+    private enum Mode { case prewarm, translate }
+
     @State private var config: TranslationSession.Configuration?
+    @State private var mode: Mode = .prewarm
+    @State private var target = Locale.Language(identifier: "en")
 
     var body: some View {
         Color.clear
@@ -17,7 +26,13 @@ struct TranslationPrewarmer: View {
             .allowsHitTesting(false)
             .task { await prepare() }
             .translationTask(config) { @Sendable session in
-                try? await session.prepareTranslation()
+                let (currentMode, currentTarget) = await MainActor.run { (mode, target) }
+                switch currentMode {
+                case .prewarm:
+                    try? await session.prepareTranslation()
+                case .translate:
+                    await speculativelyTranslate(with: session, target: currentTarget)
+                }
             }
     }
 
@@ -30,16 +45,50 @@ struct TranslationPrewarmer: View {
         guard let dominant = recognizer.dominantLanguage else { return }
 
         let source = Locale.Language(identifier: dominant.rawValue)
-        let target = Locale.Language(
+        let systemTarget = Locale.Language(
             identifier: Locale.current.language.languageCode?.identifier ?? "en")
 
-        // Nothing to warm if the text is already in the target language.
-        if source.languageCode == target.languageCode { return }
+        // Nothing to do if the text is already in the target language.
+        if source.languageCode == systemTarget.languageCode { return }
 
-        // Only preload when the pair is installed — avoid prompting a download speculatively.
-        let status = await LanguageAvailability().status(from: source, to: target)
+        // Only act when the pair is installed — never prompt a download speculatively.
+        let status = await LanguageAvailability().status(from: source, to: systemTarget)
         guard status == .installed else { return }
 
-        config = TranslationSession.Configuration(source: source, target: target)
+        target = systemTarget
+
+        // Decide between full speculative translation and just warming the model.
+        let enabled = UserDefaults.standard.bool(forKey: "translation.pretranslate")
+        let lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+        let withinSizeCap = lines.count <= 40
+        mode = (enabled && !lowPower && withinSizeCap) ? .translate : .prewarm
+
+        config = TranslationSession.Configuration(source: source, target: systemTarget)
+    }
+
+    nonisolated private func speculativelyTranslate(with session: TranslationSession,
+                                                    target: Locale.Language) async {
+        let requests = lines.map {
+            TranslationSession.Request(sourceText: $0.string, clientIdentifier: $0.id.uuidString)
+        }
+        let started = Date()
+        var mapped: [UUID: String] = [:]
+        do {
+            for try await response in session.translate(batch: requests) {
+                if Task.isCancelled { return }   // user opened the overlay or re-selected
+                if let cid = response.clientIdentifier, let id = UUID(uuidString: cid) {
+                    mapped[id] = response.targetText
+                }
+            }
+        } catch {
+            return
+        }
+        let duration = Date().timeIntervalSince(started)
+        let cached = mapped
+        await MainActor.run {
+            CaptureCoordinator.shared.pretranslated = cached
+            CaptureCoordinator.shared.pretranslatedTarget = target
+            CaptureCoordinator.shared.pretranslatedDuration = duration
+        }
     }
 }

@@ -6,6 +6,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var registry: ActionRegistry?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Defaults for user settings that should start enabled.
+        UserDefaults.standard.register(defaults: ["translation.pretranslate": true])
+
         // Agent app: no Dock icon, no app menu (also set via LSUIElement in Info.plist).
         NSApp.setActivationPolicy(.accessory)
 
