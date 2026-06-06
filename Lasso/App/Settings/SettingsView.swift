@@ -6,7 +6,8 @@ struct SettingsView: View {
     @State private var launchAtLogin = LoginItem.isEnabled
     @AppStorage("translation.pretranslate") private var pretranslate = true
     @AppStorage("imageSearch.enabled") private var imageSearch = false
-    @AppStorage("reddit.clientID") private var redditClientID = ""
+    @AppStorage("tavily.apiKey") private var tavilyKey = ""
+    @AppStorage("serpapi.apiKey") private var serpKey = ""
 
     var body: some View {
         TabView {
@@ -65,11 +66,12 @@ struct SettingsView: View {
             Section {
                 TextField("Vision model", text: $intelligence.visionModel)
                 Toggle("Web lookup", isOn: $imageSearch)
-                TextField("Reddit client ID", text: $redditClientID)
+                TextField("Tavily API key (optional)", text: $tavilyKey)
+                TextField("SerpApi key (optional)", text: $serpKey)
             } header: {
                 Text("Identify")
             } footer: {
-                Text("Vision model is a local Ollama model that \u{201C}sees\u{201D} the image — pull one first, e.g. `ollama pull qwen3-vl:2b`. Web lookup adds TinEye, DuckDuckGo, and Reddit (the only thing that leaves your Mac). Reddit needs a free client ID — create an \u{201C}installed app\u{201D} at reddit.com/prefs/apps (no login or secret).")
+                Text("Vision model is a local Ollama model that \u{201C}sees\u{201D} the image — pull one first, e.g. `ollama pull qwen3-vl:2b`. Web lookup (the only thing that leaves your Mac) uses Wikipedia + TinEye, plus DuckDuckGo/Reddit best-effort. Optional free keys add reliable web results: Tavily (tavily.com, 1,000/mo) and SerpApi (serpapi.com, 100/mo, real Google).")
             }
         }
         .formStyle(.grouped)

@@ -17,16 +17,134 @@ struct WebSourcesProvider {
         var hits: [Hit] = []       // related links (DDG + Reddit) for display + synthesis
     }
 
-    /// Run DuckDuckGo (instant answer + web results) + Reddit in parallel for `query`.
+    /// Stable-first web sources: Wikipedia (official, no key) for the abstract + links, Tavily (free
+    /// key) for real web results, then DuckDuckGo (best-effort). Reddit is handled separately via a
+    /// hidden WebView (RedditWorker). All ranked by embedding similarity in IdentifyView.
+    static let tavilyMonthlyCap = 950   // free tier 1,000 — leave a safety margin
+    static let serpMonthlyCap = 95      // free tier 100
+
+    /// Managed cascade: always use the free, unlimited tier (Wikipedia + DuckDuckGo); only escalate
+    /// to the limited keyed APIs (Tavily, then SerpApi) when free results are thin and quota remains.
+    /// Reddit is added separately (WebView) in IdentifyView.
     func lookup(_ query: String) async -> Result {
+        async let wiki = wikipedia(query)
         async let instant = duckDuckGo(query)
         async let webResults = duckDuckGoWeb(query)
-        async let reddit = reddit(query)
-        let (inst, web, red) = await (instant, webResults, reddit)
-        var result = Result(abstract: inst.abstract)
-        // Real web result links first (work for any query), then Reddit.
-        result.hits = web + red
+        let (w, inst, web) = await (wiki, instant, webResults)
+
+        let abstract = w.abstract ?? inst.abstract     // prefer Wikipedia (stable)
+        var hits = w.hits + web
+
+        // Enough from free sources? Then don't spend keyed quota.
+        let freeEnough = abstract != nil || hits.count >= 4
+        if !freeEnough {
+            if hasKey("tavily.apiKey"), SearchQuota.canUse("tavily", cap: Self.tavilyMonthlyCap) {
+                hits += await tavily(query)
+            }
+            if hits.count < 4, hasKey("serpapi.apiKey"),
+               SearchQuota.canUse("serpapi", cap: Self.serpMonthlyCap) {
+                hits += await serpAPI(query)
+            }
+        }
+
+        var result = Result(abstract: abstract)
+        result.hits = hits
         return result
+    }
+
+    private func hasKey(_ key: String) -> Bool {
+        !(UserDefaults.standard.string(forKey: key) ?? "").isEmpty
+    }
+
+    // MARK: SerpApi (free 100/mo, needs an API key — real Google results)
+
+    private func serpAPI(_ query: String) async -> [Hit] {
+        let key = UserDefaults.standard.string(forKey: "serpapi.apiKey") ?? ""
+        guard !key.isEmpty,
+              let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let k = key.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://serpapi.com/search.json?engine=google&num=8&q=\(q)&api_key=\(k)")
+        else { return [] }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 8
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let organic = json["organic_results"] as? [[String: Any]] else { return [] }
+        SearchQuota.record("serpapi")
+        return organic.prefix(6).compactMap { result -> Hit? in
+            guard let title = result["title"] as? String, !title.isEmpty else { return nil }
+            return Hit(title: title, url: (result["link"] as? String).flatMap { URL(string: $0) },
+                       source: "Google")
+        }
+    }
+
+    // MARK: Wikipedia (official, free, no key — the stable core)
+
+    private func wikipedia(_ query: String) async -> (abstract: String?, hits: [Hit]) {
+        guard let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://en.wikipedia.org/w/api.php?action=query&list=search"
+                            + "&srsearch=\(q)&format=json&srlimit=3") else { return (nil, []) }
+        var request = URLRequest(url: url)
+        request.setValue("Lasso/0.1 (on-device identify)", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 6
+        guard let (data, _) = try? await URLSession.shared.data(for: request),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let queryObj = json["query"] as? [String: Any],
+              let results = queryObj["search"] as? [[String: Any]] else { return (nil, []) }
+
+        let titles = results.compactMap { $0["title"] as? String }
+        let hits = titles.compactMap { title -> Hit? in
+            wikiURL(title).map { Hit(title: title, url: $0, source: "Wikipedia") }
+        }
+        var abstract: String?
+        if let top = titles.first { abstract = await wikiSummary(top) }
+        return (abstract, hits)
+    }
+
+    private func wikiSummary(_ title: String) async -> String? {
+        guard let path = title.replacingOccurrences(of: " ", with: "_")
+            .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let url = URL(string: "https://en.wikipedia.org/api/rest_v1/page/summary/\(path)")
+        else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue("Lasso/0.1 (on-device identify)", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 6
+        guard let (data, _) = try? await URLSession.shared.data(for: request),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let extract = json["extract"] as? String, !extract.isEmpty else { return nil }
+        return extract
+    }
+
+    private func wikiURL(_ title: String) -> URL? {
+        let path = title.replacingOccurrences(of: " ", with: "_")
+            .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? title
+        return URL(string: "https://en.wikipedia.org/wiki/\(path)")
+    }
+
+    // MARK: Tavily (free 1,000/mo, needs an API key — stable real web search)
+
+    private func tavily(_ query: String) async -> [Hit] {
+        let key = UserDefaults.standard.string(forKey: "tavily.apiKey") ?? ""
+        guard !key.isEmpty, let url = URL(string: "https://api.tavily.com/search") else { return [] }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")   // newer Tavily
+        request.timeoutInterval = 8
+        request.httpBody = try? JSONEncoder().encode(
+            TavilyRequest(api_key: key, query: query, max_results: 6, search_depth: "basic"))
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let decoded = try? JSONDecoder().decode(TavilyResponse.self, from: data) else {
+            return []
+        }
+        SearchQuota.record("tavily")
+        return decoded.results.prefix(6).compactMap { result in
+            guard !result.title.isEmpty else { return nil }
+            return Hit(title: result.title, url: URL(string: result.url), source: "Tavily")
+        }
     }
 
     // MARK: DuckDuckGo Instant Answer (JSON)
@@ -113,41 +231,17 @@ struct WebSourcesProvider {
             .replacingOccurrences(of: "&lt;", with: "<")
             .replacingOccurrences(of: "&gt;", with: ">")
     }
-
-    // MARK: Reddit search.json
-
-    private func reddit(_ query: String) async -> [Hit] {
-        // Requires a Reddit client ID (app-only OAuth). Without it, Reddit is simply skipped.
-        let clientID = UserDefaults.standard.string(forKey: "reddit.clientID") ?? ""
-        guard !clientID.isEmpty,
-              let token = await RedditAuth.shared.token(clientID: clientID),
-              let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string:
-                "https://oauth.reddit.com/search?q=\(q)&limit=8&sort=relevance&t=year&raw_json=1")
-        else { return [] }
-
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue(RedditAuth.userAgent, forHTTPHeaderField: "User-Agent")
-        request.timeoutInterval = 6
-
-        guard let (data, response) = try? await URLSession.shared.data(for: request) else { return [] }
-        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-        guard status == 200,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let listing = json["data"] as? [String: Any],
-              let children = listing["children"] as? [[String: Any]] else {
-            Log.intelligence.notice("Reddit oauth search HTTP \(status, privacy: .public)")
-            return []
-        }
-        return children.prefix(6).compactMap { child -> Hit? in
-            guard let data = child["data"] as? [String: Any],
-                  let title = data["title"] as? String, !title.isEmpty,
-                  (data["over_18"] as? Bool) != true else { return nil }
-            let permalink = data["permalink"] as? String ?? ""
-            let sub = data["subreddit"] as? String ?? "reddit"
-            return Hit(title: title, url: URL(string: "https://www.reddit.com\(permalink)"),
-                       source: "r/\(sub)")
-        }
-    }
 }
+
+private struct TavilyRequest: Encodable {
+    let api_key: String
+    let query: String
+    let max_results: Int
+    let search_depth: String
+}
+
+private struct TavilyResponse: Decodable {
+    struct Result: Decodable { let title: String; let url: String; let content: String? }
+    let results: [Result]
+}
+

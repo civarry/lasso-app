@@ -23,8 +23,12 @@ struct IdentifyView: View {
     @State private var tineye: Stage = .running
     @State private var matches: [ImageMatch] = []
     @State private var web: Stage = .running
+    @State private var reddit: Stage = .running
+    @State private var query = ""
     @State private var ddgAbstract: String?
-    @State private var webHits: [WebSourcesProvider.Hit] = []
+    @State private var ddgHits: [WebSourcesProvider.Hit] = []
+    @State private var redditHits: [WebSourcesProvider.Hit] = []
+    @State private var webHits: [WebSourcesProvider.Hit] = []   // ranked combined (display + synthesis)
 
     @State private var summary = ""
     @State private var synthStarted = false
@@ -32,7 +36,9 @@ struct IdentifyView: View {
     @State private var synthError: String?
     @State private var synthTask: Task<Void, Never>?
 
-    private var busy: Bool { !(vision.settled && tineye.settled && web.settled) || synthesizing }
+    private var busy: Bool {
+        !(vision.settled && tineye.settled && web.settled && reddit.settled) || synthesizing
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -84,7 +90,7 @@ struct IdentifyView: View {
             }
 
             if webEnabled {
-                Label("Web lookup used (TinEye / DuckDuckGo / Reddit) — leaves your Mac.",
+                Label("Web lookup used (Wikipedia / TinEye / DuckDuckGo / Reddit) — leaves your Mac.",
                       systemImage: "arrow.up.right")
                     .font(.caption2).foregroundStyle(.secondary)
             }
@@ -108,8 +114,19 @@ struct IdentifyView: View {
                 .frame(width: 1, height: 1).opacity(0).allowsHitTesting(false)
             }
         }
+        .background {
+            if webEnabled, !query.isEmpty {
+                RedditWorker(query: query) { hits in
+                    redditHits = hits
+                    reddit = .done
+                    maybeSynthesize()
+                }
+                .frame(width: 1, height: 1).opacity(0).allowsHitTesting(false)
+            }
+        }
         .task { await runPipeline() }
         .task { await tineyeTimeout() }
+        .task { await redditTimeout() }
         .onDisappear { synthTask?.cancel() }
     }
 
@@ -129,9 +146,10 @@ struct IdentifyView: View {
 
     @ViewBuilder
     private var statusLine: some View {
-        if !(vision.settled && tineye.settled && web.settled) {
+        if !(vision.settled && tineye.settled && web.settled && reddit.settled) {
             let parts = [vision == .running ? "Looking at image" : nil,
-                         (tineye == .running || web == .running) ? "Searching the web" : nil]
+                         (tineye == .running || web == .running || reddit == .running)
+                            ? "Searching the web" : nil]
                 .compactMap { $0 }
             Text(parts.joined(separator: " · ") + "…").font(.caption).foregroundStyle(.secondary)
         } else if synthesizing && summary.isEmpty {
@@ -148,25 +166,35 @@ struct IdentifyView: View {
 
     private func runPipeline() async {
         await runVision()
-        await runWebSources()
-        await rankHits()
+        query = buildQuery()
+        guard webEnabled else {
+            web = .skipped; tineye = .skipped; reddit = .skipped
+            maybeSynthesize(); return
+        }
+        if query.isEmpty {
+            web = .skipped; reddit = .skipped   // nothing to text-search by; TinEye still runs
+        } else {
+            await runWebSources()
+        }
         maybeSynthesize()
     }
 
-    /// Rank Related hits by semantic similarity to the identity (nomic-embed-text), then keep the
-    /// relevant ones — so we show the likely article, not generic keyword noise.
+    /// Rank the combined DuckDuckGo + Reddit hits by semantic similarity to the identity
+    /// (nomic-embed-text), keep the relevant ones — so Related shows the likely article, not noise.
     private func rankHits() async {
-        guard !webHits.isEmpty else { return }
+        let combined = ddgHits + redditHits
+        guard !combined.isEmpty else { return }
         let reference = !visionQuery.isEmpty ? visionQuery
             : (!visionText.isEmpty ? visionText : (ocrText ?? ""))
-        guard !reference.isEmpty else { return }
+        guard !reference.isEmpty else { webHits = Array(combined.prefix(6)); return }
 
         let embedder = OllamaEmbeddings()
-        let texts = [reference] + webHits.map(\.title)
-        guard let vectors = await embedder.embed(texts), vectors.count == texts.count else { return }
-
+        let texts = [reference] + combined.map(\.title)
+        guard let vectors = await embedder.embed(texts), vectors.count == texts.count else {
+            webHits = Array(combined.prefix(6)); return
+        }
         let refVec = vectors[0]
-        var scored = webHits
+        var scored = combined
         for index in scored.indices {
             scored[index].score = OllamaEmbeddings.cosine(refVec, vectors[index + 1])
         }
@@ -195,12 +223,9 @@ struct IdentifyView: View {
     }
 
     private func runWebSources() async {
-        guard webEnabled else { web = .skipped; tineye = .skipped; return }
-        let query = buildQuery()
-        guard !query.isEmpty else { web = .skipped; return }
         let result = await WebSourcesProvider().lookup(query)
         ddgAbstract = result.abstract
-        webHits = result.hits
+        ddgHits = result.hits          // Reddit hits arrive separately via RedditWorker
         web = .done
     }
 
@@ -210,10 +235,22 @@ struct IdentifyView: View {
         if tineye == .running { tineye = .failed; maybeSynthesize() }
     }
 
-    private func maybeSynthesize() {
-        guard vision.settled, tineye.settled, web.settled, !synthStarted else { return }
-        synthStarted = true
+    private func redditTimeout() async {
+        guard webEnabled else { return }
+        try? await Task.sleep(for: .seconds(20))
+        if reddit == .running { reddit = .failed; maybeSynthesize() }
+    }
 
+    private func maybeSynthesize() {
+        guard vision.settled, tineye.settled, web.settled, reddit.settled, !synthStarted else { return }
+        synthStarted = true
+        Task {
+            await rankHits()    // combine + rank DuckDuckGo + Reddit before synthesizing
+            startSynthesis()
+        }
+    }
+
+    private func startSynthesis() {
         let hasAny = !visionText.isEmpty || !matches.isEmpty || ddgAbstract != nil
             || !webHits.isEmpty || hasStrongText
         guard hasAny else {
@@ -356,7 +393,7 @@ struct IdentifyView: View {
 
         Visual analysis: \(visionText.isEmpty ? "(no vision model used)" : visionText)
 
-        Encyclopedia (DuckDuckGo): \(ddgAbstract ?? "(none)")
+        Encyclopedia: \(ddgAbstract ?? "(none)")
 
         Image appears on these sites:
         \(imageSites.isEmpty ? "(none)" : imageSites)
