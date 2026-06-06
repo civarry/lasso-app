@@ -48,6 +48,9 @@ struct CaptureSessionView: View {
                         InlineTranslationView(lines: ctx.ocrLines, selectionRect: r)
                     } else {
                         anchoredUI(rect: r, in: geo.size)
+                        if let ctx = coordinator.context, !ctx.ocrLines.isEmpty {
+                            TranslationPrewarmer(lines: ctx.ocrLines)
+                        }
                     }
                 }
             }
