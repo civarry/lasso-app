@@ -3,21 +3,6 @@ import KeyboardShortcuts
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Transient presentation state for the ResultPane.
-struct ResultState {
-    var visible = false
-    var title = ""
-    var text = ""
-    var error: String?
-    var isStreaming = false
-    var custom: AnyView?
-    var note: String?
-    /// True for streamed AI output — the pane shows which model produced it.
-    var isAI = false
-
-    static var hidden: ResultState { ResultState() }
-}
-
 /// Orchestrates a single capture session end-to-end on the main actor (Spec §3, §6):
 /// freeze → overlay → select → pre-pass (OCR / data / barcode) → ActionBar → run actions.
 /// Heavy work is delegated to engine `actor`s; large images are released on teardown.
@@ -43,7 +28,6 @@ final class CaptureCoordinator {
     private(set) var committedRect: CGRect?           // local points in the active display
     private(set) var context: CaptureContext?
     private(set) var actions: [any CaptureAction] = []
-    var result = ResultState.hidden
     /// User-applied drag offset for the floating bar/result panel (movable for large/multi-display
     /// setups). Reset on each new selection. The in-place translation boxes are unaffected.
     var panelDragOffset: CGSize = .zero
@@ -86,6 +70,7 @@ final class CaptureCoordinator {
     }
 
     private func start() async {
+        FloatingPanelController.shared.close()   // clear any prior result card
         guard permissions.hasScreenRecording else {
             // First attempt: show only the system prompt. If it was already shown before and the
             // user still hasn't granted, surface the deep-link alert instead of double-prompting.
@@ -113,6 +98,18 @@ final class CaptureCoordinator {
     /// Leave inline-translation mode and return to the action bar.
     func exitTranslate() { translating = false }
 
+    /// The current selection in global screen (AppKit, bottom-left origin) coordinates — used to
+    /// anchor the floating image-search card at the same spot the result pane would appear.
+    func activeSelectionScreenRect() -> CGRect? {
+        guard let id = activeDisplayID, let rect = committedRect,
+              let shot = shots.first(where: { $0.id == id }) else { return nil }
+        let frame = shot.frame   // global, bottom-left origin
+        return CGRect(x: frame.minX + rect.minX,
+                      y: frame.maxY - rect.maxY,
+                      width: rect.width,
+                      height: rect.height)
+    }
+
     private func teardown() {
         KeyboardShortcuts.disable(.cancelCapture)
         runTask?.cancel(); runTask = nil
@@ -125,7 +122,6 @@ final class CaptureCoordinator {
         committedRect = nil
         context = nil
         actions = []
-        result = .hidden
         translating = false
         panelDragOffset = .zero
         pretranslated = [:]
@@ -141,7 +137,6 @@ final class CaptureCoordinator {
               rect.width >= 4, rect.height >= 4 else { return }
         activeDisplayID = displayID
         committedRect = rect
-        result = .hidden
         panelDragOffset = .zero
         pretranslated = [:]
         pretranslatedTarget = nil
@@ -176,49 +171,35 @@ final class CaptureCoordinator {
 
     func run(_ action: any CaptureAction) {
         guard let ctx = context else { return }
-        runTask?.cancel()
-        result = ResultState(visible: true, title: action.title, isStreaming: true)
+        // Anchor for the floating result, captured before we tear down the overlay.
+        let anchor = activeSelectionScreenRect()
         runTask = Task {
             do {
                 let outcome = try await action.perform(ctx)
                 switch outcome {
-                case .text(let t):
-                    result.text = t; result.isStreaming = false
-                case .stream(let stream):
-                    result.isAI = true
-                    for try await delta in stream {
-                        if Task.isCancelled { break }
-                        result.text += delta
-                    }
-                    result.isStreaming = false
-                case .copiedToPasteboard:
-                    // Copy is "grab and go" — dismiss so the user can paste immediately.
+                case .text, .stream, .custom:
+                    // We have the data — drop the freeze and float the result (persists; Esc/✕ to close).
+                    FloatingPanelController.shared.present(
+                        AnyView(FloatingResultView(title: action.title, result: outcome)), anchor: anchor)
                     teardown()
-                case .openedURL:
-                    // Opening a link navigates away; get out of the way.
-                    teardown()
-                case .custom(let view):
-                    result.custom = view; result.isStreaming = false
                 case .inlineTranslate:
-                    result = .hidden
-                    translating = true
-                case .none:
-                    result = .hidden
+                    translating = true   // needs the frozen image; stays in the overlay
+                case .copiedToPasteboard, .openedURL, .none:
+                    teardown()
                 }
             } catch {
-                result.error = error.localizedDescription
-                result.isStreaming = false
+                FloatingPanelController.shared.present(
+                    AnyView(FloatingResultView(title: action.title,
+                                               result: .text("Error: \(error.localizedDescription)"))),
+                    anchor: anchor)
+                teardown()
             }
         }
     }
 
     func open(_ item: DetectedItem) {
-        guard let url = item.url else {
-            Pasteboard.copy(item.value)
-            result = ResultState(visible: true, title: "Copied", text: item.value, note: "Copied")
-            return
-        }
-        NSWorkspace.shared.open(url)
+        if let url = item.url { NSWorkspace.shared.open(url) }
+        else { Pasteboard.copy(item.value) }
         teardown()
     }
 

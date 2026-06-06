@@ -5,6 +5,7 @@ struct SettingsView: View {
     @Bindable var intelligence: IntelligenceCoordinator
     @State private var launchAtLogin = LoginItem.isEnabled
     @AppStorage("translation.pretranslate") private var pretranslate = true
+    @AppStorage("imageSearch.enabled") private var imageSearch = false
 
     var body: some View {
         TabView {
@@ -63,6 +64,14 @@ struct SettingsView: View {
 
             Label("Both options run on this Mac — nothing is sent to a cloud service.",
                   systemImage: "lock.shield")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            Toggle("Web image search (TinEye)", isOn: $imageSearch)
+            Label("The only feature that leaves your Mac: the selected image is sent to TinEye to find where it appears online. Off by default.",
+                  systemImage: "arrow.up.right")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

@@ -18,6 +18,7 @@ final class ActionRegistry {
         registry.register(AskAIAction(intelligence: intelligence))
         registry.register(QRAction())
         registry.register(ColorPickerAction())
+        registry.register(ImageSearchAction())
         return registry
     }
 

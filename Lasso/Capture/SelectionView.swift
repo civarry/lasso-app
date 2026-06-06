@@ -99,9 +99,6 @@ struct CaptureSessionView: View {
 
         return VStack(alignment: .leading, spacing: 10) {
             ActionBar(coordinator: coordinator)
-            if coordinator.result.visible {
-                ResultPane(coordinator: coordinator)
-            }
         }
         .frame(width: panelWidth, alignment: .leading)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panelHeight = $0 }
