@@ -84,6 +84,21 @@ final class IntelligenceCoordinator {
         return primary // let the call surface a clear error
     }
 
+    /// Heuristic: does the prompt ask for tabular/structured output? Kept conservative.
+    static func looksLikeTableRequest(_ prompt: String) -> Bool {
+        let lower = prompt.lowercased()
+        let keywords = ["table", "csv", "spreadsheet", "tabulate", "columns", "rows", "grid", "in a table"]
+        return keywords.contains { lower.contains($0) }
+    }
+
+    /// Safeguard for the on-device model (weak at hand-writing Markdown tables): produce a reliable
+    /// table via guided generation, returned as Markdown. Sets attribution for the result footer.
+    func onDeviceTableMarkdown(prompt: String, context: String?) async throws -> String {
+        lastProviderName = onDevice.name
+        lastProviderIsAppleOnDevice = true
+        return try await onDevice.generateTableMarkdown(instruction: prompt, context: context)
+    }
+
     /// Stream a response from the active provider.
     func respond(prompt: String, context: String?) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in

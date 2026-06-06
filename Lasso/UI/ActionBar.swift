@@ -42,12 +42,9 @@ struct ActionBar: View {
                     Divider().frame(height: 18)
 
                     Button { coordinator.cancel() } label: {
-                        Image(systemName: "xmark")
-                            .font(.callout)
-                            .padding(7)
-                            .background(.white.opacity(0.10), in: Circle())
+                        Image(systemName: "xmark").font(.callout)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(IconButtonStyle())
                     .help("Close — press the capture shortcut again or Esc")
                 }
             }
@@ -59,6 +56,7 @@ private struct ActionPill: View {
     let title: String
     let systemImage: String
     let action: () -> Void
+    @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
@@ -66,15 +64,19 @@ private struct ActionPill: View {
                 .font(.callout)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-                .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: Theme.pillRadius))
+                .background(.white.opacity(hovering ? 0.20 : 0.10),
+                            in: RoundedRectangle(cornerRadius: Theme.pillRadius))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableStyle())
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
     }
 }
 
 private struct DataPill: View {
     let item: DetectedItem
     let action: () -> Void
+    @State private var hovering = false
 
     private var symbol: String {
         switch item.kind {
@@ -97,8 +99,10 @@ private struct DataPill: View {
                 .padding(.horizontal, 9)
                 .padding(.vertical, 5)
                 .frame(maxWidth: 220)
-                .background(.tint.opacity(0.22), in: Capsule())
+                .background(.tint.opacity(hovering ? 0.38 : 0.22), in: Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableStyle())
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
     }
 }

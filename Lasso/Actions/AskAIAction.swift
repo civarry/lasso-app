@@ -27,6 +27,7 @@ private struct AskAIView: View {
     @State private var isStreaming = false
     @State private var task: Task<Void, Never>?
     @FocusState private var fieldFocused: Bool
+    @AppStorage("ui.resultTextScale") private var textScale = 1.0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -39,11 +40,20 @@ private struct AskAIView: View {
                     .disabled(question.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             if isStreaming || !answer.isEmpty {
+                HStack {
+                    Spacer()
+                    TextScaleControls(scale: $textScale)
+                }
                 ScrollView {
-                    Text(answer.isEmpty ? AttributedString("…") : AttributedString.fromMarkdown(answer))
-                        .font(.body)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Group {
+                        if answer.isEmpty {
+                            Text("…").font(.system(size: resultTextBaseSize * textScale))
+                        } else {
+                            MarkdownView(text: answer, fontSize: resultTextBaseSize * textScale)
+                        }
+                    }
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 240)
             }
@@ -58,7 +68,7 @@ private struct AskAIView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .frame(width: 400)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {
             // Focus the field so the user can type immediately. Deferred so the view is in the
             // window's responder chain first.
@@ -74,6 +84,21 @@ private struct AskAIView: View {
         answer = ""
         isStreaming = true
         task = Task {
+            // Safeguard: the on-device model botches free-form Markdown tables. If the user asks
+            // for a table while Apple Intelligence is active, use guided generation instead of
+            // wasting a broken streamed attempt. Ollama handles tables fine via the normal path.
+            if IntelligenceCoordinator.looksLikeTableRequest(q),
+               await intelligence.activeProvider().isAppleOnDevice {
+                do {
+                    answer = try await intelligence.onDeviceTableMarkdown(prompt: q, context: ocrText)
+                    isStreaming = false
+                    return
+                } catch {
+                    // Fall through to normal streaming if guided generation fails.
+                    answer = ""
+                }
+            }
+
             do {
                 for try await delta in intelligence.respond(prompt: q, context: ocrText) {
                     if Task.isCancelled { break }

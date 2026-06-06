@@ -23,6 +23,7 @@ struct InlineTranslationView: View {
     @State private var showOriginal = false
     @State private var readingMode = false
     @State private var lastDuration: TimeInterval?
+    @AppStorage("ui.resultTextScale") private var textScale = 1.0
     @State private var target: Locale.Language =
         Locale.Language(identifier: Locale.current.language.languageCode?.identifier ?? "en")
 
@@ -151,12 +152,18 @@ struct InlineTranslationView: View {
         let maxX = size.width - panelWidth / 2 - 12
         let centerX = maxX < minX ? size.width / 2 : min(max(bar.x, minX), maxX)
 
-        return ScrollView {
-            Text(joined.isEmpty ? "Translating…" : joined)
-                .font(.body)
-                .foregroundStyle(.primary)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        return VStack(spacing: 8) {
+            HStack {
+                Spacer()
+                TextScaleControls(scale: $textScale)
+            }
+            ScrollView {
+                Text(joined.isEmpty ? "Translating…" : joined)
+                    .font(.system(size: resultTextBaseSize * textScale))
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(16)
         .frame(width: panelWidth, height: panelHeight)
@@ -199,7 +206,7 @@ struct InlineTranslationView: View {
             } label: {
                 Image(systemName: "arrow.left.arrow.right")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(IconButtonStyle())
             .help("Swap languages")
 
             languageMenu(
@@ -226,21 +233,21 @@ struct InlineTranslationView: View {
             Button { readingMode.toggle() } label: {
                 Image(systemName: readingMode ? "rectangle.on.rectangle" : "list.bullet.rectangle")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(IconButtonStyle())
             .help(readingMode ? "Overlay view" : "Reading view")
 
             if !readingMode {
                 Button { showOriginal.toggle() } label: {
                     Image(systemName: showOriginal ? "eye.slash" : "eye")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(IconButtonStyle())
                 .help(showOriginal ? "Show translation" : "Show original")
             }
 
             Button { CaptureCoordinator.shared.exitTranslate() } label: {
                 Image(systemName: "xmark")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(IconButtonStyle())
             .help("Done")
         }
         .font(.callout)

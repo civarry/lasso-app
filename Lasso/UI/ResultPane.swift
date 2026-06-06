@@ -3,6 +3,7 @@ import SwiftUI
 /// Shows the output of the running action: streamed AI text, OCR text, errors, or a custom view.
 struct ResultPane: View {
     @Bindable var coordinator: CaptureCoordinator
+    @AppStorage("ui.resultTextScale") private var textScale = 1.0
 
     private var result: ResultState { coordinator.result }
 
@@ -13,19 +14,23 @@ struct ResultPane: View {
                     Text(result.title).font(.headline)
                     if result.isStreaming { ProgressView().controlSize(.small) }
                     Spacer()
+                    if result.custom == nil {
+                        TextScaleControls(scale: $textScale)
+                    }
                     if !result.text.isEmpty {
                         Button {
                             Pasteboard.copy(result.text)
                         } label: {
                             Image(systemName: "doc.on.doc")
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(IconButtonStyle())
                         .help("Copy result")
                     }
                     Button { coordinator.result = .hidden } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        Image(systemName: "xmark")
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(IconButtonStyle())
+                    .help("Close")
                 }
 
                 if let custom = result.custom {
@@ -36,12 +41,15 @@ struct ResultPane: View {
                         .foregroundStyle(.orange)
                 } else {
                     ScrollView {
-                        Text(result.text.isEmpty && result.isStreaming
-                             ? AttributedString("…")
-                             : AttributedString.fromMarkdown(result.text))
-                            .font(.body)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Group {
+                            if result.text.isEmpty && result.isStreaming {
+                                Text("…").font(.system(size: resultTextBaseSize * textScale))
+                            } else {
+                                MarkdownView(text: result.text, fontSize: resultTextBaseSize * textScale)
+                            }
+                        }
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(minHeight: 80, maxHeight: 340)
                 }
