@@ -6,104 +6,13 @@ import AppKit
 struct ImageMatch: Identifiable {
     let id = UUID()
     let domain: String
+    var title: String?      // enriched with the page <title> after the fact
     let pageURL: URL?
     let thumbURL: URL?
     let date: String?
 }
 
-/// Reverse-image search via TinEye, rendered **natively** in Lasso's style. A hidden WKWebView
-/// loads tineye.com (a real WebKit view), receives a synthetic file-drop of the crop
-/// into TinEye's own upload flow, and we intercept the results JSON TinEye fetches — then render a
-/// clean native list (no TinEye chrome). Opt-in via ImageSearchAction. Spec §2/§17.
-struct ImageSearchView: View {
-    let image: CGImage
-
-    @State private var matches: [ImageMatch] = []
-    @State private var loading = true
-    @State private var slow = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Label(matches.isEmpty ? "Reverse image search"
-                                      : "Reverse image search · \(matches.count) matches",
-                      systemImage: "photo.badge.magnifyingglass")
-                    .font(.headline)
-                if loading { ProgressView().controlSize(.small) }
-                Spacer()
-                Button { openInBrowserFallback() } label: {
-                    Image(systemName: "arrow.up.forward.app")
-                }
-                .buttonStyle(IconButtonStyle())
-                .help("Open TinEye in browser")
-                Button { FloatingPanelController.shared.close() } label: {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(IconButtonStyle())
-                .help("Close")
-            }
-
-            if !matches.isEmpty {
-                ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(matches) { match in
-                            MatchRow(match: match) { open($0) }
-                        }
-                    }
-                }
-                .frame(height: 360)
-            } else {
-                VStack(spacing: 8) {
-                    if loading { ProgressView() }
-                    Text(loading ? (slow ? "Still searching…" : "Searching TinEye…")
-                                 : "No matches found.")
-                        .font(.callout).foregroundStyle(.secondary)
-                    if slow && loading {
-                        Button("Open in browser instead") { openInBrowserFallback() }
-                            .buttonStyle(.link)
-                    }
-                }
-                .frame(height: 200)
-                .frame(maxWidth: .infinity)
-            }
-
-            Label("Sent to TinEye — this leaves your Mac.", systemImage: "arrow.up.right")
-                .font(.caption2).foregroundStyle(.secondary)
-        }
-        .padding(14)
-        .frame(width: 540)
-        .background(RoundedRectangle(cornerRadius: 16).fill(Color(nsColor: .windowBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.10)))
-        .shadow(color: .black.opacity(0.4), radius: 20, y: 8)
-        .background(
-            // Hidden worker webview: runs the search to get the JSON; never shown.
-            TinEyeWorker(image: image) { found in
-                if !found.isEmpty { matches = found }
-                loading = false
-            }
-            .frame(width: 1, height: 1)
-            .opacity(0)
-            .allowsHitTesting(false)
-        )
-        .task {
-            try? await Task.sleep(for: .seconds(12))
-            if loading { slow = true }
-        }
-    }
-
-    /// Open a link in the browser. The floating results card stays on top (`.floating`), so the
-    /// user can open several matches and only dismiss via ✕ / Esc.
-    private func open(_ url: URL) {
-        NSWorkspace.shared.open(url)
-    }
-
-    private func openInBrowserFallback() {
-        Pasteboard.copy(image)
-        open(URL(string: "https://tineye.com/")!)
-    }
-}
-
-private struct MatchRow: View {
+struct MatchRow: View {
     let match: ImageMatch
     let onOpen: (URL) -> Void
     @State private var hovering = false
@@ -122,12 +31,9 @@ private struct MatchRow: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6))
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(match.domain).font(.callout.weight(.medium)).lineLimit(1)
-                    if let url = match.pageURL {
-                        Text(url.absoluteString)
-                            .font(.caption).foregroundStyle(.secondary)
-                            .lineLimit(1).truncationMode(.middle)
-                    }
+                    Text(match.title?.isEmpty == false ? match.title! : match.domain)
+                        .font(.callout.weight(.medium)).lineLimit(1)
+                    Text(match.domain).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     if let date = match.date {
                         Text(date).font(.caption2).foregroundStyle(.secondary)
                     }
@@ -146,7 +52,7 @@ private struct MatchRow: View {
 
 // MARK: - Hidden worker webview
 
-private struct TinEyeWorker: NSViewRepresentable {
+struct TinEyeWorker: NSViewRepresentable {
     let image: CGImage
     let onMatches: ([ImageMatch]) -> Void
 
@@ -211,6 +117,7 @@ private struct TinEyeWorker: NSViewRepresentable {
         let onMatches: ([ImageMatch]) -> Void
         private var didDrop = false
         private var didDeliver = false
+        private var pollCount = 0
 
         init(base64: String, onMatches: @escaping ([ImageMatch]) -> Void) {
             self.base64 = base64
@@ -233,11 +140,37 @@ private struct TinEyeWorker: NSViewRepresentable {
                 return
             }
 
-            // Homepage: drop the image into TinEye's upload flow once.
+            // Homepage: drop the image into TinEye's upload flow once, then poll for results
+            // (TinEye SPA-routes to /search/<hash> without a full navigation, so didFinish won't
+            // fire there — polling the DOM is the reliable catch-all).
             guard url.path == "/" || url.path.isEmpty, !didDrop else { return }
             didDrop = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                 webView.evaluateJavaScript(Self.dropScript(self.base64), completionHandler: nil)
+                self.pollForResults(webView)
+            }
+        }
+
+        /// Periodically scrape the results page until matches appear or we give up.
+        private func pollForResults(_ webView: WKWebView) {
+            guard !didDeliver, pollCount < 14 else { return }
+            pollCount += 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self, weak webView] in
+                guard let self, let webView, !self.didDeliver else { return }
+                guard let url = webView.url, url.path.hasPrefix("/search/") else {
+                    self.pollForResults(webView); return
+                }
+                webView.evaluateJavaScript(Self.scrapeScript) { result, _ in
+                    if !self.didDeliver, let json = result as? String {
+                        let parsed = TinEyeParser.matches(from: json)
+                        if !parsed.isEmpty {
+                            self.didDeliver = true
+                            self.onMatches(parsed)
+                            return
+                        }
+                    }
+                    self.pollForResults(webView)
+                }
             }
         }
 
@@ -255,7 +188,8 @@ private struct TinEyeWorker: NSViewRepresentable {
             if (!img) continue;
             var d; try { d = new URL(href).hostname; } catch (e) { continue; }
             if (seen[href]) continue; seen[href] = 1;
-            out.push({ domain: d, url: href, image_url: img.src });
+            var title = (a.textContent || '').trim().slice(0, 140);
+            out.push({ domain: d, url: href, image_url: img.src, title: title });
             if (out.length >= 60) break;
           }
           return JSON.stringify(out);
@@ -338,8 +272,9 @@ enum TinEyeParser {
 
         let pageURL = pageURLString.flatMap { URL(string: $0) }
         let domain = (dict["domain"] as? String) ?? pageURL?.host ?? "Unknown"
+        let title = (dict["title"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         guard pageURL != nil || thumb != nil else { return nil }
-        return ImageMatch(domain: domain, pageURL: pageURL,
+        return ImageMatch(domain: domain, title: title, pageURL: pageURL,
                           thumbURL: thumb.flatMap { URL(string: $0) }, date: date)
     }
 }

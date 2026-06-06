@@ -45,6 +45,11 @@ final class IntelligenceCoordinator {
         didSet { UserDefaults.standard.set(ollamaModel, forKey: Self.modelKey) }
     }
 
+    /// Name of the Ollama vision model used by Identify (must be pulled separately).
+    var visionModel: String {
+        didSet { UserDefaults.standard.set(visionModel, forKey: Self.visionModelKey) }
+    }
+
     /// True once any cloud/off-machine call is ever made this session. Lasso never does today, so
     /// this stays false — surfaced by the privacy badge.
     private(set) var usedOffDeviceThisSession = false
@@ -59,11 +64,13 @@ final class IntelligenceCoordinator {
 
     static let defaultsKey = "intelligence.provider"
     static let modelKey = "intelligence.ollamaModel"
+    static let visionModelKey = "intelligence.visionModel"
 
     init() {
         let raw = UserDefaults.standard.string(forKey: Self.defaultsKey)
         self.preferred = raw.flatMap(ProviderKind.init(rawValue:)) ?? .onDevice
         self.ollamaModel = UserDefaults.standard.string(forKey: Self.modelKey) ?? "gpt-oss:20b"
+        self.visionModel = UserDefaults.standard.string(forKey: Self.visionModelKey) ?? "qwen3-vl:2b"
     }
 
     var privacyNote: String {
