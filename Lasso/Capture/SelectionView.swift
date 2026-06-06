@@ -105,7 +105,8 @@ struct CaptureSessionView: View {
         }
         .frame(width: panelWidth, alignment: .leading)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panelHeight = $0 }
-        .offset(x: x, y: y)
+        .offset(x: x + coordinator.panelDragOffset.width,
+                y: y + coordinator.panelDragOffset.height)
     }
 }
 

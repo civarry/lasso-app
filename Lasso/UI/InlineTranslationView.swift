@@ -167,11 +167,14 @@ struct InlineTranslationView: View {
         let y = (belowY + halfHeight + margin <= size.height) ? belowY : max(margin + halfHeight, aboveY)
         let minX = margin + halfWidth, maxX = size.width - margin - halfWidth
         let x = maxX < minX ? size.width / 2 : min(max(selectionRect.midX, minX), maxX)
-        return CGPoint(x: x, y: y)
+        let drag = CaptureCoordinator.shared.panelDragOffset
+        return CGPoint(x: x + drag.width, y: y + drag.height)
     }
 
     private var languageBar: some View {
         HStack(spacing: 10) {
+            DragHandle(coordinator: CaptureCoordinator.shared)
+
             languageMenu(
                 title: sourceLabel,
                 selection: { sourceOverride = $0 },

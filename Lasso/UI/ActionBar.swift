@@ -21,6 +21,7 @@ struct ActionBar: View {
 
                 // Capability actions (scrollable) with a pinned, always-visible Close button.
                 HStack(spacing: 6) {
+                    DragHandle(coordinator: coordinator)
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
                             ForEach(coordinator.actions, id: \.id) { action in

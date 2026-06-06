@@ -44,6 +44,9 @@ final class CaptureCoordinator {
     private(set) var context: CaptureContext?
     private(set) var actions: [any CaptureAction] = []
     var result = ResultState.hidden
+    /// User-applied drag offset for the floating bar/result panel (movable for large/multi-display
+    /// setups). Reset on each new selection. The in-place translation boxes are unaffected.
+    var panelDragOffset: CGSize = .zero
     /// When true, the overlay shows inline translated text over the selection instead of the
     /// normal action bar (Google "translate in place" style).
     private(set) var translating = false
@@ -117,6 +120,7 @@ final class CaptureCoordinator {
         actions = []
         result = .hidden
         translating = false
+        panelDragOffset = .zero
         isActive = false
     }
 
@@ -128,6 +132,7 @@ final class CaptureCoordinator {
         activeDisplayID = displayID
         committedRect = rect
         result = .hidden
+        panelDragOffset = .zero
 
         let pixelRect = CGRect(x: rect.minX * shot.scale, y: rect.minY * shot.scale,
                                width: rect.width * shot.scale, height: rect.height * shot.scale)
