@@ -12,9 +12,16 @@ final class TriggerService {
         KeyboardShortcuts.onKeyUp(for: .capture) {
             CaptureCoordinator.shared.toggle()
         }
+        // Esc cancels the active session. Registered as a global hotkey (reliable regardless of
+        // which window has focus) but only enabled while a session is up — see CaptureCoordinator.
+        KeyboardShortcuts.onKeyDown(for: .cancelCapture) {
+            CaptureCoordinator.shared.cancel()
+        }
+        KeyboardShortcuts.disable(.cancelCapture)
     }
 }
 
 extension KeyboardShortcuts.Name {
     static let capture = Self("capture", default: .init(.space, modifiers: [.option, .command]))
+    static let cancelCapture = Self("cancelCapture", default: .init(.escape))
 }

@@ -11,6 +11,7 @@ struct CaptureSessionView: View {
 
     @State private var dragStart: CGPoint?
     @State private var liveRect: CGRect?
+    @State private var panelHeight: CGFloat = 0
 
     private var selectionRect: CGRect? {
         if let liveRect { return liveRect }
@@ -43,7 +44,11 @@ struct CaptureSessionView: View {
 
                 // Anchored UI on the active display once a selection is committed.
                 if coordinator.activeDisplayID == shot.id, let r = coordinator.committedRect {
-                    anchoredUI(rect: r, in: geo.size)
+                    if coordinator.translating, let ctx = coordinator.context {
+                        InlineTranslationView(lines: ctx.ocrLines, selectionRect: r)
+                    } else {
+                        anchoredUI(rect: r, in: geo.size)
+                    }
                 }
             }
             .ignoresSafeArea()
@@ -66,30 +71,37 @@ struct CaptureSessionView: View {
             }
     }
 
-    @ViewBuilder
     private func anchoredUI(rect: CGRect, in size: CGSize) -> some View {
         let panelWidth: CGFloat = 460
         let margin: CGFloat = 12
         let gap: CGFloat = 14
-        // Conservative max panel height used only to decide below-vs-pinned placement.
-        let estimatedHeight: CGFloat = 440
 
         // Horizontal: align to the selection's left edge, clamped fully on-screen.
         let x = min(max(rect.minX, margin), max(margin, size.width - panelWidth - margin))
 
-        // Vertical: place just below the selection if it fits; otherwise pin near the top so the
-        // panel is fully visible. `.offset` moves without shrinking the panel, so the result text
-        // keeps its full height (padding/anchored frames would compress the scroll view).
+        // Vertical: below the selection if it fits, else just ABOVE it, else clamp on screen.
+        // `.offset` moves without shrinking, so the result text keeps its full height. The panel
+        // height is measured so the "above" placement sits right against the selection (not pinned
+        // to the screen top, which leaves it far away for low/tall selections).
         let belowY = rect.maxY + gap
-        let y = (belowY + estimatedHeight <= size.height) ? belowY : margin
+        let aboveY = rect.minY - gap - panelHeight
+        let y: CGFloat
+        if belowY + panelHeight + margin <= size.height {
+            y = belowY
+        } else if aboveY >= margin {
+            y = aboveY
+        } else {
+            y = max(margin, size.height - panelHeight - margin)
+        }
 
-        VStack(alignment: .leading, spacing: 10) {
+        return VStack(alignment: .leading, spacing: 10) {
             ActionBar(coordinator: coordinator)
             if coordinator.result.visible {
                 ResultPane(coordinator: coordinator)
             }
         }
         .frame(width: panelWidth, alignment: .leading)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panelHeight = $0 }
         .offset(x: x, y: y)
     }
 }

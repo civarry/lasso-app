@@ -36,6 +36,8 @@ struct CaptureContext: @unchecked Sendable {
     let selectionRect: CGRect
     /// OCR text, populated by the pre-pass if it has already run.
     var ocrText: String?
+    /// Per-line OCR results with bounding boxes (for inline overlay translation).
+    var ocrLines: [OCRLine]
     /// Links / phones / QR codes etc. found in the selection.
     var detectedData: [DetectedItem]
     /// Which display the selection came from.
@@ -46,6 +48,7 @@ struct CaptureContext: @unchecked Sendable {
         fullFrame: CGImage,
         selectionRect: CGRect,
         ocrText: String? = nil,
+        ocrLines: [OCRLine] = [],
         detectedData: [DetectedItem] = [],
         displayID: CGDirectDisplayID
     ) {
@@ -53,6 +56,7 @@ struct CaptureContext: @unchecked Sendable {
         self.fullFrame = fullFrame
         self.selectionRect = selectionRect
         self.ocrText = ocrText
+        self.ocrLines = ocrLines
         self.detectedData = detectedData
         self.displayID = displayID
     }
@@ -70,6 +74,8 @@ enum ActionResult {
     case openedURL(URL)
     /// A bespoke SwiftUI view (color swatch, table preview, …).
     case custom(AnyView)
+    /// Enter inline overlay-translation mode (translate text in place over the selection).
+    case inlineTranslate
     /// Nothing to display.
     case none
 }

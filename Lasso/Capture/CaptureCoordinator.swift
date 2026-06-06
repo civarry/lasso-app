@@ -1,4 +1,5 @@
 import AppKit
+import KeyboardShortcuts
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -43,6 +44,9 @@ final class CaptureCoordinator {
     private(set) var context: CaptureContext?
     private(set) var actions: [any CaptureAction] = []
     var result = ResultState.hidden
+    /// When true, the overlay shows inline translated text over the selection instead of the
+    /// normal action bar (Google "translate in place" style).
+    private(set) var translating = false
 
     private var overlayWindows: [OverlayWindow] = []
     private var keyMonitor: Any?
@@ -89,13 +93,18 @@ final class CaptureCoordinator {
         }
         guard !shots.isEmpty else { return }
         isActive = true
+        KeyboardShortcuts.enable(.cancelCapture)
         presentOverlays()
         installKeyMonitor()
     }
 
     func cancel() { teardown() }
 
+    /// Leave inline-translation mode and return to the action bar.
+    func exitTranslate() { translating = false }
+
     private func teardown() {
+        KeyboardShortcuts.disable(.cancelCapture)
         runTask?.cancel(); runTask = nil
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
@@ -107,6 +116,7 @@ final class CaptureCoordinator {
         context = nil
         actions = []
         result = .hidden
+        translating = false
         isActive = false
     }
 
@@ -137,6 +147,7 @@ final class CaptureCoordinator {
 
         var ctx = base
         ctx.ocrText = ocrResult.isEmpty ? nil : ocrResult.text
+        ctx.ocrLines = ocrResult.lines
         ctx.detectedData = detected + bars
         context = ctx
         actions = registry?.relevantActions(for: ctx) ?? []
@@ -170,6 +181,9 @@ final class CaptureCoordinator {
                     teardown()
                 case .custom(let view):
                     result.custom = view; result.isStreaming = false
+                case .inlineTranslate:
+                    result = .hidden
+                    translating = true
                 case .none:
                     result = .hidden
                 }
