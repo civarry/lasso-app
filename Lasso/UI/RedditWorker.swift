@@ -19,7 +19,7 @@ struct RedditWorker: NSViewRepresentable {
         let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
         if let url = URL(string:
             "https://old.reddit.com/search?q=\(q)&sort=relevance&t=year&include_over_18=off") {
-            webView.load(URLRequest(url: url))
+            WebScraper.loadBlockingMedia(webView) { webView.load(URLRequest(url: url)) }
         }
         return webView
     }

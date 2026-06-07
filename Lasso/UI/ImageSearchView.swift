@@ -72,7 +72,9 @@ struct TinEyeWorker: NSViewRepresentable {
         webView.customUserAgent =
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
             + "(KHTML, like Gecko) Version/17.0 Safari/605.1.15"
-        webView.load(URLRequest(url: URL(string: "https://tineye.com/")!))
+        WebScraper.loadBlockingMedia(webView) {
+            webView.load(URLRequest(url: URL(string: "https://tineye.com/")!))
+        }
         return webView
     }
 
