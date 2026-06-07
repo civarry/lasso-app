@@ -41,21 +41,16 @@ struct IdentifyView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 14) {
             header
             statusLine
 
             if !summary.isEmpty {
-                ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
                     MarkdownView(text: displaySummary, fontSize: resultTextBaseSize * textScale)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxHeight: 240)
-                if let confidence {
-                    Label("Confidence: \(confidence.level)", systemImage: "gauge.with.dots.needle.50percent")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(confidence.color)
+                    if let confidence { confidenceChip(confidence) }
                 }
             } else if let synthError {
                 Label(synthError, systemImage: "exclamationmark.triangle")
@@ -64,48 +59,52 @@ struct IdentifyView: View {
 
             if !visionText.isEmpty {
                 DisclosureGroup("Visual analysis") {
-                    Text(visionText).font(.caption).foregroundStyle(.secondary)
+                    Text(visionText)
+                        .font(.callout).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 4)
                 }
-                .font(.caption)
+                .font(.subheadline)
             }
 
             if !matches.isEmpty || !webHits.isEmpty {
-                Divider()
+                Divider().opacity(0.5)
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 14) {
                         if !matches.isEmpty {
-                            sectionLabel("Image appears on")
-                            ForEach(matches.prefix(8)) { match in
-                                MatchRow(match: match) { NSWorkspace.shared.open($0) }
+                            sourceSection("Image appears on") {
+                                ForEach(matches.prefix(8)) { matchRow($0) }
                             }
                         }
                         if !webHits.isEmpty {
-                            sectionLabel("Related")
-                            ForEach(webHits.prefix(8)) { hit in WebHitRow(hit: hit) }
+                            sourceSection("Related") {
+                                ForEach(webHits.prefix(8)) { webHitRow($0) }
+                            }
                         }
                     }
                 }
-                .frame(maxHeight: 200)
+                .frame(maxHeight: 300)
             }
 
             if webEnabled {
                 Label("Web lookup used (Wikipedia / TinEye / DuckDuckGo / Reddit) — leaves your Mac.",
-                      systemImage: "arrow.up.right")
-                    .font(.caption2).foregroundStyle(.secondary)
+                      systemImage: "lock.shield")
+                    .font(.caption2).foregroundStyle(.tertiary)
             }
         }
-        .padding(14)
-        .frame(width: 460)
+        .padding(18)
+        .frame(width: 500)
         .background(RoundedRectangle(cornerRadius: 16).fill(Color(nsColor: .windowBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.10)))
         .shadow(color: .black.opacity(0.4), radius: 20, y: 8)
         .background {
             if webEnabled {
                 TinEyeWorker(image: image) { found in
-                    matches = found   // show immediately
+                    // Drop stock-photo/marketplace hosts — they carry the image but mislead identity.
+                    let filtered = found.filter { !DomainNoise.isNoise($0.domain) }
+                    matches = filtered   // show immediately
                     Task {
-                        let enriched = await Self.enrichTitles(found)
+                        let enriched = await Self.enrichTitles(filtered)
                         matches = enriched
                         tineye = .done
                         maybeSynthesize()
@@ -157,9 +156,39 @@ struct IdentifyView: View {
         }
     }
 
-    private func sectionLabel(_ text: String) -> some View {
-        Text(text.uppercased()).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-            .padding(.top, 4)
+    private func confidenceChip(_ c: (level: String, color: Color)) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(c.color).frame(width: 7, height: 7)
+            Text("\(c.level) confidence")
+                .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func sourceSection(_ label: String, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label.uppercased())
+                .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                .padding(.leading, 2).padding(.bottom, 2)
+            content()
+        }
+    }
+
+    @ViewBuilder
+    private func matchRow(_ m: ImageMatch) -> some View {
+        SourceRow(domain: m.domain, title: m.title ?? m.domain,
+                  subtitle: m.date.map { "\(m.domain) · \($0)" } ?? m.domain,
+                  url: m.pageURL, score: nil)
+    }
+
+    @ViewBuilder
+    private func webHitRow(_ h: WebSourcesProvider.Hit) -> some View {
+        let host = h.url?.host?.replacingOccurrences(of: "www.", with: "")
+        let isReddit = h.source.hasPrefix("r/")
+        SourceRow(domain: isReddit ? "reddit.com" : (host ?? ""),
+                  title: h.title,
+                  subtitle: isReddit ? h.source : (host ?? h.source),
+                  url: h.url, score: h.score)
     }
 
     // MARK: - Pipeline
@@ -383,11 +412,13 @@ struct IdentifyView: View {
             .joined(separator: "\n")
 
         return """
-        Help the user identify something they captured on screen. Fuse the evidence below into a \
-        short, helpful explanation: what it most likely is, plus useful context (brand, place, what \
-        it's for). Prefer specifics from the source page titles over generic guesses. Write 2–4 \
-        sentences, then on a new line write exactly "Confidence: High" (or Medium / Low). If \
-        signals conflict or are weak, say so.
+        Help the user identify the MAIN SUBJECT of what they captured (a person, place, object, \
+        product, artwork…). Fuse the evidence below into a short, helpful explanation of what it is \
+        plus useful context. Prefer specifics from the related results / encyclopedia and page \
+        titles over generic guesses. Note: if the image merely appears on stock-photo or e-commerce \
+        sites, that only means it's a widely-used photo — do NOT conclude the subject is "a stock \
+        photo" or "a website"; identify the actual subject. Write 2–4 sentences, then on a new line \
+        write exactly "Confidence: High" (or Medium / Low). If signals conflict or are weak, say so.
 
         On-screen text: \(ocrText?.isEmpty == false ? ocrText! : "(none)")
 
@@ -404,33 +435,72 @@ struct IdentifyView: View {
     }
 }
 
-private struct WebHitRow: View {
-    let hit: WebSourcesProvider.Hit
+/// A source result rendered as a clean card row: favicon + title (2 lines) + domain/source ·
+/// match%, with a hover highlight — a familiar search-result layout.
+private struct SourceRow: View {
+    let domain: String
+    let title: String
+    let subtitle: String
+    let url: URL?
+    let score: Double?
     @State private var hovering = false
 
     var body: some View {
-        Button { if let url = hit.url { NSWorkspace.shared.open(url) } } label: {
-            HStack(spacing: 8) {
-                Image(systemName: hit.source.hasPrefix("r/") ? "bubble.left.and.bubble.right" : "globe")
-                    .foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(hit.title).font(.callout).lineLimit(1)
-                    HStack(spacing: 4) {
-                        Text(hit.source)
-                        if let score = hit.score {
-                            Text("· \(Int(score * 100))% match")
+        Button { if let url { NSWorkspace.shared.open(url) } } label: {
+            HStack(spacing: 10) {
+                Favicon(domain: domain)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.callout).lineLimit(2)
+                    HStack(spacing: 5) {
+                        Text(subtitle).lineLimit(1)
+                        if let score {
+                            Text("·").opacity(0.5)
+                            Text("\(Int(score * 100))% match").foregroundStyle(matchColor)
                         }
                     }
                     .font(.caption2).foregroundStyle(.secondary)
                 }
-                Spacer()
-                Image(systemName: "arrow.up.right.square").foregroundStyle(.secondary)
+                Spacer(minLength: 6)
+                Image(systemName: "arrow.up.forward").font(.caption2).foregroundStyle(.tertiary)
             }
-            .padding(8)
-            .background(.white.opacity(hovering ? 0.10 : 0), in: RoundedRectangle(cornerRadius: 8))
+            .padding(.vertical, 9).padding(.horizontal, 10)
+            .background(.primary.opacity(hovering ? 0.06 : 0), in: RoundedRectangle(cornerRadius: 10))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+
+    private var matchColor: Color {
+        guard let score else { return .secondary }
+        return score >= 0.6 ? .green : (score >= 0.45 ? .yellow : .secondary)
+    }
+}
+
+/// Domain favicon via DuckDuckGo's icon service (privacy-friendly), with a globe fallback.
+private struct Favicon: View {
+    let domain: String
+
+    var body: some View {
+        Group {
+            if domain.isEmpty {
+                placeholder
+            } else {
+                AsyncImage(url: URL(string: "https://icons.duckduckgo.com/ip3/\(domain).ico")) { phase in
+                    if let image = phase.image {
+                        image.resizable().aspectRatio(contentMode: .fit)
+                    } else {
+                        placeholder
+                    }
+                }
+            }
+        }
+        .frame(width: 18, height: 18)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+
+    private var placeholder: some View {
+        Image(systemName: "globe").font(.system(size: 13)).foregroundStyle(.secondary)
     }
 }

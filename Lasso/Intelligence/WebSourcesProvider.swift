@@ -4,12 +4,14 @@ import Foundation
 /// Wikipedia-style abstract) and Reddit search.json (community discussion). No API keys. These
 /// leave the Mac, so they're gated by the "Web lookup" setting.
 struct WebSourcesProvider {
-    struct Hit: Identifiable {
+    struct Hit: Identifiable, Codable {
         let id = UUID()
         let title: String
         let url: URL?
         let source: String   // "DuckDuckGo" / subreddit name
         var score: Double?   // semantic relevance (0–1), set by the ranker
+
+        private enum CodingKeys: String, CodingKey { case title, url, source, score }
     }
 
     struct Result {
@@ -17,16 +19,21 @@ struct WebSourcesProvider {
         var hits: [Hit] = []       // related links (DDG + Reddit) for display + synthesis
     }
 
-    /// Stable-first web sources: Wikipedia (official, no key) for the abstract + links, Tavily (free
-    /// key) for real web results, then DuckDuckGo (best-effort). Reddit is handled separately via a
-    /// hidden WebView (RedditWorker). All ranked by embedding similarity in IdentifyView.
-    static let tavilyMonthlyCap = 950   // free tier 1,000 — leave a safety margin
-    static let serpMonthlyCap = 95      // free tier 100
-
-    /// Managed cascade: always use the free, unlimited tier (Wikipedia + DuckDuckGo); only escalate
-    /// to the limited keyed APIs (Tavily, then SerpApi) when free results are thin and quota remains.
-    /// Reddit is added separately (WebView) in IdentifyView.
+    /// Managed search. Order of priority for *quality*: keyed APIs (Tavily primary, SerpApi reserve)
+    /// over free sources — but spent carefully:
+    ///   1. Cache-first (7-day TTL) — repeats cost zero quota.
+    ///   2. Free baseline always (Wikipedia abstract + links, DuckDuckGo).
+    ///   3. Tavily proactively when daily+monthly budget allows (its results lead the list).
+    ///   4. SerpApi only as a reserve (Tavily empty / no Tavily budget), since its quota is tiny.
+    /// Reddit is added separately (WebView) in IdentifyView. Everything is embedding-ranked there.
     func lookup(_ query: String) async -> Result {
+        if let cached = SearchCache.get(query) {
+            var result = Result(abstract: cached.abstract)
+            result.hits = cached.hits
+            return result
+        }
+
+        // Free baseline — always, no quota.
         async let wiki = wikipedia(query)
         async let instant = duckDuckGo(query)
         async let webResults = duckDuckGoWeb(query)
@@ -35,18 +42,20 @@ struct WebSourcesProvider {
         let abstract = w.abstract ?? inst.abstract     // prefer Wikipedia (stable)
         var hits = w.hits + web
 
-        // Enough from free sources? Then don't spend keyed quota.
-        let freeEnough = abstract != nil || hits.count >= 4
-        if !freeEnough {
-            if hasKey("tavily.apiKey"), SearchQuota.canUse("tavily", cap: Self.tavilyMonthlyCap) {
-                hits += await tavily(query)
+        // Primary: Tavily (best results), budget-paced — its hits lead.
+        if hasKey("tavily.apiKey"), SearchQuota.canUse("tavily") {
+            let tav = await tavily(query)
+            hits = tav + hits
+            // Reserve: SerpApi only if Tavily returned nothing.
+            if tav.isEmpty, hasKey("serpapi.apiKey"), SearchQuota.canUse("serpapi") {
+                hits = await serpAPI(query) + hits
             }
-            if hits.count < 4, hasKey("serpapi.apiKey"),
-               SearchQuota.canUse("serpapi", cap: Self.serpMonthlyCap) {
-                hits += await serpAPI(query)
-            }
+        } else if hasKey("serpapi.apiKey"), SearchQuota.canUse("serpapi") {
+            // No Tavily key/budget → fall back to the SerpApi reserve.
+            hits = await serpAPI(query) + hits
         }
 
+        SearchCache.set(query, abstract: abstract, hits: hits)
         var result = Result(abstract: abstract)
         result.hits = hits
         return result
@@ -56,7 +65,7 @@ struct WebSourcesProvider {
         !(UserDefaults.standard.string(forKey: key) ?? "").isEmpty
     }
 
-    // MARK: SerpApi (free 100/mo, needs an API key — real Google results)
+    // MARK: SerpApi (free 250/mo, needs an API key — real Google results)
 
     private func serpAPI(_ query: String) async -> [Hit] {
         let key = UserDefaults.standard.string(forKey: "serpapi.apiKey") ?? ""
@@ -196,20 +205,11 @@ struct WebSourcesProvider {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !title.isEmpty else { return nil }
                 let url = decodeUddg(href)
-                if let host = url?.host?.lowercased(), Self.isNoise(host) { return nil }
+                if let host = url?.host, DomainNoise.isNoise(host) { return nil }
                 return Hit(title: title, url: url, source: "DuckDuckGo")
             }
             .prefix(6)
             .map { $0 }
-    }
-
-    /// Drop shopping / stock / wallpaper / social hosts so "Related" shows articles, not noise.
-    private static func isNoise(_ host: String) -> Bool {
-        let blocked = ["amazon.", "etsy.", "aliexpress.", "ebay.", "pinterest.", "shutterstock.",
-                       "istockphoto.", "gettyimages.", "alamy.", "dreamstime.", "walmart.", "temu.",
-                       "alibaba.", "redbubble.", "lazada.", "shopee.", "wallpaper", "facebook.",
-                       "instagram.", "tiktok.", "youtube."]
-        return blocked.contains { host.contains($0) }
     }
 
     /// DDG result links are `//duckduckgo.com/l/?uddg=<encoded real url>&rut=…` — unwrap them.
