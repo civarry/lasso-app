@@ -1,8 +1,10 @@
 import SwiftUI
+import CoreGraphics
 
 /// Free-form "ask about this" against the active intelligence provider. Presents a small input +
 /// streamed answer inline (Spec §8). World-knowledge questions are best served by the Ollama
-/// provider (`gpt-oss:20b`); on-device handles transform/explain tasks.
+/// provider (`qwen3:4b`); on-device handles transform/explain tasks. When the selection has no
+/// readable text, the question is grounded in a local vision-model description of the image.
 struct AskAIAction: CaptureAction {
     let intelligence: IntelligenceCoordinator
 
@@ -14,16 +16,18 @@ struct AskAIAction: CaptureAction {
     func isRelevant(to ctx: CaptureContext) -> Bool { true }
 
     func perform(_ ctx: CaptureContext) async throws -> ActionResult {
-        .custom(AnyView(AskAIView(intelligence: intelligence, ocrText: ctx.ocrText)))
+        .custom(AnyView(AskAIView(intelligence: intelligence, image: ctx.image, ocrText: ctx.ocrText)))
     }
 }
 
 private struct AskAIView: View {
     let intelligence: IntelligenceCoordinator
+    let image: CGImage
     let ocrText: String?
 
     @State private var question = ""
     @State private var answer = ""
+    @State private var status = ""
     @State private var isStreaming = false
     @State private var task: Task<Void, Never>?
     @FocusState private var fieldFocused: Bool
@@ -47,7 +51,9 @@ private struct AskAIView: View {
                 ScrollView {
                     Group {
                         if answer.isEmpty {
-                            Text("…").font(.system(size: resultTextBaseSize * textScale))
+                            Text(status.isEmpty ? "…" : status)
+                                .font(.system(size: resultTextBaseSize * textScale))
+                                .foregroundStyle(.secondary)
                         } else {
                             MarkdownView(text: answer, fontSize: resultTextBaseSize * textScale)
                         }
@@ -82,6 +88,7 @@ private struct AskAIView: View {
         guard !q.isEmpty else { return }
         task?.cancel()
         answer = ""
+        status = ""
         isStreaming = true
         task = Task {
             // Safeguard: the on-device model botches free-form Markdown tables. If the user asks
@@ -99,8 +106,28 @@ private struct AskAIView: View {
                 }
             }
 
+            // Pick context: real on-screen text, or — when there's little/no text — a local vision
+            // description of the image so the answer is grounded in what's actually selected.
+            var context = ocrText
+            let letters = (ocrText ?? "").filter(\.isLetter).count
+            if letters < 15 {
+                let vision = OllamaVisionProvider(model: await intelligence.resolvedVisionModel())
+                if await vision.isAvailable() {
+                    status = "Looking at the image…"
+                    let described = try? await vision.describe(
+                        image, prompt: "Describe this image in detail to help answer: \(q)")
+                    status = ""
+                    if let described, !described.isEmpty { context = described }
+                } else if (ocrText ?? "").isEmpty {
+                    answer = "There's no readable text here and no vision model is available. "
+                        + "Pull one (e.g. `ollama pull qwen3-vl:2b`) to ask about images."
+                    isStreaming = false
+                    return
+                }
+            }
+
             do {
-                for try await delta in intelligence.respond(prompt: q, context: ocrText) {
+                for try await delta in intelligence.respond(prompt: q, context: context) {
                     if Task.isCancelled { break }
                     answer += delta
                 }

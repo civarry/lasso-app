@@ -88,7 +88,7 @@ struct InlineTranslationView: View {
         }
         .onChange(of: target) { _, _ in rebuildConfig() }
         .onChange(of: sourceOverride) { _, _ in rebuildConfig() }
-        .translationTask(config) { @Sendable session in
+        .translationTask(config) { @Sendable [targetBase = LanguageDetect.baseCode(target.languageCode?.identifier ?? ""), sourceBase = LanguageDetect.baseCode(activeSource?.languageCode?.identifier ?? "")] session in
             // Group identical source strings so each unique string is translated once, and skip
             // lines with no letters (pure numbers/symbols/emoji) — they need no translation.
             var groups: [String: [UUID]] = [:]
@@ -98,7 +98,10 @@ struct InlineTranslationView: View {
             var idsForRequest: [String: [UUID]] = [:]
             var passthrough: [UUID: String] = [:]
             for (text, ids) in groups {
-                if text.contains(where: \.isLetter) {
+                // Translate only lines whose script matches the source — so mixed selections keep
+                // their target-language lines (e.g. a Latin "Love" inside Chinese) as-is instead of
+                // garbling them by translating from the foreign source.
+                if LanguageDetect.shouldTranslate(text, sourceBase: sourceBase, targetBase: targetBase) {
                     let cid = UUID().uuidString
                     idsForRequest[cid] = ids
                     requests.append(.init(sourceText: text, clientIdentifier: cid))
@@ -293,14 +296,13 @@ struct InlineTranslationView: View {
         config = TranslationSession.Configuration(source: activeSource, target: target)
     }
 
-    /// Detect the dominant language across all OCR lines (robust for short per-line text).
+    /// Detect the dominant **non-target** language across all OCR lines (script-first, robust on
+    /// short/mixed text), so mixed selections translate from the foreign language, not the target.
     private func detectSourceLanguage() -> Locale.Language? {
         let text = lines.map(\.string).joined(separator: " ")
         guard !text.isEmpty else { return nil }
-        let recognizer = NLLanguageRecognizer()
-        recognizer.processString(text)
-        guard let language = recognizer.dominantLanguage else { return nil }
-        return Locale.Language(identifier: language.rawValue)
+        let targetBase = LanguageDetect.baseCode(target.languageCode?.identifier ?? "")
+        return LanguageDetect.dominantNonTargetLanguage(in: text, targetBase: targetBase)
     }
 
     /// Map a Vision normalized box (origin bottom-left, within the crop) to view points.

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Talks to a local Ollama server (default `http://localhost:11434`) for the "bigger model"
-/// path — e.g. `gpt-oss:20b`. Runs on this machine; no data leaves the Mac, but it is a separate
+/// path — e.g. `qwen3:4b`. Runs on this machine; no data leaves the Mac, but it is a separate
 /// process from the app (hence `isAppleOnDevice == false`).
 struct OllamaProvider: IntelligenceProvider {
     let model: String
@@ -10,7 +10,7 @@ struct OllamaProvider: IntelligenceProvider {
     var name: String { "Ollama · \(model)" }
     let isAppleOnDevice = false
 
-    init(model: String = "gpt-oss:20b",
+    init(model: String = "qwen3:4b",
          baseURL: URL = URL(string: "http://localhost:11434")!) {
         self.model = model
         self.baseURL = baseURL

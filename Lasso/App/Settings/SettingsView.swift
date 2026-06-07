@@ -78,7 +78,7 @@ struct SettingsView: View {
                 Text("Text & reasoning")
             } footer: {
                 Text(noModels
-                     ? "No Ollama models detected. Install Ollama from ollama.com and pull one, e.g. `ollama pull gpt-oss:20b`, then reopen Settings."
+                     ? "No Ollama models detected. Install Ollama from ollama.com and pull one, e.g. `ollama pull qwen3:4b`, then reopen Settings."
                      : intelligence.preferred == .ollama
                      ? "Used for summaries/answers. Runs locally via Ollama — nothing leaves this Mac."
                      : "Apple Intelligence runs fully on-device; falls back to your local Ollama model if unavailable. Nothing leaves this Mac.")
@@ -114,6 +114,7 @@ struct SettingsView: View {
             LabeledContent(label) { Text("No models found").foregroundStyle(.secondary) }
         } else {
             Picker(label, selection: selection) {
+                Text("Auto (best installed)").tag("")
                 let current = selection.wrappedValue
                 if !current.isEmpty, !availableModels.contains(current) {
                     Text("\(current) (not installed)").tag(current)

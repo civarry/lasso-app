@@ -40,12 +40,13 @@ final class IntelligenceCoordinator {
         didSet { UserDefaults.standard.set(preferred.rawValue, forKey: Self.defaultsKey) }
     }
 
-    /// Name of the Ollama model to use.
+    /// Ollama text model. Empty string means "Auto" — resolve to the best installed model at use
+    /// time, so we never depend on a specific model being pulled.
     var ollamaModel: String {
         didSet { UserDefaults.standard.set(ollamaModel, forKey: Self.modelKey) }
     }
 
-    /// Name of the Ollama vision model used by Identify (must be pulled separately).
+    /// Ollama vision model for Identify. Empty string means "Auto" (best installed vision model).
     var visionModel: String {
         didSet { UserDefaults.standard.set(visionModel, forKey: Self.visionModelKey) }
     }
@@ -60,7 +61,6 @@ final class IntelligenceCoordinator {
     private(set) var lastProviderIsAppleOnDevice = true
 
     private let onDevice = OnDeviceProvider()
-    private var ollama: OllamaProvider { OllamaProvider(model: ollamaModel) }
 
     static let defaultsKey = "intelligence.provider"
     static let modelKey = "intelligence.ollamaModel"
@@ -69,8 +69,29 @@ final class IntelligenceCoordinator {
     init() {
         let raw = UserDefaults.standard.string(forKey: Self.defaultsKey)
         self.preferred = raw.flatMap(ProviderKind.init(rawValue:)) ?? .onDevice
-        self.ollamaModel = UserDefaults.standard.string(forKey: Self.modelKey) ?? "gpt-oss:20b"
-        self.visionModel = UserDefaults.standard.string(forKey: Self.visionModelKey) ?? "qwen3-vl:2b"
+        // Default to "Auto" (empty) — resolved to an installed model at use time, never hardcoded.
+        self.ollamaModel = UserDefaults.standard.string(forKey: Self.modelKey) ?? ""
+        self.visionModel = UserDefaults.standard.string(forKey: Self.visionModelKey) ?? ""
+    }
+
+    /// Resolve the text model to use: the user's choice if installed, else the best installed chat
+    /// model (Auto). Returns "" only when no suitable model is installed.
+    func resolvedTextModel() async -> String {
+        let installed = await OllamaModels.installed()
+        if !ollamaModel.isEmpty, installed.contains(ollamaModel) { return ollamaModel }
+        return OllamaModels.bestTextModel(installed) ?? ollamaModel
+    }
+
+    /// Resolve the vision model (user's choice if installed, else best installed vision model).
+    func resolvedVisionModel() async -> String {
+        let installed = await OllamaModels.installed()
+        if !visionModel.isEmpty, installed.contains(visionModel) { return visionModel }
+        return OllamaModels.bestVisionModel(installed) ?? visionModel
+    }
+
+    /// Resolve the embedding model used for relevance ranking (best installed; nil → "" disables it).
+    func resolvedEmbeddingModel() async -> String {
+        OllamaModels.bestEmbeddingModel(await OllamaModels.installed()) ?? ""
     }
 
     var privacyNote: String {
@@ -79,8 +100,10 @@ final class IntelligenceCoordinator {
             : "All processing stayed on this Mac."
     }
 
-    /// Resolve the active provider, falling back to whichever is available.
+    /// Resolve the active provider, falling back to whichever is available. The Ollama provider is
+    /// built from the resolved (installed) model so we never call a model that isn't pulled.
     func activeProvider() async -> IntelligenceProvider {
+        let ollama = OllamaProvider(model: await resolvedTextModel())
         let primary: IntelligenceProvider = preferred == .onDevice ? onDevice : ollama
         if await primary.checkAvailability() { return primary }
         let fallback: IntelligenceProvider = preferred == .onDevice ? ollama : onDevice

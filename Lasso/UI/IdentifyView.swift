@@ -217,7 +217,9 @@ struct IdentifyView: View {
             : (!visionText.isEmpty ? visionText : (ocrText ?? ""))
         guard !reference.isEmpty else { webHits = Array(combined.prefix(6)); return }
 
-        let embedder = OllamaEmbeddings()
+        let embedModel = await intelligence.resolvedEmbeddingModel()
+        guard !embedModel.isEmpty else { webHits = Array(combined.prefix(6)); return }
+        let embedder = OllamaEmbeddings(model: embedModel)
         let texts = [reference] + combined.map(\.title)
         guard let vectors = await embedder.embed(texts), vectors.count == texts.count else {
             webHits = Array(combined.prefix(6)); return
@@ -238,7 +240,7 @@ struct IdentifyView: View {
             vision = .skipped
             return
         }
-        let provider = OllamaVisionProvider(model: intelligence.visionModel)
+        let provider = OllamaVisionProvider(model: await intelligence.resolvedVisionModel())
         guard await provider.isAvailable() else { vision = .skipped; return }
         do {
             let raw = try await provider.describe(image, prompt: Self.visionPrompt)
@@ -284,7 +286,7 @@ struct IdentifyView: View {
             || !webHits.isEmpty || hasStrongText
         guard hasAny else {
             synthError = "Not enough to go on. Pull a vision model "
-                + "(`ollama pull \(intelligence.visionModel)`) or enable Web lookup in Settings."
+                + "(e.g. `ollama pull qwen3-vl:2b`) or enable Web lookup in Settings."
             return
         }
 

@@ -19,6 +19,7 @@ struct TranslationPrewarmer: View {
     @State private var config: TranslationSession.Configuration?
     @State private var mode: Mode = .prewarm
     @State private var target = Locale.Language(identifier: "en")
+    @State private var sourceLang: Locale.Language?
 
     var body: some View {
         Color.clear
@@ -26,12 +27,14 @@ struct TranslationPrewarmer: View {
             .allowsHitTesting(false)
             .task { await prepare() }
             .translationTask(config) { @Sendable session in
-                let (currentMode, currentTarget) = await MainActor.run { (mode, target) }
+                let (currentMode, currentTarget, currentSource) =
+                    await MainActor.run { (mode, target, sourceLang) }
                 switch currentMode {
                 case .prewarm:
                     try? await session.prepareTranslation()
                 case .translate:
-                    await speculativelyTranslate(with: session, target: currentTarget)
+                    await speculativelyTranslate(with: session, target: currentTarget,
+                                                 source: currentSource)
                 }
             }
     }
@@ -40,22 +43,20 @@ struct TranslationPrewarmer: View {
         let text = lines.map(\.string).joined(separator: " ")
         guard !text.isEmpty else { return }
 
-        let recognizer = NLLanguageRecognizer()
-        recognizer.processString(text)
-        guard let dominant = recognizer.dominantLanguage else { return }
-
-        let source = Locale.Language(identifier: dominant.rawValue)
         let systemTarget = Locale.Language(
             identifier: Locale.current.language.languageCode?.identifier ?? "en")
+        let targetBase = LanguageDetect.baseCode(systemTarget.languageCode?.identifier ?? "en")
 
-        // Nothing to do if the text is already in the target language.
-        if source.languageCode == systemTarget.languageCode { return }
+        // Dominant non-target language (script-first; nil when nothing foreign to translate).
+        guard let source = LanguageDetect.dominantNonTargetLanguage(in: text, targetBase: targetBase)
+        else { return }
 
         // Only act when the pair is installed — never prompt a download speculatively.
         let status = await LanguageAvailability().status(from: source, to: systemTarget)
         guard status == .installed else { return }
 
         target = systemTarget
+        sourceLang = source
 
         // Decide between full speculative translation and just warming the model.
         let enabled = UserDefaults.standard.bool(forKey: "translation.pretranslate")
@@ -67,12 +68,22 @@ struct TranslationPrewarmer: View {
     }
 
     nonisolated private func speculativelyTranslate(with session: TranslationSession,
-                                                    target: Locale.Language) async {
-        let requests = lines.map {
-            TranslationSession.Request(sourceText: $0.string, clientIdentifier: $0.id.uuidString)
+                                                    target: Locale.Language,
+                                                    source: Locale.Language?) async {
+        // Keep lines whose script doesn't match the source (and letterless lines) as-is; only
+        // translate the rest — so the cache matches the overlay's per-line behaviour.
+        let targetBase = LanguageDetect.baseCode(target.languageCode?.identifier ?? "")
+        let sourceBase = LanguageDetect.baseCode(source?.languageCode?.identifier ?? "")
+        var mapped: [UUID: String] = [:]
+        var requests: [TranslationSession.Request] = []
+        for line in lines {
+            if LanguageDetect.shouldTranslate(line.string, sourceBase: sourceBase, targetBase: targetBase) {
+                requests.append(.init(sourceText: line.string, clientIdentifier: line.id.uuidString))
+            } else {
+                mapped[line.id] = line.string
+            }
         }
         let started = Date()
-        var mapped: [UUID: String] = [:]
         do {
             for try await response in session.translate(batch: requests) {
                 if Task.isCancelled { return }   // user opened the overlay or re-selected
