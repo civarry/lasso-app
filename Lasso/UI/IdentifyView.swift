@@ -240,8 +240,7 @@ struct IdentifyView: View {
             vision = .skipped
             return
         }
-        let provider = OllamaVisionProvider(model: await intelligence.resolvedVisionModel())
-        guard await provider.isAvailable() else { vision = .skipped; return }
+        guard let provider = await intelligence.activeVisionProvider() else { vision = .skipped; return }
         do {
             let raw = try await provider.describe(image, prompt: Self.visionPrompt)
             let (description, query) = Self.splitVision(raw)

@@ -9,6 +9,7 @@ struct OllamaProvider: IntelligenceProvider {
 
     var name: String { "Ollama · \(model)" }
     let isAppleOnDevice = false
+    let isLocal = true
 
     init(model: String = "qwen3:4b",
          baseURL: URL = URL(string: "http://localhost:11434")!) {

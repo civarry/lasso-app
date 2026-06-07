@@ -32,9 +32,8 @@ struct FloatingResultView: View {
 
             if case .stream = result, !IntelligenceCoordinator.shared.lastProviderName.isEmpty {
                 Divider()
-                Label(IntelligenceCoordinator.shared.lastProviderName,
-                      systemImage: IntelligenceCoordinator.shared.lastProviderIsAppleOnDevice
-                        ? "cpu" : "server.rack")
+                Label("\(IntelligenceCoordinator.shared.lastProviderName) · \(IntelligenceCoordinator.shared.lastProviderLocationNote)",
+                      systemImage: IntelligenceCoordinator.shared.lastProviderIcon)
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }

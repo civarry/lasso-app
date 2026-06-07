@@ -4,7 +4,7 @@ import AppKit
 
 /// Sends an image to a local Ollama vision model (e.g. qwen3-vl:2b) for "what is this" / describe.
 /// Local + free; the image stays on the Mac. Used by the Identify pipeline.
-struct OllamaVisionProvider {
+struct OllamaVisionProvider: VisionProvider {
     let model: String
     let baseURL: URL
 
@@ -26,7 +26,7 @@ struct OllamaVisionProvider {
 
     /// Describe / identify the image. Non-streaming (we want the full description before synthesis).
     func describe(_ image: CGImage, prompt: String) async throws -> String {
-        guard let base64 = Self.jpegBase64(image) else {
+        guard let base64 = ImageEncoder.jpegBase64(image) else {
             throw IntelligenceError.server("Couldn't encode the image.")
         }
         var request = URLRequest(url: baseURL.appendingPathComponent("api/chat"))
@@ -49,12 +49,6 @@ struct OllamaVisionProvider {
         return decoded.message?.content?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
-    private static func jpegBase64(_ image: CGImage, maxEdge: Int = 1024, quality: CGFloat = 0.82) -> String? {
-        let scaled = image.downscaled(maxEdge: maxEdge)
-        let rep = NSBitmapImageRep(cgImage: scaled)
-        return rep.representation(using: .jpeg, properties: [.compressionFactor: quality])?
-            .base64EncodedString()
-    }
 }
 
 private struct ChatRequest: Encodable {

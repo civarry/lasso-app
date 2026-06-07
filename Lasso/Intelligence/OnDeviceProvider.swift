@@ -6,6 +6,7 @@ import FoundationModels
 struct OnDeviceProvider: IntelligenceProvider {
     let name = "Apple Intelligence (on-device)"
     let isAppleOnDevice = true
+    let isLocal = true
 
     private static let instructions = """
     You transform and reason over text the user selected on their screen. \

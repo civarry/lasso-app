@@ -61,14 +61,14 @@ struct WebSourcesProvider {
         return result
     }
 
-    private func hasKey(_ key: String) -> Bool {
-        !(UserDefaults.standard.string(forKey: key) ?? "").isEmpty
+    private func hasKey(_ account: String) -> Bool {
+        !(Keychain.getMigrating(account, legacyDefaultsKey: account) ?? "").isEmpty
     }
 
     // MARK: SerpApi (free 250/mo, needs an API key — real Google results)
 
     private func serpAPI(_ query: String) async -> [Hit] {
-        let key = UserDefaults.standard.string(forKey: "serpapi.apiKey") ?? ""
+        let key = Keychain.getMigrating("serpapi.apiKey", legacyDefaultsKey: "serpapi.apiKey") ?? ""
         guard !key.isEmpty,
               let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
               let k = key.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
@@ -134,7 +134,7 @@ struct WebSourcesProvider {
     // MARK: Tavily (free 1,000/mo, needs an API key — stable real web search)
 
     private func tavily(_ query: String) async -> [Hit] {
-        let key = UserDefaults.standard.string(forKey: "tavily.apiKey") ?? ""
+        let key = Keychain.getMigrating("tavily.apiKey", legacyDefaultsKey: "tavily.apiKey") ?? ""
         guard !key.isEmpty, let url = URL(string: "https://api.tavily.com/search") else { return [] }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

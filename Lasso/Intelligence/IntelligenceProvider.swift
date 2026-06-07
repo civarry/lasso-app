@@ -7,8 +7,11 @@ import SwiftUI
 protocol IntelligenceProvider: Sendable {
     var name: String { get }
     /// True for Apple's on-device Foundation Models. Ollama is `false` (separate process) but is
-    /// still fully local — see `IntelligenceCoordinator.privacyNote`.
+    /// still fully local — see `isLocal`.
     var isAppleOnDevice: Bool { get }
+    /// True when nothing leaves the Mac (Apple, Ollama, a localhost server). Cloud providers are
+    /// `false` — drives the privacy badge.
+    var isLocal: Bool { get }
     /// Whether the provider can serve a request right now.
     func checkAvailability() async -> Bool
     /// Stream a response as **incremental deltas** (append to accumulate).
@@ -19,14 +22,22 @@ protocol IntelligenceProvider: Sendable {
 enum ProviderKind: String, CaseIterable, Identifiable, Sendable {
     case onDevice
     case ollama
+    case openAICompatible
+    case anthropic
 
     var id: String { rawValue }
     var label: String {
         switch self {
-        case .onDevice: "Apple Intelligence (on-device)"
-        case .ollama: "Ollama (local server)"
+        case .onDevice: "Apple Intelligence"
+        case .ollama: "Ollama (local)"
+        case .openAICompatible: "OpenAI-compatible"
+        case .anthropic: "Anthropic"
         }
     }
+
+    /// True for backends that keep everything on the Mac (a localhost OpenAI-compatible URL is
+    /// still cloud-kind here; the provider itself reports the precise `isLocal`).
+    var isLocalKind: Bool { self == .onDevice || self == .ollama }
 }
 
 /// Chooses and drives the active provider. The single entry point actions use for AI.
@@ -51,14 +62,28 @@ final class IntelligenceCoordinator {
         didSet { UserDefaults.standard.set(visionModel, forKey: Self.visionModelKey) }
     }
 
-    /// True once any cloud/off-machine call is ever made this session. Lasso never does today, so
-    /// this stays false — surfaced by the privacy badge.
+    /// Cloud / custom provider config (non-secret; API keys live in the Keychain).
+    var openAIBaseURL: String {
+        didSet { UserDefaults.standard.set(openAIBaseURL, forKey: "intelligence.openai.baseURL") }
+    }
+    var openAIModel: String {
+        didSet { UserDefaults.standard.set(openAIModel, forKey: "intelligence.openai.model") }
+    }
+    var anthropicBaseURL: String {
+        didSet { UserDefaults.standard.set(anthropicBaseURL, forKey: "intelligence.anthropic.baseURL") }
+    }
+    var anthropicModel: String {
+        didSet { UserDefaults.standard.set(anthropicModel, forKey: "intelligence.anthropic.model") }
+    }
+
+    /// True once any cloud/off-machine call is made this session — surfaced by the privacy badge.
     private(set) var usedOffDeviceThisSession = false
 
     /// Name of the provider that served the most recent request (reflects fallback). Shown as
     /// attribution under AI results.
     private(set) var lastProviderName = ""
     private(set) var lastProviderIsAppleOnDevice = true
+    private(set) var lastProviderIsLocal = true
 
     private let onDevice = OnDeviceProvider()
 
@@ -67,11 +92,26 @@ final class IntelligenceCoordinator {
     static let visionModelKey = "intelligence.visionModel"
 
     init() {
-        let raw = UserDefaults.standard.string(forKey: Self.defaultsKey)
+        let defaults = UserDefaults.standard
+        let raw = defaults.string(forKey: Self.defaultsKey)
         self.preferred = raw.flatMap(ProviderKind.init(rawValue:)) ?? .onDevice
         // Default to "Auto" (empty) — resolved to an installed model at use time, never hardcoded.
-        self.ollamaModel = UserDefaults.standard.string(forKey: Self.modelKey) ?? ""
-        self.visionModel = UserDefaults.standard.string(forKey: Self.visionModelKey) ?? ""
+        self.ollamaModel = defaults.string(forKey: Self.modelKey) ?? ""
+        self.visionModel = defaults.string(forKey: Self.visionModelKey) ?? ""
+        self.openAIBaseURL = defaults.string(forKey: "intelligence.openai.baseURL") ?? "https://api.openai.com/v1"
+        self.openAIModel = defaults.string(forKey: "intelligence.openai.model") ?? "gpt-4o-mini"
+        self.anthropicBaseURL = defaults.string(forKey: "intelligence.anthropic.baseURL") ?? "https://api.anthropic.com"
+        self.anthropicModel = defaults.string(forKey: "intelligence.anthropic.model") ?? "claude-3-5-haiku-latest"
+    }
+
+    /// Display name for the OpenAI-compatible provider, inferred from its base URL.
+    func openAIDisplayName() -> String {
+        let host = (URL(string: openAIBaseURL)?.host ?? "").lowercased()
+        if host.contains("groq") { return "Groq" }
+        if host.contains("openrouter") { return "OpenRouter" }
+        if host.contains("openai") { return "OpenAI" }
+        if host == "localhost" || host == "127.0.0.1" { return "Local" }
+        return "Custom"
     }
 
     /// Resolve the text model to use: the user's choice if installed, else the best installed chat
@@ -100,18 +140,69 @@ final class IntelligenceCoordinator {
             : "All processing stayed on this Mac."
     }
 
-    /// Resolve the active provider, falling back to whichever is available. The Ollama provider is
-    /// built from the resolved (installed) model so we never call a model that isn't pulled.
+    /// SF Symbol + short location note for the last provider, for result attribution.
+    var lastProviderIcon: String {
+        lastProviderIsAppleOnDevice ? "cpu" : (lastProviderIsLocal ? "server.rack" : "cloud")
+    }
+    var lastProviderLocationNote: String {
+        lastProviderIsLocal ? "on this Mac" : "cloud · leaves your Mac"
+    }
+
+    /// Build the provider for the current preference (cloud reads its key from the Keychain; Ollama
+    /// uses the resolved installed model).
+    private func buildProvider() async -> IntelligenceProvider {
+        switch preferred {
+        case .onDevice:
+            return onDevice
+        case .ollama:
+            return OllamaProvider(model: await resolvedTextModel())
+        case .openAICompatible:
+            let url = URL(string: openAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
+            return OpenAICompatibleProvider(
+                baseURL: url,
+                apiKey: Keychain.getMigrating("openai.apiKey", legacyDefaultsKey: "openai.apiKey") ?? "",
+                model: openAIModel, displayName: openAIDisplayName())
+        case .anthropic:
+            let url = URL(string: anthropicBaseURL) ?? URL(string: "https://api.anthropic.com")!
+            return AnthropicProvider(
+                baseURL: url,
+                apiKey: Keychain.getMigrating("anthropic.apiKey", legacyDefaultsKey: "anthropic.apiKey") ?? "",
+                model: anthropicModel)
+        }
+    }
+
+    /// Resolve the active provider, falling back to on-device when the chosen one is unavailable.
     func activeProvider() async -> IntelligenceProvider {
-        let ollama = OllamaProvider(model: await resolvedTextModel())
-        let primary: IntelligenceProvider = preferred == .onDevice ? onDevice : ollama
+        let primary = await buildProvider()
         if await primary.checkAvailability() { return primary }
-        let fallback: IntelligenceProvider = preferred == .onDevice ? ollama : onDevice
-        if await fallback.checkAvailability() {
-            Log.intelligence.notice("Primary provider unavailable; falling back to \(fallback.name)")
-            return fallback
+        if await onDevice.checkAvailability() {
+            Log.intelligence.notice("Primary provider unavailable; falling back to on-device")
+            return onDevice
         }
         return primary // let the call surface a clear error
+    }
+
+    /// Resolve the active vision backend: the selected cloud provider's multimodal model when chosen,
+    /// otherwise local Ollama vision (also the fallback for Apple, which is text-only). Returns nil
+    /// when no vision backend is available.
+    func activeVisionProvider() async -> VisionProvider? {
+        let cloud: VisionProvider?
+        switch preferred {
+        case .openAICompatible:
+            let url = URL(string: openAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
+            cloud = OpenAICompatibleVisionProvider(
+                baseURL: url, apiKey: Keychain.get("openai.apiKey") ?? "", model: openAIModel)
+        case .anthropic:
+            let url = URL(string: anthropicBaseURL) ?? URL(string: "https://api.anthropic.com")!
+            cloud = AnthropicVisionProvider(
+                baseURL: url, apiKey: Keychain.get("anthropic.apiKey") ?? "", model: anthropicModel)
+        case .ollama, .onDevice:
+            cloud = nil
+        }
+        if let cloud, await cloud.isAvailable() { return cloud }
+        let ollamaVision = OllamaVisionProvider(model: await resolvedVisionModel())
+        if await ollamaVision.isAvailable() { return ollamaVision }
+        return nil
     }
 
     /// Heuristic: does the prompt ask for tabular/structured output? Kept conservative.
@@ -126,6 +217,7 @@ final class IntelligenceCoordinator {
     func onDeviceTableMarkdown(prompt: String, context: String?) async throws -> String {
         lastProviderName = onDevice.name
         lastProviderIsAppleOnDevice = true
+        lastProviderIsLocal = true
         return try await onDevice.generateTableMarkdown(instruction: prompt, context: context)
     }
 
@@ -137,6 +229,8 @@ final class IntelligenceCoordinator {
                 let provider = await self.activeProvider()
                 self.lastProviderName = provider.name
                 self.lastProviderIsAppleOnDevice = provider.isAppleOnDevice
+                self.lastProviderIsLocal = provider.isLocal
+                if !provider.isLocal { self.usedOffDeviceThisSession = true }
                 do {
                     for try await delta in provider.respond(prompt: prompt, context: context) {
                         continuation.yield(delta)

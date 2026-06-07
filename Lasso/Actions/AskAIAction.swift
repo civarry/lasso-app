@@ -68,8 +68,8 @@ private struct AskAIView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             } else {
-                Label("\(intelligence.lastProviderName) · on this Mac",
-                      systemImage: intelligence.lastProviderIsAppleOnDevice ? "cpu" : "server.rack")
+                Label("\(intelligence.lastProviderName) · \(intelligence.lastProviderLocationNote)",
+                      systemImage: intelligence.lastProviderIcon)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -111,8 +111,7 @@ private struct AskAIView: View {
             var context = ocrText
             let letters = (ocrText ?? "").filter(\.isLetter).count
             if letters < 15 {
-                let vision = OllamaVisionProvider(model: await intelligence.resolvedVisionModel())
-                if await vision.isAvailable() {
+                if let vision = await intelligence.activeVisionProvider() {
                     status = "Looking at the image…"
                     let described = try? await vision.describe(
                         image, prompt: "Describe this image in detail to help answer: \(q)")
@@ -120,7 +119,8 @@ private struct AskAIView: View {
                     if let described, !described.isEmpty { context = described }
                 } else if (ocrText ?? "").isEmpty {
                     answer = "There's no readable text here and no vision model is available. "
-                        + "Pull one (e.g. `ollama pull qwen3-vl:2b`) to ask about images."
+                        + "Pick a multimodal cloud model, or pull a local one "
+                        + "(e.g. `ollama pull qwen3-vl:2b`), to ask about images."
                     isStreaming = false
                     return
                 }
