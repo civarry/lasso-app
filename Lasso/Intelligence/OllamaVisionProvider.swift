@@ -33,7 +33,9 @@ struct OllamaVisionProvider {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 120
-        let body = ChatRequest(model: model, stream: false,
+        // keep_alive: 0 → unload the model right after, so it doesn't linger in RAM (memory-friendly
+        // on smaller Macs). Costs a ~2s reload next time.
+        let body = ChatRequest(model: model, stream: false, keep_alive: "0",
                                messages: [.init(role: "user", content: prompt, images: [base64])])
         request.httpBody = try JSONEncoder().encode(body)
 
@@ -59,6 +61,7 @@ private struct ChatRequest: Encodable {
     struct Message: Encodable { let role: String; let content: String; let images: [String] }
     let model: String
     let stream: Bool
+    let keep_alive: String
     let messages: [Message]
 }
 

@@ -18,7 +18,9 @@ struct OllamaEmbeddings {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 15
-        request.httpBody = try? JSONEncoder().encode(EmbedRequest(model: model, input: inputs))
+        // keep_alive: 0 → unload after embedding so the model doesn't linger in RAM.
+        request.httpBody = try? JSONEncoder().encode(
+            EmbedRequest(model: model, input: inputs, keep_alive: "0"))
 
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 200,
@@ -36,5 +38,5 @@ struct OllamaEmbeddings {
     }
 }
 
-private struct EmbedRequest: Encodable { let model: String; let input: [String] }
+private struct EmbedRequest: Encodable { let model: String; let input: [String]; let keep_alive: String }
 private struct EmbedResponse: Decodable { let embeddings: [[Double]] }
