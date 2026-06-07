@@ -3,13 +3,15 @@ import WebKit
 import AppKit
 
 /// One reverse-image match, parsed from TinEye's results JSON.
-struct ImageMatch: Identifiable {
+struct ImageMatch: Identifiable, Codable {
     let id = UUID()
     let domain: String
     var title: String?      // enriched with the page <title> after the fact
     let pageURL: URL?
     let thumbURL: URL?
     let date: String?
+
+    private enum CodingKeys: String, CodingKey { case domain, title, pageURL, thumbURL, date }
 }
 
 struct MatchRow: View {

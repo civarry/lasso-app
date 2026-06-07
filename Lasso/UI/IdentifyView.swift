@@ -31,6 +31,8 @@ struct IdentifyView: View {
     @State private var webHits: [WebSourcesProvider.Hit] = []   // ranked combined (display + synthesis)
 
     @State private var summary = ""
+    @State private var cacheKey = ""
+    @State private var started = false   // gates the hidden workers until the cache is checked
     @State private var synthStarted = false
     @State private var synthesizing = false
     @State private var synthError: String?
@@ -98,7 +100,7 @@ struct IdentifyView: View {
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.10)))
         .shadow(color: .black.opacity(0.4), radius: 20, y: 8)
         .background {
-            if webEnabled {
+            if webEnabled, started {
                 TinEyeWorker(image: image) { found in
                     // Drop stock-photo/marketplace hosts — they carry the image but mislead identity.
                     let filtered = found.filter { !DomainNoise.isNoise($0.domain) }
@@ -114,7 +116,7 @@ struct IdentifyView: View {
             }
         }
         .background {
-            if webEnabled, !query.isEmpty {
+            if webEnabled, started, !query.isEmpty {
                 RedditWorker(query: query) { hits in
                     redditHits = hits
                     reddit = .done
@@ -194,6 +196,12 @@ struct IdentifyView: View {
     // MARK: - Pipeline
 
     private func runPipeline() async {
+        // Hash-cache: an identical crop returns instantly with zero web/model calls.
+        let key = IdentifyCache.hash(image)
+        if let cached = IdentifyCache.get(key) { applyCached(cached); return }
+        cacheKey = key
+        started = true   // now mount the hidden TinEye/Reddit workers
+
         await runVision()
         query = buildQuery()
         guard webEnabled else {
@@ -271,6 +279,17 @@ struct IdentifyView: View {
         if reddit == .running { reddit = .failed; maybeSynthesize() }
     }
 
+    /// Populate the view from a cached result — no model/web calls.
+    private func applyCached(_ entry: IdentifyCache.Entry) {
+        visionText = entry.visionText
+        ddgAbstract = entry.abstract
+        matches = entry.matches
+        webHits = entry.webHits
+        summary = entry.summary
+        vision = .done; tineye = .done; web = .done; reddit = .done
+        synthStarted = true
+    }
+
     private func maybeSynthesize() {
         guard vision.settled, tineye.settled, web.settled, reddit.settled, !synthStarted else { return }
         synthStarted = true
@@ -301,6 +320,12 @@ struct IdentifyView: View {
                 synthError = error.localizedDescription
             }
             synthesizing = false
+            // Cache the finished result so an identical crop is instant next time.
+            if synthError == nil, !summary.isEmpty, !cacheKey.isEmpty, !Task.isCancelled {
+                IdentifyCache.set(cacheKey, IdentifyCache.Entry(
+                    date: Date(), summary: summary, visionText: visionText,
+                    abstract: ddgAbstract, matches: matches, webHits: webHits))
+            }
         }
     }
 
