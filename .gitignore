@@ -19,6 +19,10 @@ Package.resolved
 .DS_Store
 ._*
 
+# Distribution artifacts (DMG goes up as a GitHub Release asset, not committed)
+dist/
+*.dmg
+
 # Misc
 *.log
 /tmp/
