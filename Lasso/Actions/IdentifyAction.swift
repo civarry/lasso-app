@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// "Identify": run a local vision model + (opt-in) TinEye reverse search in parallel, then
-/// synthesize a summary with the user's text provider. Results show in a floating card.
+/// "Identify": run a vision model + (opt-in) web search (Wikipedia / DuckDuckGo / Reddit over
+/// URLSession) in parallel, then synthesize a summary with the user's text provider. Results show
+/// in a floating card.
 struct IdentifyAction: CaptureAction {
     let intelligence: IntelligenceCoordinator
 

@@ -11,11 +11,11 @@ enum IdentifyCache {
         let summary: String
         let visionText: String
         let abstract: String?
-        let matches: [ImageMatch]
         let webHits: [WebSourcesProvider.Hit]
     }
 
-    private static let storeKey = "identify.cache.v1"
+    // v2: dropped the reverse-image `matches` field (TinEye/WebView path removed).
+    private static let storeKey = "identify.cache.v2"
     private static let ttl: TimeInterval = 30 * 24 * 3600
     private static let maxEntries = 40
 

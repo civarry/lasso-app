@@ -2,15 +2,17 @@ import SwiftUI
 import AppKit
 
 /// The Identify pipeline in a floating card. OCR-first: if the selection has strong text we skip
-/// the vision model and use the text; otherwise we run the local vision model. In parallel (when
-/// "Web lookup" is on) we reverse-search TinEye and query DuckDuckGo + Reddit, then fuse everything
-/// and synthesize a summary with the user's chosen provider (Apple on-device or Ollama).
+/// the vision model and use the text. Otherwise we run the vision model, then any enabled Identify
+/// *sources* (a pluggable registry — web search, reverse-image, etc.): visual sources run first and
+/// can refine the search query with a best-guess identity, then textual sources run. Everything is
+/// fused and synthesized with the user's chosen provider. Each source is fault-isolated, so one
+/// being off/misconfigured/broken can never break Identify.
 struct IdentifyView: View {
     let image: CGImage
     let ocrText: String?
     let intelligence: IntelligenceCoordinator
 
-    @AppStorage("imageSearch.enabled") private var webEnabled = false
+    @AppStorage("privacy.localOnly") private var localOnly = false
     @AppStorage("ui.resultTextScale") private var textScale = 1.0
 
     private enum Stage { case running, done, failed, skipped
@@ -20,26 +22,25 @@ struct IdentifyView: View {
     @State private var vision: Stage = .running
     @State private var visionText = ""
     @State private var visionQuery = ""
-    @State private var tineye: Stage = .running
-    @State private var matches: [ImageMatch] = []
-    @State private var web: Stage = .running
-    @State private var reddit: Stage = .running
+    @State private var sources: Stage = .running
     @State private var query = ""
+    @State private var bestGuess: String?
+    @State private var entities: [String] = []
     @State private var ddgAbstract: String?
-    @State private var ddgHits: [WebSourcesProvider.Hit] = []
-    @State private var redditHits: [WebSourcesProvider.Hit] = []
-    @State private var webHits: [WebSourcesProvider.Hit] = []   // ranked combined (display + synthesis)
+    @State private var rawHits: [WebSourcesProvider.Hit] = []    // combined, pre-ranking
+    @State private var webHits: [WebSourcesProvider.Hit] = []    // ranked (display + synthesis)
+    @State private var activeSources: [IdentifySource] = []
+    @State private var sourceError: String?                     // a configured source that failed
 
     @State private var summary = ""
     @State private var cacheKey = ""
-    @State private var started = false   // gates the hidden workers until the cache is checked
     @State private var synthStarted = false
     @State private var synthesizing = false
     @State private var synthError: String?
     @State private var synthTask: Task<Void, Never>?
 
     private var busy: Bool {
-        !(vision.settled && tineye.settled && web.settled && reddit.settled) || synthesizing
+        !(vision.settled && sources.settled) || synthesizing
     }
 
     var body: some View {
@@ -69,28 +70,24 @@ struct IdentifyView: View {
                 .font(.subheadline)
             }
 
-            if !matches.isEmpty || !webHits.isEmpty {
+            if !webHits.isEmpty {
                 Divider().opacity(0.5)
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        if !matches.isEmpty {
-                            sourceSection("Image appears on") {
-                                ForEach(matches.prefix(8)) { matchRow($0) }
-                            }
-                        }
-                        if !webHits.isEmpty {
-                            sourceSection("Related") {
-                                ForEach(webHits.prefix(8)) { webHitRow($0) }
-                            }
-                        }
+                    sourceSection("Related") {
+                        ForEach(webHits.prefix(8)) { webHitRow($0) }
                     }
                 }
                 .frame(maxHeight: 300)
             }
 
-            if webEnabled {
-                Label("Web lookup used (Wikipedia / TinEye / DuckDuckGo / Reddit) — leaves your Mac.",
-                      systemImage: "lock.shield")
+            if let sourceError {
+                Label(sourceError, systemImage: "exclamationmark.triangle")
+                    .font(.caption2).foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if let note = sourceFootnote {
+                Label(note, systemImage: "lock.shield")
                     .font(.caption2).foregroundStyle(.tertiary)
             }
         }
@@ -99,35 +96,7 @@ struct IdentifyView: View {
         .background(RoundedRectangle(cornerRadius: 16).fill(Color(nsColor: .windowBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.10)))
         .shadow(color: .black.opacity(0.4), radius: 20, y: 8)
-        .background {
-            if webEnabled, started {
-                TinEyeWorker(image: image) { found in
-                    // Drop stock-photo/marketplace hosts — they carry the image but mislead identity.
-                    let filtered = found.filter { !DomainNoise.isNoise($0.domain) }
-                    matches = filtered   // show immediately
-                    Task {
-                        let enriched = await Self.enrichTitles(filtered)
-                        matches = enriched
-                        tineye = .done
-                        maybeSynthesize()
-                    }
-                }
-                .frame(width: 1, height: 1).opacity(0).allowsHitTesting(false)
-            }
-        }
-        .background {
-            if webEnabled, started, !query.isEmpty {
-                RedditWorker(query: query) { hits in
-                    redditHits = hits
-                    reddit = .done
-                    maybeSynthesize()
-                }
-                .frame(width: 1, height: 1).opacity(0).allowsHitTesting(false)
-            }
-        }
         .task { await runPipeline() }
-        .task { await tineyeTimeout() }
-        .task { await redditTimeout() }
         .onDisappear { synthTask?.cancel() }
     }
 
@@ -147,15 +116,21 @@ struct IdentifyView: View {
 
     @ViewBuilder
     private var statusLine: some View {
-        if !(vision.settled && tineye.settled && web.settled && reddit.settled) {
+        if !(vision.settled && sources.settled) {
             let parts = [vision == .running ? "Looking at image" : nil,
-                         (tineye == .running || web == .running || reddit == .running)
-                            ? "Searching the web" : nil]
+                         sources == .running ? "Searching the web" : nil]
                 .compactMap { $0 }
             Text(parts.joined(separator: " · ") + "…").font(.caption).foregroundStyle(.secondary)
         } else if synthesizing && summary.isEmpty {
             Text("Summarizing…").font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    /// "Web search / Reverse image used — leaves your Mac" built from whatever sources actually ran.
+    private var sourceFootnote: String? {
+        let offDevice = activeSources.filter { $0.leavesDevice }
+        guard !offDevice.isEmpty else { return nil }
+        return "\(offDevice.map(\.title).joined(separator: " · ")) — leaves your Mac."
     }
 
     private func confidenceChip(_ c: (level: String, color: Color)) -> some View {
@@ -177,13 +152,6 @@ struct IdentifyView: View {
     }
 
     @ViewBuilder
-    private func matchRow(_ m: ImageMatch) -> some View {
-        SourceRow(domain: m.domain, title: m.title ?? m.domain,
-                  subtitle: m.date.map { "\(m.domain) · \($0)" } ?? m.domain,
-                  url: m.pageURL, score: nil)
-    }
-
-    @ViewBuilder
     private func webHitRow(_ h: WebSourcesProvider.Hit) -> some View {
         let host = h.url?.host?.replacingOccurrences(of: "www.", with: "")
         let isReddit = h.source.hasPrefix("r/")
@@ -200,29 +168,54 @@ struct IdentifyView: View {
         let key = IdentifyCache.hash(image)
         if let cached = IdentifyCache.get(key) { applyCached(cached); return }
         cacheKey = key
-        started = true   // now mount the hidden TinEye/Reddit workers
 
         await runVision()
         query = buildQuery()
-        guard webEnabled else {
-            web = .skipped; tineye = .skipped; reddit = .skipped
-            maybeSynthesize(); return
-        }
-        if query.isEmpty {
-            web = .skipped; reddit = .skipped   // nothing to text-search by; TinEye still runs
+
+        activeSources = IdentifySources.active()
+        if activeSources.isEmpty {
+            sources = .skipped
         } else {
-            await runWebSources()
+            await runSources()
         }
         maybeSynthesize()
     }
 
-    /// Rank the combined DuckDuckGo + Reddit hits by semantic similarity to the identity
-    /// (nomic-embed-text), keep the relevant ones — so Related shows the likely article, not noise.
+    /// Run the enabled sources in two phases. Visual sources (reverse-image) run first and can hand
+    /// us a strong best-guess identity, which we use to sharpen the query before the textual sources
+    /// (web search) run. Each `gather` is best-effort and returns empty on failure — never throws —
+    /// so a single source can't break the pipeline.
+    private func runSources() async {
+        var merged = Evidence()
+
+        for source in activeSources where source.kind == .visual {
+            merged.merge(await source.gather(image: image, query: query, ocrText: ocrText))
+        }
+        // A reverse-image best-guess is a far better search term than the vision model's guess.
+        if let guess = merged.bestGuess, !guess.isEmpty { query = guess }
+
+        for source in activeSources where source.kind == .textual {
+            merged.merge(await source.gather(image: image, query: query, ocrText: ocrText))
+        }
+
+        bestGuess = merged.bestGuess
+        entities = merged.entities
+        ddgAbstract = merged.abstract
+        sourceError = merged.error
+        rawHits = merged.hits.filter { hit in
+            guard let host = hit.url?.host else { return true }
+            return !DomainNoise.isNoise(host)
+        }
+        sources = .done
+    }
+
+    /// Rank the combined hits by semantic similarity to the identity (nomic-embed-text), keep the
+    /// relevant ones — so Related shows the likely article, not noise.
     private func rankHits() async {
-        let combined = ddgHits + redditHits
+        let combined = rawHits
         guard !combined.isEmpty else { return }
-        let reference = !visionQuery.isEmpty ? visionQuery
-            : (!visionText.isEmpty ? visionText : (ocrText ?? ""))
+        let reference = bestGuess ?? (!visionQuery.isEmpty ? visionQuery
+            : (!visionText.isEmpty ? visionText : (ocrText ?? "")))
         guard !reference.isEmpty else { webHits = Array(combined.prefix(6)); return }
 
         let embedModel = await intelligence.resolvedEmbeddingModel()
@@ -260,51 +253,31 @@ struct IdentifyView: View {
         }
     }
 
-    private func runWebSources() async {
-        let result = await WebSourcesProvider().lookup(query)
-        ddgAbstract = result.abstract
-        ddgHits = result.hits          // Reddit hits arrive separately via RedditWorker
-        web = .done
-    }
-
-    private func tineyeTimeout() async {
-        guard webEnabled else { return }
-        try? await Task.sleep(for: .seconds(22))
-        if tineye == .running { tineye = .failed; maybeSynthesize() }
-    }
-
-    private func redditTimeout() async {
-        guard webEnabled else { return }
-        try? await Task.sleep(for: .seconds(20))
-        if reddit == .running { reddit = .failed; maybeSynthesize() }
-    }
-
     /// Populate the view from a cached result — no model/web calls.
     private func applyCached(_ entry: IdentifyCache.Entry) {
         visionText = entry.visionText
         ddgAbstract = entry.abstract
-        matches = entry.matches
         webHits = entry.webHits
         summary = entry.summary
-        vision = .done; tineye = .done; web = .done; reddit = .done
+        vision = .done; sources = .done
         synthStarted = true
     }
 
     private func maybeSynthesize() {
-        guard vision.settled, tineye.settled, web.settled, reddit.settled, !synthStarted else { return }
+        guard vision.settled, sources.settled, !synthStarted else { return }
         synthStarted = true
         Task {
-            await rankHits()    // combine + rank DuckDuckGo + Reddit before synthesizing
+            await rankHits()    // combine + rank web/community hits before synthesizing
             startSynthesis()
         }
     }
 
     private func startSynthesis() {
-        let hasAny = !visionText.isEmpty || !matches.isEmpty || ddgAbstract != nil
-            || !webHits.isEmpty || hasStrongText
+        let hasAny = !visionText.isEmpty || ddgAbstract != nil || !webHits.isEmpty
+            || bestGuess != nil || !entities.isEmpty || hasStrongText
         guard hasAny else {
-            synthError = "Not enough to go on. Pull a vision model "
-                + "(e.g. `ollama pull qwen3-vl:2b`) or enable Web lookup in Settings."
+            synthError = "Not enough to go on. Pull a vision model (e.g. `ollama pull qwen3-vl:2b`), "
+                + "or enable a source (Web search / Reverse image) in Settings."
             return
         }
 
@@ -324,7 +297,7 @@ struct IdentifyView: View {
             if synthError == nil, !summary.isEmpty, !cacheKey.isEmpty, !Task.isCancelled {
                 IdentifyCache.set(cacheKey, IdentifyCache.Entry(
                     date: Date(), summary: summary, visionText: visionText,
-                    abstract: ddgAbstract, matches: matches, webHits: webHits))
+                    abstract: ddgAbstract, webHits: webHits))
             }
         }
     }
@@ -353,49 +326,14 @@ struct IdentifyView: View {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Fetch the page <title> of the top matches — that's the real "detective" signal (e.g. the
-    /// article headline featuring the image), far richer than the bare domain.
-    private static func enrichTitles(_ matches: [ImageMatch]) async -> [ImageMatch] {
-        var result = matches
-        await withTaskGroup(of: (Int, String?).self) { group in
-            for (index, match) in matches.enumerated() where index < 4 {
-                guard let url = match.pageURL else { continue }
-                group.addTask { (index, await fetchTitle(url)) }
-            }
-            for await (index, title) in group {
-                if let title, index < result.count { result[index].title = title }
-            }
-        }
-        return result
-    }
-
-    private static func fetchTitle(_ url: URL) async -> String? {
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 4
-        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", forHTTPHeaderField: "User-Agent")
-        guard let (data, _) = try? await URLSession.shared.data(for: request) else { return nil }
-        let head = data.prefix(120_000)
-        let html = String(data: head, encoding: .utf8) ?? String(data: head, encoding: .isoLatin1)
-        guard let html,
-              let open = html.range(of: "<title[^>]*>", options: [.regularExpression, .caseInsensitive]),
-              let close = html.range(of: "</title>", options: .caseInsensitive, range: open.upperBound..<html.endIndex)
-        else { return nil }
-        let title = html[open.upperBound..<close.lowerBound]
-            .replacingOccurrences(of: "&amp;", with: "&")
-            .replacingOccurrences(of: "&#39;", with: "'")
-            .replacingOccurrences(of: "&quot;", with: "\"")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return title.isEmpty ? nil : String(title.prefix(160))
-    }
-
     private func buildQuery() -> String {
         // Prefer the model's keyword line; else condense the description / OCR into a search term.
         if !visionQuery.isEmpty { return visionQuery }
         return Self.condense(!visionText.isEmpty ? visionText : (ocrText ?? ""))
     }
 
-    /// Strip lead-ins ("the image shows…") and stopwords, keep a few significant words — DDG/Reddit
-    /// want a search term, not a sentence.
+    /// Strip lead-ins ("the image shows…") and stopwords, keep a few significant words — the web
+    /// sources want a search term, not a sentence.
     private static func condense(_ text: String) -> String {
         let leadIns = ["the image shows", "this image shows", "the photo shows", "it appears to be",
                        "this is a", "this is an", "this is", "a photo of", "an image of",
@@ -430,30 +368,42 @@ struct IdentifyView: View {
     """
 
     private func synthesisPrompt() -> String {
-        let imageSites = matches.prefix(6)
-            .map { "- \($0.domain)\($0.title.map { " — \($0)" } ?? "")" }
-            .joined(separator: "\n")
         let related = webHits.prefix(6)
             .map { "- [\($0.source)] \($0.title)" }
             .joined(separator: "\n")
+        let entityList = entities.isEmpty ? "(none)" : entities.prefix(6).joined(separator: ", ")
 
         return """
         Help the user identify the MAIN SUBJECT of what they captured (a person, place, object, \
-        product, artwork…). Fuse the evidence below into a short, helpful explanation of what it is \
-        plus useful context. Prefer specifics from the related results / encyclopedia and page \
-        titles over generic guesses. Note: if the image merely appears on stock-photo or e-commerce \
-        sites, that only means it's a widely-used photo — do NOT conclude the subject is "a stock \
-        photo" or "a website"; identify the actual subject. Write 2–4 sentences, then on a new line \
-        write exactly "Confidence: High" (or Medium / Low). If signals conflict or are weak, say so.
+        product, artwork, scene from a film…). Fuse the evidence below into a short, helpful \
+        explanation of what it is, plus useful context.
+
+        Rules:
+        - The "Visual best-guess" and "Recognized entities" come from reverse-image search — when \
+        present they are the STRONGEST signal; trust them over the generic visual description.
+        - If the best-guess and entities are BOTH "(none)", reverse-image found no specific match. \
+        Do NOT describe the generic category (e.g. don't explain what "a human" or "a photograph" \
+        is). Instead say plainly that you couldn't identify the specific subject, briefly note what \
+        you can see, and suggest the user try a clearer or wider capture. Use "Confidence: Low".
+        - Pages that are stock-photo, marketplace, or Pinterest-style results only mean the image \
+        is widely used — do NOT identify the subject as those sites, and do NOT invent a place, \
+        venue, or scene from incidental background details (lighting, walls, towels, etc.).
+        - Confidence discipline: say "Confidence: High" ONLY when a specific named identity is \
+        corroborated by the visual best-guess, a matching page title, or the encyclopedia. If you \
+        are inferring only from the generic visual description, use "Confidence: Low" (Medium at \
+        most), and say plainly that you're unsure.
+
+        Write 2–4 sentences, then on a new line write exactly "Confidence: High" (or Medium / Low).
+
+        Visual best-guess: \(bestGuess?.isEmpty == false ? bestGuess! : "(none)")
+
+        Recognized entities: \(entityList)
 
         On-screen text: \(ocrText?.isEmpty == false ? ocrText! : "(none)")
 
         Visual analysis: \(visionText.isEmpty ? "(no vision model used)" : visionText)
 
         Encyclopedia: \(ddgAbstract ?? "(none)")
-
-        Image appears on these sites:
-        \(imageSites.isEmpty ? "(none)" : imageSites)
 
         Related web/community results:
         \(related.isEmpty ? "(none)" : related)
@@ -472,7 +422,13 @@ private struct SourceRow: View {
     @State private var hovering = false
 
     var body: some View {
-        Button { if let url { NSWorkspace.shared.open(url) } } label: {
+        // Open on the next runloop tick: doing it synchronously inside the button action — while
+        // this view is hosted in a borderless floating NSPanel — deactivates the app and can
+        // re-enter the SwiftUI update mid-click (a stack-overflow crash). Deferring breaks that.
+        Button {
+            guard let url else { return }
+            DispatchQueue.main.async { NSWorkspace.shared.open(url) }
+        } label: {
             HStack(spacing: 10) {
                 Favicon(domain: domain)
                 VStack(alignment: .leading, spacing: 2) {
@@ -504,13 +460,14 @@ private struct SourceRow: View {
     }
 }
 
-/// Domain favicon via DuckDuckGo's icon service (privacy-friendly), with a globe fallback.
+/// Domain favicon via DuckDuckGo's icon service (privacy-friendly), with a globe fallback. In
+/// local-only mode we never reach out for the icon — the globe placeholder stands in.
 private struct Favicon: View {
     let domain: String
 
     var body: some View {
         Group {
-            if domain.isEmpty {
+            if domain.isEmpty || PrivacyMode.localOnly {
                 placeholder
             } else {
                 AsyncImage(url: URL(string: "https://icons.duckduckgo.com/ip3/\(domain).ico")) { phase in

@@ -9,6 +9,7 @@ enum DomainNoise {
         "shutterstock.", "gettyimages.", "istockphoto.", "alamy.", "dreamstime.",
         "depositphotos.", "123rf.", "stock.adobe.", "freepik.", "vecteezy.",
         "pexels.", "unsplash.", "pixabay.", "canstockphoto.", "bigstockphoto.",
+        "magnific.", "stockcake.", "rawpixel.", "dreamstime.", "wallhaven.",
         // marketplaces
         "amazon.", "etsy.", "aliexpress.", "ebay.", "walmart.", "temu.", "alibaba.",
         "redbubble.", "lazada.", "shopee.",

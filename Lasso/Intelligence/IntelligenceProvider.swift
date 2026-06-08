@@ -122,10 +122,19 @@ final class IntelligenceCoordinator {
         return OllamaModels.bestTextModel(installed) ?? ollamaModel
     }
 
-    /// Resolve the vision model (user's choice if installed, else best installed vision model).
+    /// Resolve the vision model for local Ollama. Priority:
+    ///   1. The explicit "Image model" override, if the user picked one and it's installed.
+    ///   2. The main text model when it's already multimodal — a vision-capable model serves both,
+    ///      so no separate model is needed (the unification the user asked for).
+    ///   3. Otherwise the best installed dedicated vision model.
     func resolvedVisionModel() async -> String {
         let installed = await OllamaModels.installed()
         if !visionModel.isEmpty, installed.contains(visionModel) { return visionModel }
+        let mainText = ollamaModel.isEmpty
+            ? (OllamaModels.bestTextModel(installed) ?? "") : ollamaModel
+        if !mainText.isEmpty, installed.contains(mainText), OllamaModels.isVision(mainText) {
+            return mainText
+        }
         return OllamaModels.bestVisionModel(installed) ?? visionModel
     }
 
@@ -182,10 +191,23 @@ final class IntelligenceCoordinator {
         return primary // let the call surface a clear error
     }
 
-    /// Resolve the active vision backend: the selected cloud provider's multimodal model when chosen,
-    /// otherwise local Ollama vision (also the fallback for Apple, which is text-only). Returns nil
-    /// when no vision backend is available.
+    /// Resolve the active vision backend. Priority:
+    ///   1. An explicit local "Image model" override — honored for *any* engine, so a user on a
+    ///      text-only cloud model (e.g. a Groq Llama) can still identify images with a local vision
+    ///      model instead of sending a doomed request to a non-multimodal endpoint.
+    ///   2. The chosen cloud provider's model (assumed multimodal) when no override is set.
+    ///   3. Local Ollama vision (the main model if it's multimodal, else the best installed one) —
+    ///      also the fallback for Apple on-device, which is text-only.
+    /// Returns nil when no vision backend is available.
     func activeVisionProvider() async -> VisionProvider? {
+        // 1. Explicit override wins, regardless of engine.
+        let installed = await OllamaModels.installed()
+        if !visionModel.isEmpty, installed.contains(visionModel) {
+            let override = OllamaVisionProvider(model: visionModel)
+            if await override.isAvailable() { return override }
+        }
+
+        // 2. Cloud model serves vision directly when chosen and no override is set.
         let cloud: VisionProvider?
         switch preferred {
         case .openAICompatible:
@@ -200,6 +222,8 @@ final class IntelligenceCoordinator {
             cloud = nil
         }
         if let cloud, await cloud.isAvailable() { return cloud }
+
+        // 3. Local Ollama vision (main-if-multimodal, else best installed).
         let ollamaVision = OllamaVisionProvider(model: await resolvedVisionModel())
         if await ollamaVision.isAvailable() { return ollamaVision }
         return nil
