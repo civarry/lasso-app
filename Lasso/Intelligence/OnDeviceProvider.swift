@@ -45,11 +45,31 @@ struct OnDeviceProvider: IntelligenceProvider {
                     }
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: error)
+                    continuation.finish(throwing: Self.friendly(error))
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    /// Apple's on-device model has a conservative safety guardrail that sometimes refuses benign
+    /// content (foreign-language memes, etc.) with a terse "unsafe" error. Translate that into a
+    /// clear, actionable message so it doesn't look like a Lasso bug.
+    private static func friendly(_ error: Error) -> Error {
+        let description = error.localizedDescription.lowercased()
+        if description.contains("unsafe") || description.contains("guardrail")
+            || description.contains("safety") {
+            return IntelligenceError.server(
+                "Apple's on-device model declined this content (its built-in safety filter — the "
+                + "content may be fine). Switch the engine to Ollama or a cloud model in Settings → "
+                + "Intelligence for fewer restrictions.")
+        }
+        if description.contains("context") && description.contains("exceed") {
+            return IntelligenceError.server(
+                "The selection is too large for Apple's on-device model. Try a smaller selection, or "
+                + "switch the engine in Settings → Intelligence.")
+        }
+        return error
     }
 
     private static func compose(prompt: String, context: String?) -> String {

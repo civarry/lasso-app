@@ -16,17 +16,16 @@ struct SettingsView: View {
         var anthropicBaseURL = "https://api.anthropic.com"
         var anthropicModel = "claude-3-5-haiku-latest"
         var anthropicKey = ""
-        var tavilyKey = ""
-        var serpKey = ""
-        var webLookup = false
-        var googleVisionEnabled = false
-        var googleVisionKey = ""
+        // Connector enable + key state, keyed by Connector.id — the catalog is the single source of
+        // truth, so adding a connector needs no new Draft fields.
+        var connectorEnabled: [String: Bool] = [:]
+        var connectorKeys: [String: String] = [:]
         var localOnly = false
         var pretranslate = true
         var launchAtLogin = false
     }
 
-    private enum Tab: Hashable { case general, intelligence, about }
+    private enum Tab: Hashable { case general, intelligence, connectors, about }
 
     @State private var tab: Tab = .general
     @State private var draft = Draft()
@@ -42,6 +41,7 @@ struct SettingsView: View {
             TabView(selection: $tab) {
                 general.tabItem { Label("General", systemImage: "gearshape") }.tag(Tab.general)
                 intelligenceTab.tabItem { Label("Intelligence", systemImage: "sparkles") }.tag(Tab.intelligence)
+                connectorsTab.tabItem { Label("Connectors", systemImage: "puzzlepiece.extension") }.tag(Tab.connectors)
                 about.tabItem { Label("About", systemImage: "info.circle") }.tag(Tab.about)
             }
             // The save bar is only meaningful for the editable tabs — About has nothing to apply.
@@ -111,39 +111,67 @@ struct SettingsView: View {
 
             Section("Identify") {
                 imageModelRow
-            }
-
-            Section("Sources") {
-                if draft.localOnly {
-                    caption("All web sources are off in local-only mode — Identify uses only your "
-                            + "model and on-screen text.")
-                }
-
-                // Built-in: web search.
-                Toggle("Web search", isOn: $draft.webLookup).disabled(draft.localOnly)
-                if draft.webLookup, !draft.localOnly {
-                    SecureKeyField("Tavily key (optional)", text: $draft.tavilyKey)
-                    SecureKeyField("SerpApi key (optional)", text: $draft.serpKey)
-                    if !draft.tavilyKey.isEmpty || !draft.serpKey.isEmpty {
-                        caption("This month — Tavily \(SearchQuota.usedMonth("tavily"))/\(SearchQuota.caps["tavily"]?.monthly ?? 0) · SerpApi \(SearchQuota.usedMonth("serpapi"))/\(SearchQuota.caps["serpapi"]?.monthly ?? 0)")
-                    }
-                }
-                caption("Wikipedia / DuckDuckGo / Reddit for context — plain HTTP, no embedded browser. "
-                        + "Optional keys add stronger results.")
-
-                // Bring-your-own-key: reverse-image identification.
-                Toggle("Reverse image (Google Vision)", isOn: $draft.googleVisionEnabled)
-                    .disabled(draft.localOnly)
-                if draft.googleVisionEnabled, !draft.localOnly {
-                    SecureKeyField("Google Cloud API key", text: $draft.googleVisionKey)
-                    caption(draft.googleVisionKey.isEmpty
-                            ? "Create a key in Google Cloud with the Vision API enabled (free tier ~1,000/mo)."
-                            : "Matches the image across the web for a best-guess identity — best for "
-                              + "people, places, film stills, and products.")
-                }
+                caption("Add web search, reverse-image and other tools in the Connectors tab.")
             }
         }
         .formStyle(.grouped)
+    }
+
+    // MARK: - Connectors (the "bring your own tool" store)
+
+    private var connectorsTab: some View {
+        Form {
+            if draft.localOnly {
+                Section {
+                    Label("Connectors are paused in local-only mode. Turn it off in General to use them.",
+                          systemImage: "lock.shield.fill")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Section {
+                connectorList(Connectors.all.filter { $0.usesImage })
+            } header: {
+                Text("Looks at the image")
+            } footer: {
+                caption("Reverse-image search — identifies what's actually in the picture.")
+            }
+
+            Section {
+                connectorList(Connectors.all.filter { !$0.usesImage })
+            } header: {
+                Text("Adds web context (text search)")
+            } footer: {
+                caption("These search the web by text — built from what the vision model reads in the "
+                        + "image. They don't see the picture, so they only help once there's a clear "
+                        + "subject to search for.")
+            }
+
+            Section {
+                caption("Each connector is optional and independent — Lasso works with none connected: "
+                        + "Apple Intelligence, OCR and Translate run on-device. Your AI model is chosen "
+                        + "on the Intelligence tab; your keys are stored in the Keychain.")
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func connectorList(_ connectors: [Connector]) -> some View {
+        ForEach(connectors) { connector in
+            ConnectorCard(connector: connector,
+                          enabled: enabledBinding(connector.id),
+                          key: keyBinding(connector.id),
+                          localOnly: draft.localOnly)
+        }
+    }
+
+    private func enabledBinding(_ id: String) -> Binding<Bool> {
+        Binding(get: { draft.connectorEnabled[id] ?? false },
+                set: { draft.connectorEnabled[id] = $0 })
+    }
+
+    private func keyBinding(_ id: String) -> Binding<String> {
+        Binding(get: { draft.connectorKeys[id] ?? "" },
+                set: { draft.connectorKeys[id] = $0 })
     }
 
     @ViewBuilder
@@ -369,11 +397,10 @@ struct SettingsView: View {
         d.anthropicModel = intelligence.anthropicModel
         d.openAIKey = Keychain.getMigrating("openai.apiKey", legacyDefaultsKey: "openai.apiKey") ?? ""
         d.anthropicKey = Keychain.getMigrating("anthropic.apiKey", legacyDefaultsKey: "anthropic.apiKey") ?? ""
-        d.tavilyKey = Keychain.getMigrating("tavily.apiKey", legacyDefaultsKey: "tavily.apiKey") ?? ""
-        d.serpKey = Keychain.getMigrating("serpapi.apiKey", legacyDefaultsKey: "serpapi.apiKey") ?? ""
-        d.webLookup = UserDefaults.standard.bool(forKey: "imageSearch.enabled")
-        d.googleVisionEnabled = UserDefaults.standard.bool(forKey: "identify.source.googleVision.enabled")
-        d.googleVisionKey = Keychain.getMigrating("googleVision.apiKey", legacyDefaultsKey: "googleVision.apiKey") ?? ""
+        for connector in Connectors.all {
+            d.connectorEnabled[connector.id] = connector.isEnabled
+            if connector.keyAccount != nil { d.connectorKeys[connector.id] = connector.key() }
+        }
         d.localOnly = UserDefaults.standard.bool(forKey: "privacy.localOnly")
         d.pretranslate = UserDefaults.standard.object(forKey: "translation.pretranslate") as? Bool ?? true
         d.launchAtLogin = LoginItem.isEnabled
@@ -391,15 +418,47 @@ struct SettingsView: View {
         intelligence.anthropicModel = draft.anthropicModel
         Keychain.set(draft.openAIKey, for: "openai.apiKey")
         Keychain.set(draft.anthropicKey, for: "anthropic.apiKey")
-        Keychain.set(draft.tavilyKey, for: "tavily.apiKey")
-        Keychain.set(draft.serpKey, for: "serpapi.apiKey")
-        Keychain.set(draft.googleVisionKey, for: "googleVision.apiKey")
-        UserDefaults.standard.set(draft.webLookup, forKey: "imageSearch.enabled")
-        UserDefaults.standard.set(draft.googleVisionEnabled, forKey: "identify.source.googleVision.enabled")
+        for connector in Connectors.all {
+            UserDefaults.standard.set(draft.connectorEnabled[connector.id] ?? connector.defaultEnabled,
+                                      forKey: connector.enabledKey)
+            if let account = connector.keyAccount {
+                Keychain.set(draft.connectorKeys[connector.id] ?? "", for: account)
+            }
+        }
         UserDefaults.standard.set(draft.localOnly, forKey: "privacy.localOnly")
         UserDefaults.standard.set(draft.pretranslate, forKey: "translation.pretranslate")
         if draft.launchAtLogin != saved.launchAtLogin { LoginItem.set(draft.launchAtLogin) }
         saved = draft
+    }
+}
+
+/// The real brand logo for a connector, fetched from the favicon service (credits the service and
+/// looks professional). Falls back to the SF Symbol when offline, in local-only mode, or while
+/// loading.
+private struct BrandIcon: View {
+    let domain: String?
+    let fallbackSymbol: String
+
+    var body: some View {
+        Group {
+            if let domain, !PrivacyMode.localOnly {
+                AsyncImage(url: URL(string: "https://icons.duckduckgo.com/ip3/\(domain).ico")) { phase in
+                    if let image = phase.image {
+                        image.resizable().aspectRatio(contentMode: .fit)
+                    } else {
+                        fallback
+                    }
+                }
+            } else {
+                fallback
+            }
+        }
+        .frame(width: 22, height: 22)
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+    }
+
+    private var fallback: some View {
+        Image(systemName: fallbackSymbol).foregroundStyle(.tint)
     }
 }
 
@@ -431,6 +490,133 @@ private struct SecureKeyField: View {
             .buttonStyle(.plain)
             .help(revealed ? "Hide key" : "Show key")
         }
+    }
+}
+
+/// One connector in the store: an expandable row with a status chip, an enable toggle, an inline
+/// setup guide (numbered steps + "Open" links), a key field, and a Test button. Driven entirely by
+/// the `Connector` descriptor, so the card is generic across every integration.
+private struct ConnectorCard: View {
+    let connector: Connector
+    @Binding var enabled: Bool
+    @Binding var key: String
+    let localOnly: Bool
+
+    @Environment(\.openURL) private var openURL
+    @State private var expanded = false
+    @State private var test: ConnectionTest.Outcome = .idle
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(connector.summary).font(.caption).foregroundStyle(.secondary)
+                guide
+                if connector.requiresKey {
+                    SecureKeyField("\(connector.name) API key", text: $key)
+                }
+                if let usage { Text(usage).font(.caption2).foregroundStyle(.tertiary) }
+                testRow
+            }
+            .padding(.top, 4)
+        } label: {
+            header
+        }
+        .disclosureGroupStyle(.automatic)
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            BrandIcon(domain: connector.iconDomain, fallbackSymbol: connector.icon)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(connector.name)
+                statusChip
+            }
+            Spacer()
+            Toggle("", isOn: $enabled).labelsHidden().disabled(localOnly)
+        }
+    }
+
+    private var statusChip: some View {
+        let (text, color) = status
+        return Text(text).font(.caption2.weight(.medium)).foregroundStyle(color)
+    }
+
+    /// (label, colour) for the chip, reflecting local-only, test result, then config state.
+    private var status: (String, Color) {
+        if localOnly { return ("Paused · local-only", .secondary) }
+        switch test {
+        case .ok: return ("Connected", .green)
+        case .failure: return ("Error", .orange)
+        default: break
+        }
+        if !enabled { return ("Off", .secondary) }
+        if connector.requiresKey, key.isEmpty { return ("Needs key", .orange) }
+        return connector.requiresKey ? ("Ready", .blue) : ("On", .blue)
+    }
+
+    private var guide: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(connector.guide.steps.enumerated()), id: \.element.id) { index, step in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("\(index + 1).").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    Text(step.text).font(.caption).fixedSize(horizontal: false, vertical: true)
+                    if let link = step.link {
+                        Spacer(minLength: 4)
+                        Button(step.linkLabel ?? "Open") { openURL(link) }
+                            .buttonStyle(.link).font(.caption)
+                    }
+                }
+            }
+            if let note = connector.guide.note {
+                Text(note).font(.caption2).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var testRow: some View {
+        HStack(spacing: 8) {
+            Button("Test") { runTest() }
+                .buttonStyle(.bordered)
+                .disabled(test == .testing || (connector.requiresKey && key.isEmpty))
+            Spacer()
+            switch test {
+            case .idle:
+                EmptyView()
+            case .testing:
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Testing…").font(.caption).foregroundStyle(.secondary)
+                }
+            case .ok(let ms):
+                Label("Connected · \(ms) ms", systemImage: "checkmark.circle.fill")
+                    .font(.caption).foregroundStyle(.green)
+            case .failure(let message):
+                Label(message, systemImage: "xmark.circle.fill")
+                    .font(.caption).foregroundStyle(.orange).multilineTextAlignment(.trailing)
+            }
+        }
+    }
+
+    /// Monthly usage line for the budgeted search APIs.
+    private var usage: String? {
+        let source: String
+        switch connector.id {
+        case "tavily": source = "tavily"
+        case "serpApi": source = "serpapi"
+        default: return nil
+        }
+        guard !key.isEmpty else { return nil }
+        let cap = SearchQuota.caps[source]?.monthly ?? 0
+        return "This month — \(SearchQuota.usedMonth(source))/\(cap) used"
+    }
+
+    private func runTest() {
+        test = .testing
+        let connector = connector
+        let key = key
+        Task { test = await connector.test(key) }
     }
 }
 

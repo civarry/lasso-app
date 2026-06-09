@@ -12,7 +12,6 @@ struct IdentifyView: View {
     let ocrText: String?
     let intelligence: IntelligenceCoordinator
 
-    @AppStorage("privacy.localOnly") private var localOnly = false
     @AppStorage("ui.resultTextScale") private var textScale = 1.0
 
     private enum Stage { case running, done, failed, skipped
@@ -30,6 +29,7 @@ struct IdentifyView: View {
     @State private var rawHits: [WebSourcesProvider.Hit] = []    // combined, pre-ranking
     @State private var webHits: [WebSourcesProvider.Hit] = []    // ranked (display + synthesis)
     @State private var activeSources: [IdentifySource] = []
+    @State private var searching = false                        // true only while sources actually run
     @State private var sourceError: String?                     // a configured source that failed
 
     @State private var summary = ""
@@ -118,7 +118,7 @@ struct IdentifyView: View {
     private var statusLine: some View {
         if !(vision.settled && sources.settled) {
             let parts = [vision == .running ? "Looking at image" : nil,
-                         sources == .running ? "Searching the web" : nil]
+                         searching ? "Searching the web" : nil]
                 .compactMap { $0 }
             Text(parts.joined(separator: " · ") + "…").font(.caption).foregroundStyle(.secondary)
         } else if synthesizing && summary.isEmpty {
@@ -163,20 +163,35 @@ struct IdentifyView: View {
 
     // MARK: - Pipeline
 
+    /// Everything that changes what an Identify produces — engine, models, base URLs, and the set of
+    /// active sources. Folded into the cache key so switching any of them invalidates a stale result.
+    private var configSignature: String {
+        [
+            intelligence.preferred.rawValue,
+            intelligence.ollamaModel, intelligence.visionModel,
+            intelligence.openAIBaseURL, intelligence.openAIModel,
+            intelligence.anthropicBaseURL, intelligence.anthropicModel,
+            activeSources.map(\.id).sorted().joined(separator: ","),
+        ].joined(separator: "|")
+    }
+
     private func runPipeline() async {
-        // Hash-cache: an identical crop returns instantly with zero web/model calls.
-        let key = IdentifyCache.hash(image)
+        activeSources = IdentifySources.active()
+        // Hash-cache keyed by the crop *and* the active model/source config, so changing the engine,
+        // model, or connectors produces a fresh result instead of replaying a stale cached one.
+        let key = IdentifyCache.hash(image, signature: configSignature)
         if let cached = IdentifyCache.get(key) { applyCached(cached); return }
         cacheKey = key
 
         await runVision()
         query = buildQuery()
 
-        activeSources = IdentifySources.active()
         if activeSources.isEmpty {
             sources = .skipped
         } else {
-            await runSources()
+            searching = true
+            await runSources()       // sets `sources = .done`
+            searching = false
         }
         maybeSynthesize()
     }

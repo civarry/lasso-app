@@ -40,43 +40,48 @@ struct WebSourcesProvider {
         // Defense in depth: local-only mode contacts nothing but the model endpoint.
         guard !PrivacyMode.localOnly else { return Result() }
 
-        if let cached = SearchCache.get(query) {
+        let freeOn = Connectors.webSearch.isActive()
+        let tavilyOn = Connectors.tavily.isActive()
+        let serpOn = Connectors.serpApi.isActive()
+
+        // Cache per active config — otherwise enabling/disabling a source would replay stale hits.
+        let cacheKey = "w\(freeOn ? 1 : 0)t\(tavilyOn ? 1 : 0)s\(serpOn ? 1 : 0)|\(query)"
+        if let cached = SearchCache.get(cacheKey) {
             var result = Result(abstract: cached.abstract)
             result.hits = cached.hits
             return result
         }
 
-        // Free baseline — always, no quota.
-        async let wiki = wikipedia(query)
-        async let instant = duckDuckGo(query)
-        async let webResults = duckDuckGoWeb(query)
-        async let redditResults = reddit(query)
-        let (w, inst, web, red) = await (wiki, instant, webResults, redditResults)
+        var abstract: String?
+        var hits: [Hit] = []
 
-        let abstract = w.abstract ?? inst.abstract     // prefer Wikipedia (stable)
-        var hits = w.hits + web + red
+        // Free baseline (Wikipedia / DuckDuckGo / Reddit) — only when the Web search connector is on.
+        if freeOn {
+            async let wiki = wikipedia(query)
+            async let instant = duckDuckGo(query)
+            async let webResults = duckDuckGoWeb(query)
+            async let redditResults = reddit(query)
+            let (w, inst, web, red) = await (wiki, instant, webResults, redditResults)
+            abstract = w.abstract ?? inst.abstract     // prefer Wikipedia (stable)
+            hits = w.hits + web + red
+        }
 
-        // Primary: Tavily (best results), budget-paced — its hits lead.
-        if hasKey("tavily.apiKey"), SearchQuota.canUse("tavily") {
+        // Tavily and SerpApi are independent paid connectors — each runs on its own. Primary: Tavily
+        // (best results), budget-paced, its hits lead; SerpApi is the reserve when Tavily is empty/off.
+        if tavilyOn, SearchQuota.canUse("tavily") {
             let tav = await tavily(query)
             hits = tav + hits
-            // Reserve: SerpApi only if Tavily returned nothing.
-            if tav.isEmpty, hasKey("serpapi.apiKey"), SearchQuota.canUse("serpapi") {
+            if tav.isEmpty, serpOn, SearchQuota.canUse("serpapi") {
                 hits = await serpAPI(query) + hits
             }
-        } else if hasKey("serpapi.apiKey"), SearchQuota.canUse("serpapi") {
-            // No Tavily key/budget → fall back to the SerpApi reserve.
+        } else if serpOn, SearchQuota.canUse("serpapi") {
             hits = await serpAPI(query) + hits
         }
 
-        SearchCache.set(query, abstract: abstract, hits: hits)
+        SearchCache.set(cacheKey, abstract: abstract, hits: hits)
         var result = Result(abstract: abstract)
         result.hits = hits
         return result
-    }
-
-    private func hasKey(_ account: String) -> Bool {
-        !(Keychain.getMigrating(account, legacyDefaultsKey: account) ?? "").isEmpty
     }
 
     // MARK: SerpApi (free 250/mo, needs an API key — real Google results)
@@ -348,6 +353,15 @@ enum IdentifySources {
     /// those that never leave the Mac (today that's none, so Identify stays fully local).
     static func active() -> [IdentifySource] {
         all().filter { source in
+            // The "web" source is the hub for three independent text connectors (Web search, Tavily,
+            // SerpApi) that layer into one lookup — run it if ANY of them is active, so Tavily/SerpApi
+            // work on their own without Web search also being on. (isActive() already respects
+            // local-only.)
+            if source.id == "web" {
+                return Connectors.webSearch.isActive()
+                    || Connectors.tavily.isActive()
+                    || Connectors.serpApi.isActive()
+            }
             guard isEnabled(source), !source.requiresKey || source.isConfigured() else { return false }
             return !PrivacyMode.localOnly || !source.leavesDevice
         }

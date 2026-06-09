@@ -14,15 +14,18 @@ enum IdentifyCache {
         let webHits: [WebSourcesProvider.Hit]
     }
 
-    // v2: dropped the reverse-image `matches` field (TinEye/WebView path removed).
-    private static let storeKey = "identify.cache.v2"
+    // v3: cache key now folds in the active model/source config (see `hash`).
+    private static let storeKey = "identify.cache.v3"
     private static let ttl: TimeInterval = 30 * 24 * 3600
     private static let maxEntries = 40
 
-    /// Stable content hash of the crop (downscaled so trivial size differences still match).
-    static func hash(_ image: CGImage) -> String {
+    /// Stable content hash of the crop (downscaled so trivial size differences still match), combined
+    /// with a `signature` of the active model/source config so a different setup yields a different
+    /// key (no stale result after switching engine/model/connectors).
+    static func hash(_ image: CGImage, signature: String = "") -> String {
         let scaled = image.downscaled(maxEdge: 256)
-        let data = NSBitmapImageRep(cgImage: scaled).representation(using: .png, properties: [:]) ?? Data()
+        var data = NSBitmapImageRep(cgImage: scaled).representation(using: .png, properties: [:]) ?? Data()
+        data.append(Data(signature.utf8))
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
