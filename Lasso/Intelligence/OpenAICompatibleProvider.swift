@@ -34,6 +34,33 @@ struct OpenAICompatibleProvider: IntelligenceProvider {
         return URL(string: s + "/chat/completions") ?? base
     }
 
+    /// List the models the endpoint advertises via `GET /models` (OpenAI, Groq, OpenRouter, and most
+    /// compatible servers support this), filtered to chat-capable ids. Empty on any failure.
+    static func availableModels(baseURL: URL, apiKey: String) async -> [String] {
+        var trimmed = baseURL.absoluteString
+        while trimmed.hasSuffix("/") { trimmed.removeLast() }
+        if trimmed.hasSuffix("/chat/completions") { trimmed.removeLast("/chat/completions".count) }
+        guard let url = URL(string: trimmed + "/models") else { return [] }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        if !apiKey.isEmpty { request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = json["data"] as? [[String: Any]] else { return [] }
+        return chatModels(models.compactMap { $0["id"] as? String })
+    }
+
+    /// Drop obvious non-chat models (embeddings, audio, image, moderation) so the picker stays useful.
+    static func chatModels(_ ids: [String]) -> [String] {
+        let exclude = ["embed", "whisper", "tts", "dall-e", "dalle", "moderation", "audio",
+                       "image", "rerank", "stable-diffusion", "flux"]
+        return ids.filter { id in
+            let lower = id.lowercased()
+            return !exclude.contains { lower.contains($0) }
+        }.sorted()
+    }
+
     static func hint(for code: Int) -> String {
         switch code {
         case 401, 403: "Check the API key."

@@ -157,10 +157,16 @@ final class IntelligenceCoordinator {
         lastProviderIsLocal ? "on this Mac" : "cloud · leaves your Mac"
     }
 
+    /// The provider to actually use: in local-only mode a cloud engine is forced back to on-device,
+    /// so nothing ever leaves the Mac regardless of what's stored.
+    var effectivePreferred: ProviderKind {
+        (PrivacyMode.localOnly && !preferred.isLocalKind) ? .onDevice : preferred
+    }
+
     /// Build the provider for the current preference (cloud reads its key from the Keychain; Ollama
     /// uses the resolved installed model).
     private func buildProvider() async -> IntelligenceProvider {
-        switch preferred {
+        switch effectivePreferred {
         case .onDevice:
             return onDevice
         case .ollama:
@@ -207,9 +213,10 @@ final class IntelligenceCoordinator {
             if await override.isAvailable() { return override }
         }
 
-        // 2. Cloud model serves vision directly when chosen and no override is set.
+        // 2. Cloud model serves vision directly when chosen and no override is set. (In local-only
+        // mode `effectivePreferred` is on-device, so we never reach for a cloud vision endpoint.)
         let cloud: VisionProvider?
-        switch preferred {
+        switch effectivePreferred {
         case .openAICompatible:
             let url = URL(string: openAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
             cloud = OpenAICompatibleVisionProvider(

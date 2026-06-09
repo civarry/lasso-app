@@ -19,6 +19,25 @@ struct AnthropicProvider: IntelligenceProvider {
 
     func checkAvailability() async -> Bool { !apiKey.isEmpty && !model.isEmpty }
 
+    /// List Anthropic's available models via `GET /v1/models`. Empty on any failure.
+    static func availableModels(baseURL: URL, apiKey: String) async -> [String] {
+        guard !apiKey.isEmpty else { return [] }
+        var trimmed = baseURL.absoluteString
+        while trimmed.hasSuffix("/") { trimmed.removeLast() }
+        if trimmed.hasSuffix("/v1/messages") { trimmed.removeLast("/v1/messages".count) }
+        guard let url = URL(string: trimmed + "/v1/models") else { return [] }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = json["data"] as? [[String: Any]] else { return [] }
+        // API returns newest first; keep that order.
+        return models.compactMap { $0["id"] as? String }
+    }
+
     /// Build the messages URL, tolerating a base that already includes the endpoint or trailing slashes.
     static func messagesURL(base: URL) -> URL {
         var s = base.absoluteString

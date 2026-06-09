@@ -34,6 +34,12 @@ struct SettingsView: View {
     @State private var modelsLoaded = false
     @State private var testState: ConnectionTest.Outcome = .idle
 
+    // Fetched cloud model catalogs (OpenAI-compatible / Anthropic), like the Ollama model list.
+    @State private var openAIModels: [String] = []
+    @State private var anthropicModels: [String] = []
+    @State private var loadingModels = false
+    @State private var modelLoadNote: String?
+
     private var isDirty: Bool { draft != saved }
 
     var body: some View {
@@ -102,7 +108,7 @@ struct SettingsView: View {
         Form {
             Section("Model provider") {
                 Picker("Engine", selection: $draft.provider) {
-                    ForEach(ProviderKind.allCases) { Text($0.label).tag($0) }
+                    ForEach(availableProviders) { Text($0.label).tag($0) }
                 }
                 providerConfig
                 connectionRow
@@ -115,6 +121,8 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        // Populate the cloud model list when switching to a cloud engine (Ollama loads in `load()`).
+        .onChange(of: draft.provider) { _, _ in Task { await loadCloudModels() } }
     }
 
     // MARK: - Connectors (the "bring your own tool" store)
@@ -174,6 +182,12 @@ struct SettingsView: View {
                 set: { draft.connectorKeys[id] = $0 })
     }
 
+    /// Engines offered in the picker — cloud options are hidden in local-only mode (Apple/Ollama
+    /// only). Keyed to the *saved* setting so it only changes after Save & Apply, not while editing.
+    private var availableProviders: [ProviderKind] {
+        saved.localOnly ? [.onDevice, .ollama] : ProviderKind.allCases
+    }
+
     @ViewBuilder
     private var providerConfig: some View {
         switch draft.provider {
@@ -189,11 +203,84 @@ struct SettingsView: View {
                 Text("Custom").tag("custom")
             }
             TextField("Base URL", text: $draft.openAIBaseURL)
-            TextField("Model", text: $draft.openAIModel)
             SecureKeyField("API key", text: $draft.openAIKey)
+            cloudModelPicker(selection: $draft.openAIModel, models: openAIModels) {
+                await loadCloudModels(); return !openAIModels.isEmpty
+            }
         case .anthropic:
-            TextField("Model", text: $draft.anthropicModel)
             SecureKeyField("API key", text: $draft.anthropicKey)
+            cloudModelPicker(selection: $draft.anthropicModel, models: anthropicModels) {
+                await loadCloudModels(); return !anthropicModels.isEmpty
+            }
+        }
+    }
+
+    /// Model row for a cloud provider: a free-text field (manual entry always works) plus a "Load
+    /// available models" button that fetches the provider's catalog into a picker — the cloud
+    /// equivalent of the Ollama installed-models list.
+    /// Cloud model selector — same native pop-up as the Ollama model list, for a uniform design. Auto
+    /// -loads the provider's catalog (with a reload button); falls back to a text field when there's
+    /// no catalog yet (no key, or a custom endpoint that doesn't expose `/models`).
+    @ViewBuilder
+    private func cloudModelPicker(selection: Binding<String>, models: [String],
+                                  reload: @escaping () async -> Bool) -> some View {
+        if models.isEmpty {
+            LabeledContent("Model") {
+                HStack(spacing: 6) {
+                    TextField("Model", text: selection, prompt: Text("type a model name"))
+                        .labelsHidden().multilineTextAlignment(.trailing).textFieldStyle(.plain)
+                    reloadButton(reload)
+                }
+            }
+        } else {
+            LabeledContent("Model") {
+                HStack(spacing: 8) {
+                    Picker("", selection: selection) {
+                        let current = selection.wrappedValue
+                        if !current.isEmpty, !models.contains(current) {
+                            Text("\(current) (custom)").tag(current)
+                        }
+                        ForEach(models, id: \.self) { Text($0).tag($0) }
+                    }
+                    .labelsHidden().fixedSize()
+                    reloadButton(reload)
+                }
+            }
+        }
+        if let modelLoadNote { caption(modelLoadNote) }
+    }
+
+    @ViewBuilder
+    private func reloadButton(_ reload: @escaping () async -> Bool) -> some View {
+        Button {
+            Task {
+                loadingModels = true; modelLoadNote = nil
+                let found = await reload()
+                loadingModels = false
+                modelLoadNote = found ? nil : "No models returned — check the base URL and API key."
+            }
+        } label: {
+            if loadingModels { ProgressView().controlSize(.small) }
+            else { Image(systemName: "arrow.clockwise").foregroundStyle(.secondary) }
+        }
+        .buttonStyle(.borderless)
+        .help("Load available models")
+        .disabled(loadingModels)
+    }
+
+    /// Fetch the active cloud provider's model catalog into its picker.
+    private func loadCloudModels() async {
+        switch draft.provider {
+        case .openAICompatible:
+            let url = URL(string: draft.openAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
+            openAIModels = await OpenAICompatibleProvider.availableModels(
+                baseURL: url, apiKey: draft.openAIKey)
+        case .anthropic:
+            let url = URL(string: draft.anthropicBaseURL) ?? URL(string: "https://api.anthropic.com")!
+            anthropicModels = await AnthropicProvider.availableModels(
+                baseURL: url, apiKey: draft.anthropicKey)
+        default:
+            break
         }
     }
 
@@ -404,11 +491,17 @@ struct SettingsView: View {
         d.localOnly = UserDefaults.standard.bool(forKey: "privacy.localOnly")
         d.pretranslate = UserDefaults.standard.object(forKey: "translation.pretranslate") as? Bool ?? true
         d.launchAtLogin = LoginItem.isEnabled
+        // Heal an inconsistent saved state (local-only + a cloud engine).
+        if d.localOnly, !d.provider.isLocalKind { d.provider = .onDevice }
         draft = d
         saved = d
+        // Pre-load the cloud catalog if a cloud engine is already configured (mirrors Ollama).
+        await loadCloudModels()
     }
 
     private func apply() {
+        // Local-only must mean local: a cloud engine is committed as on-device.
+        if draft.localOnly, !draft.provider.isLocalKind { draft.provider = .onDevice }
         intelligence.preferred = draft.provider
         intelligence.ollamaModel = draft.ollamaModel
         intelligence.visionModel = draft.visionModel

@@ -33,6 +33,7 @@ struct IdentifyView: View {
     @State private var sourceError: String?                     // a configured source that failed
 
     @State private var summary = ""
+    @State private var showVisual = false
     @State private var cacheKey = ""
     @State private var synthStarted = false
     @State private var synthesizing = false
@@ -50,9 +51,12 @@ struct IdentifyView: View {
 
             if !summary.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    MarkdownView(text: displaySummary, fontSize: resultTextBaseSize * textScale)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    ScrollView {
+                        MarkdownView(text: displaySummary, fontSize: resultTextBaseSize * textScale)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 260)
                     if let confidence { confidenceChip(confidence) }
                 }
             } else if let synthError {
@@ -61,13 +65,27 @@ struct IdentifyView: View {
             }
 
             if !visionText.isEmpty {
-                DisclosureGroup("Visual analysis") {
-                    Text(visionText)
-                        .font(.callout).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.top, 4)
+                // Manual disclosure — DisclosureGroup inside the auto-sizing floating panel recurses
+                // its layout into a stack overflow when toggled.
+                VStack(alignment: .leading, spacing: 4) {
+                    Button {
+                        showVisual.toggle()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: showVisual ? "chevron.down" : "chevron.right")
+                                .font(.caption2)
+                            Text("Visual analysis").font(.subheadline)
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if showVisual {
+                        Text(visionText)
+                            .font(.callout).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
-                .font(.subheadline)
             }
 
             if !webHits.isEmpty {
