@@ -150,6 +150,8 @@ final class CaptureCoordinator {
                                   selectionRect: rect, displayID: displayID)
         context = base
         actions = registry?.relevantActions(for: base) ?? []   // show immediately
+        // Warm the local vision model now (while the user reads the toolbar) so Identify is snappy.
+        if actions.contains(where: { $0 is IdentifyAction }) { intelligence?.prewarmVision() }
         Task { await runPrePass(crop: crop, base: base) }
     }
 

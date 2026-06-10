@@ -33,11 +33,14 @@ struct IdentifyView: View {
     @State private var sourceError: String?                     // a configured source that failed
 
     @State private var summary = ""
+    @State private var intent: IdentifyIntent = .unknown
+    @State private var pipelineStart = Date()
     @State private var showVisual = false
     @State private var cacheKey = ""
     @State private var synthStarted = false
     @State private var synthesizing = false
     @State private var synthError: String?
+    @State private var visionError: String?
     @State private var synthTask: Task<Void, Never>?
 
     private var busy: Bool {
@@ -194,43 +197,81 @@ struct IdentifyView: View {
     }
 
     private func runPipeline() async {
+        pipelineStart = Date()
         activeSources = IdentifySources.active()
         // Hash-cache keyed by the crop *and* the active model/source config, so changing the engine,
         // model, or connectors produces a fresh result instead of replaying a stale cached one.
         let key = IdentifyCache.hash(image, signature: configSignature)
-        if let cached = IdentifyCache.get(key) { applyCached(cached); return }
+        if let cached = IdentifyCache.get(key) {
+            applyCached(cached)
+            Log.intelligence.notice("⏱ Identify cache hit: \(Self.ms(pipelineStart), privacy: .public)")
+            return
+        }
         cacheKey = key
 
-        await runVision()
-        query = buildQuery()
+        // Text-heavy captures (code/article) don't benefit from reverse-image or web — decide routing
+        // from the cheap OCR signal, so the visual work can start in parallel with the vision model.
+        let textHeavy = hasStrongText
+        let visualSources = textHeavy ? [] : activeSources.filter { $0.kind == .visual }
+        let textSources = textHeavy ? [] : activeSources.filter { $0.kind == .textual }
 
-        if activeSources.isEmpty {
-            sources = .skipped
-        } else {
-            searching = true
-            await runSources()       // sets `sources = .done`
-            searching = false
-        }
-        maybeSynthesize()
-    }
-
-    /// Run the enabled sources in two phases. Visual sources (reverse-image) run first and can hand
-    /// us a strong best-guess identity, which we use to sharpen the query before the textual sources
-    /// (web search) run. Each `gather` is best-effort and returns empty on failure — never throws —
-    /// so a single source can't break the pipeline.
-    private func runSources() async {
         var merged = Evidence()
 
-        for source in activeSources where source.kind == .visual {
-            merged.merge(await source.gather(image: image, query: query, ocrText: ocrText))
+        // Vision and reverse-image are independent (reverse-image uses the picture, not the query),
+        // so run them concurrently — their model/network waits overlap instead of stacking.
+        let tVision = Date()
+        if visualSources.isEmpty {
+            await runVision()
+            Log.intelligence.notice("⏱ vision (\(vision == .skipped ? "skipped" : "ran", privacy: .public)): \(Self.ms(tVision), privacy: .public)")
+        } else {
+            searching = true
+            async let visionRun: Void = runVision()
+            async let visualEvidence = gather(visualSources)
+            await visionRun
+            Log.intelligence.notice("⏱ vision (ran): \(Self.ms(tVision), privacy: .public)")
+            merged.merge(await visualEvidence)
         }
+
+        query = buildQuery()
         // A reverse-image best-guess is a far better search term than the vision model's guess.
         if let guess = merged.bestGuess, !guess.isEmpty { query = guess }
 
-        for source in activeSources where source.kind == .textual {
-            merged.merge(await source.gather(image: image, query: query, ocrText: ocrText))
+        // Intent (sharpens the synthesis prompt; routing was already decided from the OCR signal).
+        intent = IntentDetector.detect(visionText: visionText, ocrText: ocrText, hasStrongText: hasStrongText)
+        Log.intelligence.notice("⏱ intent \(intent.rawValue, privacy: .public) → sources: [\((visualSources + textSources).map(\.id).joined(separator: ", "), privacy: .public)]")
+
+        // Text sources need the (now sharpened) query, so they run after vision/reverse-image.
+        if !textSources.isEmpty {
+            searching = true
+            let tText = Date()
+            merged.merge(await gather(textSources))
+            Log.intelligence.notice("⏱ text sources: \(Self.ms(tText), privacy: .public)")
         }
 
+        finalize(merged)
+        sources = (visualSources.isEmpty && textSources.isEmpty) ? .skipped : .done
+        searching = false
+        maybeSynthesize()
+    }
+
+    /// Elapsed-since helper for the ⏱ pipeline timing logs.
+    private static func ms(_ start: Date) -> String {
+        String(format: "%.0fms", Date().timeIntervalSince(start) * 1000)
+    }
+
+    /// Run a set of sources, merging their evidence. Best-effort: each `gather` returns empty on
+    /// failure (never throws), so one source can't break the pipeline.
+    private func gather(_ sources: [IdentifySource]) async -> Evidence {
+        var merged = Evidence()
+        for source in sources {
+            let t = Date()
+            merged.merge(await source.gather(image: image, query: query, ocrText: ocrText))
+            Log.intelligence.notice("⏱   \(source.id, privacy: .public): \(Self.ms(t), privacy: .public)")
+        }
+        return merged
+    }
+
+    private func finalize(_ merged: Evidence) {
         bestGuess = merged.bestGuess
         entities = merged.entities
         ddgAbstract = merged.abstract
@@ -239,33 +280,48 @@ struct IdentifyView: View {
             guard let host = hit.url?.host else { return true }
             return !DomainNoise.isNoise(host)
         }
-        sources = .done
     }
 
-    /// Rank the combined hits by semantic similarity to the identity (nomic-embed-text), keep the
-    /// relevant ones — so Related shows the likely article, not noise.
-    private func rankHits() async {
+    /// Order the related hits by word overlap with the identity (best-guess / query) — keep the most
+    /// relevant for display. No model: a few lines of term matching, so Identify needs only the
+    /// vision model (which then stays warm). The synthesis step does the deeper reasoning.
+    private func rankHits() {
         let combined = rawHits
         guard !combined.isEmpty else { return }
         let reference = bestGuess ?? (!visionQuery.isEmpty ? visionQuery
             : (!visionText.isEmpty ? visionText : (ocrText ?? "")))
-        guard !reference.isEmpty else { webHits = Array(combined.prefix(6)); return }
+        let terms = Self.keywords(reference)
+        guard !terms.isEmpty else { webHits = Array(combined.prefix(6)); return }
 
-        let embedModel = await intelligence.resolvedEmbeddingModel()
-        guard !embedModel.isEmpty else { webHits = Array(combined.prefix(6)); return }
-        let embedder = OllamaEmbeddings(model: embedModel)
-        let texts = [reference] + combined.map(\.title)
-        guard let vectors = await embedder.embed(texts), vectors.count == texts.count else {
-            webHits = Array(combined.prefix(6)); return
-        }
-        let refVec = vectors[0]
         var scored = combined
         for index in scored.indices {
-            scored[index].score = OllamaEmbeddings.cosine(refVec, vectors[index + 1])
+            scored[index].score = Self.overlapScore(scored[index].title, terms: terms)
         }
         scored.sort { ($0.score ?? 0) > ($1.score ?? 0) }
-        let relevant = scored.filter { ($0.score ?? 0) >= 0.40 }
+        let relevant = scored.filter { ($0.score ?? 0) > 0 }
         webHits = Array((relevant.isEmpty ? scored : relevant).prefix(6))
+    }
+
+    /// Significant lowercase words (≥3 chars, minus filler) for overlap scoring.
+    private static func keywords(_ text: String) -> [String] {
+        let stop: Set<String> = ["the", "and", "for", "with", "this", "that", "are", "from", "photo",
+                                 "image", "picture", "shows", "showing", "appears", "logo"]
+        return Array(Set(text.lowercased()
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+            .filter { $0.count >= 3 && !stop.contains($0) }))
+    }
+
+    /// 0–1 share of the reference terms (weighted by length) present in a title.
+    private static func overlapScore(_ title: String, terms: [String]) -> Double {
+        let hay = title.lowercased()
+        var matched = 0.0, total = 0.0
+        for term in terms {
+            let weight = Double(term.count)
+            total += weight
+            if hay.contains(term) { matched += weight }
+        }
+        return total == 0 ? 0 : matched / total
     }
 
     private func runVision() async {
@@ -282,6 +338,7 @@ struct IdentifyView: View {
             visionQuery = query
             vision = description.isEmpty ? .failed : .done
         } catch {
+            visionError = error.localizedDescription   // surfaced if nothing else comes through
             vision = .failed
         }
     }
@@ -300,32 +357,50 @@ struct IdentifyView: View {
         guard vision.settled, sources.settled, !synthStarted else { return }
         synthStarted = true
         Task {
-            await rankHits()    // combine + rank web/community hits before synthesizing
-            startSynthesis()
+            let tRank = Date()
+            rankHits()    // word-overlap ordering of web/community hits before synthesizing
+            Log.intelligence.notice("⏱ rank: \(Self.ms(tRank), privacy: .public)")
+            await startSynthesis()
         }
     }
 
-    private func startSynthesis() {
+    private func startSynthesis() async {
         let hasAny = !visionText.isEmpty || ddgAbstract != nil || !webHits.isEmpty
             || bestGuess != nil || !entities.isEmpty || hasStrongText
         guard hasAny else {
-            synthError = "Not enough to go on. Pull a vision model (e.g. `ollama pull qwen3-vl:2b`), "
-                + "or enable a source (Web search / Reverse image) in Settings."
+            // Prefer the real reason the image model failed (e.g. a 404 / non-multimodal model).
+            if let visionError {
+                synthError = "Image model error: \(visionError)"
+            } else if intelligence.effectivePreferred.isLocalKind,
+               await !OllamaEndpoint.isReachable(OllamaEndpoint.baseURL) {
+                synthError = "Ollama isn't running. Open the Ollama app (or set its server URL under "
+                    + "Settings → Intelligence), then try again."
+            } else {
+                synthError = "No image model is available. Choose one under Settings → Intelligence → "
+                    + "Image (e.g. Ollama (local) or a multimodal cloud model), or enable a source "
+                    + "(Web search / Reverse image) in Connectors."
+            }
             return
         }
 
         synthesizing = true
         let prompt = synthesisPrompt()
         synthTask = Task {
+            let tSynth = Date()
+            var firstToken: Date?
             do {
                 for try await delta in intelligence.respond(prompt: prompt, context: nil) {
                     if Task.isCancelled { break }
+                    if firstToken == nil { firstToken = Date() }
                     summary += delta
                 }
             } catch {
                 synthError = error.localizedDescription
             }
             synthesizing = false
+            let ftt = firstToken.map { String(format: "%.0fms", $0.timeIntervalSince(tSynth) * 1000) } ?? "—"
+            Log.intelligence.notice("⏱ synth: \(Self.ms(tSynth), privacy: .public) (first token \(ftt, privacy: .public))")
+            Log.intelligence.notice("⏱ TOTAL: \(Self.ms(pipelineStart), privacy: .public)")
             // Cache the finished result so an identical crop is instant next time.
             if synthError == nil, !summary.isEmpty, !cacheKey.isEmpty, !Task.isCancelled {
                 IdentifyCache.set(cacheKey, IdentifyCache.Entry(
@@ -427,6 +502,7 @@ struct IdentifyView: View {
         most), and say plainly that you're unsure.
 
         Write 2–4 sentences, then on a new line write exactly "Confidence: High" (or Medium / Low).
+        \(intent.label.isEmpty ? "" : "\nLikely category (hint, not authoritative): \(intent.label).")
 
         Visual best-guess: \(bestGuess?.isEmpty == false ? bestGuess! : "(none)")
 
