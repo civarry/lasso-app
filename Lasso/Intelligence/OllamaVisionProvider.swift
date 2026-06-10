@@ -8,7 +8,7 @@ struct OllamaVisionProvider: VisionProvider {
     let model: String
     let baseURL: URL
 
-    init(model: String, baseURL: URL = URL(string: "http://localhost:11434")!) {
+    init(model: String, baseURL: URL = OllamaEndpoint.baseURL) {
         self.model = model
         self.baseURL = baseURL
     }
@@ -33,9 +33,9 @@ struct OllamaVisionProvider: VisionProvider {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 120
-        // keep_alive: 0 → unload the model right after, so it doesn't linger in RAM (memory-friendly
-        // on smaller Macs). Costs a ~2s reload next time.
-        let body = ChatRequest(model: model, stream: false, keep_alive: "0",
+        // keep_alive: 5m → stay warm between identifies so repeats are instant instead of paying a
+        // 4–11s cold reload each time. Frees after 5 min idle (vision is only ~3 GB).
+        let body = ChatRequest(model: model, stream: false, keep_alive: "5m",
                                messages: [.init(role: "user", content: prompt, images: [base64])])
         request.httpBody = try JSONEncoder().encode(body)
 
@@ -49,7 +49,19 @@ struct OllamaVisionProvider: VisionProvider {
         return decoded.message?.content?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
+    /// Load the model into memory without generating (Ollama returns once it's resident). Fire this
+    /// when a capture starts so the model is warm by the time the user clicks Identify. Best-effort.
+    func preload() async {
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/generate"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 60
+        request.httpBody = try? JSONEncoder().encode(PreloadRequest(model: model, keep_alive: "5m"))
+        _ = try? await URLSession.shared.data(for: request)
+    }
 }
+
+private struct PreloadRequest: Encodable { let model: String; let keep_alive: String }
 
 private struct ChatRequest: Encodable {
     struct Message: Encodable { let role: String; let content: String; let images: [String] }

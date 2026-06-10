@@ -6,7 +6,7 @@ struct OllamaEmbeddings {
     let model: String
     let baseURL: URL
 
-    init(model: String = "nomic-embed-text", baseURL: URL = URL(string: "http://localhost:11434")!) {
+    init(model: String = "nomic-embed-text", baseURL: URL = OllamaEndpoint.baseURL) {
         self.model = model
         self.baseURL = baseURL
     }
@@ -18,9 +18,10 @@ struct OllamaEmbeddings {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 15
-        // keep_alive: 0 → unload after embedding so the model doesn't linger in RAM.
+        // keep_alive: 5m → stay warm so intent + ranking embeddings don't reload each time
+        // (nomic-embed is tiny, ~0.6 GB).
         request.httpBody = try? JSONEncoder().encode(
-            EmbedRequest(model: model, input: inputs, keep_alive: "0"))
+            EmbedRequest(model: model, input: inputs, keep_alive: "5m"))
 
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 200,

@@ -17,6 +17,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CaptureCoordinator.shared.configure(registry: registry, intelligence: .shared)
         TriggerService.shared.setUp()
 
+        // Optionally start Ollama, then resolve the server (custom URL / localhost / 127.0.0.1) so the
+        // first capture uses a server that actually answers, instead of probing on the hot path.
+        Task {
+            if UserDefaults.standard.bool(forKey: "ollama.autoStart") { await OllamaLauncher.start() }
+            await OllamaEndpoint.autodetect()
+        }
+
         Log.app.notice("Lasso launched. Capture hotkey active.")
     }
 }

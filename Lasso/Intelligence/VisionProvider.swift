@@ -11,7 +11,9 @@ protocol VisionProvider: Sendable {
 
 /// Shared image encoding for vision requests (downscale + JPEG + base64).
 enum ImageEncoder {
-    static func jpegBase64(_ image: CGImage, maxEdge: Int = 1024, quality: CGFloat = 0.82) -> String? {
+    // Default 768px: vision models describe a 768px crop nearly as well as 1024 but noticeably
+    // faster. Reverse-image connectors pass their own (larger) maxEdge for match fidelity.
+    static func jpegBase64(_ image: CGImage, maxEdge: Int = 768, quality: CGFloat = 0.82) -> String? {
         let scaled = image.downscaled(maxEdge: maxEdge)
         let rep = NSBitmapImageRep(cgImage: scaled)
         return rep.representation(using: .jpeg, properties: [.compressionFactor: quality])?

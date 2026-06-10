@@ -12,7 +12,7 @@ struct OllamaProvider: IntelligenceProvider {
     let isLocal = true
 
     init(model: String = "qwen3:4b",
-         baseURL: URL = URL(string: "http://localhost:11434")!) {
+         baseURL: URL = OllamaEndpoint.baseURL) {
         self.model = model
         self.baseURL = baseURL
     }
