@@ -40,6 +40,26 @@ enum ProviderKind: String, CaseIterable, Identifiable, Sendable {
     var isLocalKind: Bool { self == .onDevice || self == .ollama }
 }
 
+/// Independent provider for image understanding (Identify / Ask-AI-on-image), chosen separately from
+/// the text engine so any mix is possible (cloud text + local image, a different cloud for images,
+/// etc.). Apple on-device is intentionally excluded — its model is text-only.
+enum VisionEngine: String, CaseIterable, Identifiable, Sendable {
+    case matchText          // use the Text engine's model (only works if it's multimodal)
+    case ollama             // a local Ollama vision model
+    case openAICompatible
+    case anthropic
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .matchText: "Same as text engine"
+        case .ollama: "Ollama (local)"
+        case .openAICompatible: "OpenAI-compatible"
+        case .anthropic: "Anthropic"
+        }
+    }
+}
+
 /// Chooses and drives the active provider. The single entry point actions use for AI.
 @MainActor
 @Observable
@@ -60,6 +80,24 @@ final class IntelligenceCoordinator {
     /// Ollama vision model for Identify. Empty string means "Auto" (best installed vision model).
     var visionModel: String {
         didSet { UserDefaults.standard.set(visionModel, forKey: Self.visionModelKey) }
+    }
+
+    /// Image (vision) provider, independent of the text engine. Its cloud config + keys are separate
+    /// from the text ones, so e.g. text=Groq + image=OpenAI GPT-4o is possible.
+    var visionEngine: VisionEngine {
+        didSet { UserDefaults.standard.set(visionEngine.rawValue, forKey: "intelligence.vision.engine") }
+    }
+    var visionOpenAIBaseURL: String {
+        didSet { UserDefaults.standard.set(visionOpenAIBaseURL, forKey: "intelligence.vision.openai.baseURL") }
+    }
+    var visionOpenAIModel: String {
+        didSet { UserDefaults.standard.set(visionOpenAIModel, forKey: "intelligence.vision.openai.model") }
+    }
+    var visionAnthropicBaseURL: String {
+        didSet { UserDefaults.standard.set(visionAnthropicBaseURL, forKey: "intelligence.vision.anthropic.baseURL") }
+    }
+    var visionAnthropicModel: String {
+        didSet { UserDefaults.standard.set(visionAnthropicModel, forKey: "intelligence.vision.anthropic.model") }
     }
 
     /// Cloud / custom provider config (non-secret; API keys live in the Keychain).
@@ -102,6 +140,17 @@ final class IntelligenceCoordinator {
         self.openAIModel = defaults.string(forKey: "intelligence.openai.model") ?? "gpt-4o-mini"
         self.anthropicBaseURL = defaults.string(forKey: "intelligence.anthropic.baseURL") ?? "https://api.anthropic.com"
         self.anthropicModel = defaults.string(forKey: "intelligence.anthropic.model") ?? "claude-3-5-haiku-latest"
+        self.visionOpenAIBaseURL = defaults.string(forKey: "intelligence.vision.openai.baseURL") ?? "https://api.openai.com/v1"
+        self.visionOpenAIModel = defaults.string(forKey: "intelligence.vision.openai.model") ?? "gpt-4o"
+        self.visionAnthropicBaseURL = defaults.string(forKey: "intelligence.vision.anthropic.baseURL") ?? "https://api.anthropic.com"
+        self.visionAnthropicModel = defaults.string(forKey: "intelligence.vision.anthropic.model") ?? "claude-3-5-sonnet-latest"
+        // Vision engine: stored choice, else migrate from the legacy "Image model" override (a set
+        // visionModel meant "use this local Ollama model"; empty meant "use the main/text model").
+        if let raw = defaults.string(forKey: "intelligence.vision.engine"), let v = VisionEngine(rawValue: raw) {
+            self.visionEngine = v
+        } else {
+            self.visionEngine = (defaults.string(forKey: Self.visionModelKey)?.isEmpty == false) ? .ollama : .matchText
+        }
     }
 
     /// Display name for the OpenAI-compatible provider, inferred from its base URL.
@@ -163,6 +212,17 @@ final class IntelligenceCoordinator {
         (PrivacyMode.localOnly && !preferred.isLocalKind) ? .onDevice : preferred
     }
 
+    /// The image provider to actually use: in local-only mode any cloud choice is forced to local
+    /// Ollama (and "Same as text" stays local only if the effective text engine is local).
+    var effectiveVisionEngine: VisionEngine {
+        guard PrivacyMode.localOnly else { return visionEngine }
+        switch visionEngine {
+        case .ollama: return .ollama
+        case .matchText: return effectivePreferred.isLocalKind ? .matchText : .ollama
+        case .openAICompatible, .anthropic: return .ollama
+        }
+    }
+
     /// Build the provider for the current preference (cloud reads its key from the Keychain; Ollama
     /// uses the resolved installed model).
     private func buildProvider() async -> IntelligenceProvider {
@@ -197,43 +257,73 @@ final class IntelligenceCoordinator {
         return primary // let the call surface a clear error
     }
 
-    /// Resolve the active vision backend. Priority:
-    ///   1. An explicit local "Image model" override — honored for *any* engine, so a user on a
-    ///      text-only cloud model (e.g. a Groq Llama) can still identify images with a local vision
-    ///      model instead of sending a doomed request to a non-multimodal endpoint.
-    ///   2. The chosen cloud provider's model (assumed multimodal) when no override is set.
-    ///   3. Local Ollama vision (the main model if it's multimodal, else the best installed one) —
-    ///      also the fallback for Apple on-device, which is text-only.
-    /// Returns nil when no vision backend is available.
+    /// Resolve the active vision backend from the independent `visionEngine` choice. Returns nil when
+    /// the chosen backend isn't usable (no key, server down, no installed model) — the caller surfaces
+    /// a clear hint.
     func activeVisionProvider() async -> VisionProvider? {
-        // 1. Explicit override wins, regardless of engine.
-        let installed = await OllamaModels.installed()
-        if !visionModel.isEmpty, installed.contains(visionModel) {
-            let override = OllamaVisionProvider(model: visionModel)
-            if await override.isAvailable() { return override }
+        switch effectiveVisionEngine {
+        case .matchText:
+            return await visionFromTextEngine()
+        case .ollama:
+            return await localOllamaVision()
+        case .openAICompatible:
+            let url = URL(string: visionOpenAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
+            let cloud = OpenAICompatibleVisionProvider(
+                baseURL: url, apiKey: Keychain.get("vision.openai.apiKey") ?? "", model: visionOpenAIModel)
+            if await cloud.isAvailable() { usedOffDeviceThisSession = true; return cloud }
+            return nil
+        case .anthropic:
+            let url = URL(string: visionAnthropicBaseURL) ?? URL(string: "https://api.anthropic.com")!
+            let cloud = AnthropicVisionProvider(
+                baseURL: url, apiKey: Keychain.get("vision.anthropic.apiKey") ?? "", model: visionAnthropicModel)
+            if await cloud.isAvailable() { usedOffDeviceThisSession = true; return cloud }
+            return nil
         }
+    }
 
-        // 2. Cloud model serves vision directly when chosen and no override is set. (In local-only
-        // mode `effectivePreferred` is on-device, so we never reach for a cloud vision endpoint.)
-        let cloud: VisionProvider?
+    /// "Same as text engine": route images through the configured Text provider (cloud models serve
+    /// vision directly; Apple is text-only, so it falls back to local Ollama vision).
+    private func visionFromTextEngine() async -> VisionProvider? {
         switch effectivePreferred {
         case .openAICompatible:
             let url = URL(string: openAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
-            cloud = OpenAICompatibleVisionProvider(
-                baseURL: url, apiKey: Keychain.get("openai.apiKey") ?? "", model: openAIModel)
+            let cloud = OpenAICompatibleVisionProvider(
+                baseURL: url,
+                apiKey: Keychain.getMigrating("openai.apiKey", legacyDefaultsKey: "openai.apiKey") ?? "",
+                model: openAIModel)
+            if await cloud.isAvailable() { usedOffDeviceThisSession = true; return cloud }
+            return nil
         case .anthropic:
             let url = URL(string: anthropicBaseURL) ?? URL(string: "https://api.anthropic.com")!
-            cloud = AnthropicVisionProvider(
-                baseURL: url, apiKey: Keychain.get("anthropic.apiKey") ?? "", model: anthropicModel)
+            let cloud = AnthropicVisionProvider(
+                baseURL: url,
+                apiKey: Keychain.getMigrating("anthropic.apiKey", legacyDefaultsKey: "anthropic.apiKey") ?? "",
+                model: anthropicModel)
+            if await cloud.isAvailable() { usedOffDeviceThisSession = true; return cloud }
+            return nil
         case .ollama, .onDevice:
-            cloud = nil
+            return await localOllamaVision()
         }
-        if let cloud, await cloud.isAvailable() { return cloud }
+    }
 
-        // 3. Local Ollama vision (main-if-multimodal, else best installed).
-        let ollamaVision = OllamaVisionProvider(model: await resolvedVisionModel())
-        if await ollamaVision.isAvailable() { return ollamaVision }
-        return nil
+    /// Local Ollama vision (resolved model: explicit override, main-if-multimodal, else best installed).
+    private func localOllamaVision() async -> VisionProvider? {
+        let provider = OllamaVisionProvider(model: await resolvedVisionModel())
+        return await provider.isAvailable() ? provider : nil
+    }
+
+    private var lastVisionPrewarm = Date.distantPast
+
+    /// Speculatively load the local vision model so Identify is warm by the time it's clicked. Only
+    /// ever warms a *local* Ollama model — never fires a speculative cloud request — and debounces so
+    /// rapid re-selections don't spam the server. Fire-and-forget; safe to call on every capture.
+    func prewarmVision() {
+        guard Date().timeIntervalSince(lastVisionPrewarm) > 20 else { return }
+        lastVisionPrewarm = Date()
+        Task {
+            guard let ollama = await activeVisionProvider() as? OllamaVisionProvider else { return }
+            await ollama.preload()
+        }
     }
 
     /// Heuristic: does the prompt ask for tabular/structured output? Kept conservative.
