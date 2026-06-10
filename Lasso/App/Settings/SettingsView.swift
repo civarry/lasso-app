@@ -9,13 +9,36 @@ struct SettingsView: View {
     private struct Draft: Equatable {
         var provider: ProviderKind = .onDevice
         var ollamaModel = ""
+        var ollamaBaseURL = ""          // custom Ollama server URL; "" = Auto (localhost:11434)
+        var ollamaAutoStart = false     // start Ollama when Lasso launches (only if installed)
         var visionModel = ""
-        var openAIBaseURL = "https://api.openai.com/v1"
-        var openAIModel = "gpt-4o-mini"
-        var openAIKey = ""
+        // OpenAI-compatible. The API *key* is shared per service (it's the account key, not per role),
+        // so Text and Image reuse it for the same service. The *model* is per role + service. Each
+        // service (OpenAI/Groq/OpenRouter/Custom) keeps its own key + model; switching Service swaps.
+        var openAIService = "openai"
+        var openAICustomBaseURL = "https://api.openai.com/v1"
+        var openAIKeyByService: [String: String] = [:]      // shared by Text + Image, keyed by service
+        var openAIModelByService: [String: String] = [:]    // Text models, per service
         var anthropicBaseURL = "https://api.anthropic.com"
         var anthropicModel = "claude-3-5-haiku-latest"
         var anthropicKey = ""
+        // Independent image (vision) provider.
+        var visionEngine: VisionEngine = .matchText
+        var visionOpenAIService = "openai"
+        var visionOpenAICustomBaseURL = "https://api.openai.com/v1"
+        var visionOpenAIModelByService: [String: String] = [:]   // Image models, per service
+        var visionAnthropicBaseURL = "https://api.anthropic.com"
+        var visionAnthropicModel = "claude-3-5-sonnet-latest"
+        var visionAnthropicKey = ""
+
+        // Active-service convenience, computed from the per-service dicts (consumed by serviceName,
+        // privacyLine, loadCloudModels, ConnectionTest, hints).
+        var openAIBaseURL: String { SettingsView.openAIServiceURL(openAIService, custom: openAICustomBaseURL) }
+        var openAIKey: String { openAIKeyByService[openAIService] ?? "" }
+        var openAIModel: String { openAIModelByService[openAIService] ?? "" }
+        var visionOpenAIBaseURL: String { SettingsView.openAIServiceURL(visionOpenAIService, custom: visionOpenAICustomBaseURL) }
+        var visionOpenAIKey: String { openAIKeyByService[visionOpenAIService] ?? "" }   // shared key
+        var visionOpenAIModel: String { visionOpenAIModelByService[visionOpenAIService] ?? "" }
         // Connector enable + key state, keyed by Connector.id — the catalog is the single source of
         // truth, so adding a connector needs no new Draft fields.
         var connectorEnabled: [String: Bool] = [:]
@@ -37,8 +60,11 @@ struct SettingsView: View {
     // Fetched cloud model catalogs (OpenAI-compatible / Anthropic), like the Ollama model list.
     @State private var openAIModels: [String] = []
     @State private var anthropicModels: [String] = []
+    @State private var visionOpenAIModels: [String] = []
+    @State private var visionAnthropicModels: [String] = []
     @State private var loadingModels = false
     @State private var modelLoadNote: String?
+    @State private var ollamaStatus: OllamaEndpoint.Status?
 
     private var isDirty: Bool { draft != saved }
 
@@ -106,7 +132,7 @@ struct SettingsView: View {
 
     private var intelligenceTab: some View {
         Form {
-            Section("Model provider") {
+            Section("Text") {
                 Picker("Engine", selection: $draft.provider) {
                     ForEach(availableProviders) { Text($0.label).tag($0) }
                 }
@@ -115,14 +141,45 @@ struct SettingsView: View {
                 caption(privacyLine)
             }
 
-            Section("Identify") {
-                imageModelRow
-                caption("Add web search, reverse-image and other tools in the Connectors tab.")
+            Section("Image (Identify)") {
+                Picker("Provider", selection: $draft.visionEngine) {
+                    ForEach(availableVisionEngines) { Text($0.label).tag($0) }
+                }
+                visionProviderConfig
+                caption(imageModelHint)
+            }
+
+            // Ollama plumbing shown once, only when text OR image actually uses Ollama.
+            if usesOllama {
+                Section("Ollama") {
+                    TextField("Server", text: $draft.ollamaBaseURL, prompt: Text("Auto — localhost:11434"))
+                        .onChange(of: draft.ollamaBaseURL) { _, _ in scheduleOllamaStatus() }
+                    ollamaStatusCaption
+                    if OllamaLauncher.isInstalled {
+                        Toggle("Start Ollama automatically when Lasso launches", isOn: $draft.ollamaAutoStart)
+                    }
+                }
             }
         }
         .formStyle(.grouped)
-        // Populate the cloud model list when switching to a cloud engine (Ollama loads in `load()`).
+        // Populate the cloud catalogs when switching to a cloud engine (Ollama loads in `load()`).
         .onChange(of: draft.provider) { _, _ in Task { await loadCloudModels() } }
+        .onChange(of: draft.visionEngine) { _, _ in Task { await loadVisionModels() } }
+        .task { scheduleOllamaStatus(); await loadVisionModels() }
+    }
+
+    /// Image providers offered — cloud hidden in local-only mode (keyed to the saved setting, like the
+    /// text engine list, so it only changes after Save & Apply).
+    private var availableVisionEngines: [VisionEngine] {
+        saved.localOnly ? [.matchText, .ollama] : VisionEngine.allCases
+    }
+
+    /// Whether the Ollama config block is relevant: either role uses Ollama, or Apple text falls back
+    /// to local Ollama for images.
+    private var usesOllama: Bool {
+        draft.provider == .ollama
+            || draft.visionEngine == .ollama
+            || (draft.visionEngine == .matchText && draft.provider == .onDevice)
     }
 
     // MARK: - Connectors (the "bring your own tool" store)
@@ -196,15 +253,17 @@ struct SettingsView: View {
         case .ollama:
             modelPicker("Model", selection: $draft.ollamaModel)
         case .openAICompatible:
-            Picker("Service", selection: openAIPreset) {
+            Picker("Service", selection: openAIServiceBinding) {
                 Text("OpenAI").tag("openai")
                 Text("Groq").tag("groq")
                 Text("OpenRouter").tag("openrouter")
                 Text("Custom").tag("custom")
             }
-            TextField("Base URL", text: $draft.openAIBaseURL)
-            SecureKeyField("API key", text: $draft.openAIKey)
-            cloudModelPicker(selection: $draft.openAIModel, models: openAIModels) {
+            if draft.openAIService == "custom" {
+                TextField("Base URL", text: $draft.openAICustomBaseURL)
+            }
+            SecureKeyField("API key", text: openAIKeyField(draft.openAIService))
+            cloudModelPicker(selection: openAITextModelField(draft.openAIService), models: openAIModels) {
                 await loadCloudModels(); return !openAIModels.isEmpty
             }
         case .anthropic:
@@ -212,6 +271,86 @@ struct SettingsView: View {
             cloudModelPicker(selection: $draft.anthropicModel, models: anthropicModels) {
                 await loadCloudModels(); return !anthropicModels.isEmpty
             }
+        }
+    }
+
+    /// Config for the chosen image provider — mirrors `providerConfig`, on the independent vision fields.
+    @ViewBuilder
+    private var visionProviderConfig: some View {
+        switch draft.visionEngine {
+        case .matchText:
+            EmptyView()
+        case .ollama:
+            modelPicker("Vision model", selection: $draft.visionModel)
+        case .openAICompatible:
+            Picker("Service", selection: visionOpenAIServiceBinding) {
+                Text("OpenAI").tag("openai")
+                Text("Groq").tag("groq")
+                Text("OpenRouter").tag("openrouter")
+                Text("Custom").tag("custom")
+            }
+            if draft.visionOpenAIService == "custom" {
+                TextField("Base URL", text: $draft.visionOpenAICustomBaseURL)
+            }
+            SecureKeyField("API key", text: openAIKeyField(draft.visionOpenAIService))
+            cloudModelPicker(selection: openAIVisionModelField(draft.visionOpenAIService), models: visionOpenAIModels) {
+                await loadVisionModels(); return !visionOpenAIModels.isEmpty
+            }
+            caption("Shares the API key with your Text provider for the same service.")
+        case .anthropic:
+            SecureKeyField("API key", text: $draft.visionAnthropicKey)
+            cloudModelPicker(selection: $draft.visionAnthropicModel, models: visionAnthropicModels) {
+                await loadVisionModels(); return !visionAnthropicModels.isEmpty
+            }
+        }
+    }
+
+    /// Fetch the image provider's cloud model catalog into its picker.
+    private func loadVisionModels() async {
+        switch draft.visionEngine {
+        case .openAICompatible:
+            let url = URL(string: draft.visionOpenAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
+            visionOpenAIModels = await OpenAICompatibleProvider.availableModels(
+                baseURL: url, apiKey: draft.visionOpenAIKey)
+        case .anthropic:
+            let url = URL(string: draft.visionAnthropicBaseURL) ?? URL(string: "https://api.anthropic.com")!
+            visionAnthropicModels = await AnthropicProvider.availableModels(
+                baseURL: url, apiKey: draft.visionAnthropicKey)
+        default:
+            break
+        }
+    }
+
+    /// Live Ollama reachability — the visible signal users need (the compiled app has no console).
+    @ViewBuilder
+    private var ollamaStatusCaption: some View {
+        if let status = ollamaStatus {
+            HStack(spacing: 8) {
+                Label(status.label, systemImage: status.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(status.ok ? Color.green : Color.orange)
+                if !status.ok, OllamaLauncher.isInstalled {
+                    Button("Start") {
+                        ollamaStatus = nil
+                        Task { await OllamaLauncher.start(); scheduleOllamaStatus() }
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                }
+            }
+        } else {
+            caption("Checking for Ollama…")
+        }
+    }
+
+    /// Debounced reachability probe for the *staged* server URL, so the caption reflects what the
+    /// user is typing before they Save.
+    private func scheduleOllamaStatus() {
+        ollamaStatus = nil
+        let staged = draft.ollamaBaseURL
+        Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard staged == draft.ollamaBaseURL else { return }   // superseded by newer keystrokes
+            ollamaStatus = await OllamaEndpoint.status(for: staged)
         }
     }
 
@@ -237,7 +376,9 @@ struct SettingsView: View {
                 HStack(spacing: 8) {
                     Picker("", selection: selection) {
                         let current = selection.wrappedValue
-                        if !current.isEmpty, !models.contains(current) {
+                        if current.isEmpty {
+                            Text("Select a model…").tag("")
+                        } else if !models.contains(current) {
                             Text("\(current) (custom)").tag(current)
                         }
                         ForEach(models, id: \.self) { Text($0).tag($0) }
@@ -328,58 +469,78 @@ struct SettingsView: View {
         }
     }
 
-    /// The "Image model" row — always shown as an optional override (picking a local vision model
-    /// wins for *any* engine). "Use main model" defers to the engine: the cloud model for cloud
-    /// engines, or the best installed vision model locally. The caption explains the active path.
-    @ViewBuilder
-    private var imageModelRow: some View {
-        modelPicker("Image model", selection: $draft.visionModel, autoLabel: "Use main model")
-        caption(imageModelHint)
-    }
-
+    /// Explains where Identify sends images, given the chosen image provider (and, for "Same as text
+    /// engine", what the text engine can actually do).
     private var imageModelHint: String {
-        if !draft.visionModel.isEmpty {
-            return "Images are handled locally by \(draft.visionModel) — overrides the engine above."
-        }
-        switch draft.provider {
-        case .onDevice:
-            return "Apple Intelligence is text-only — images use your best installed Ollama vision "
-                + "model. Pick one above to be explicit."
+        switch draft.visionEngine {
+        case .matchText:
+            switch draft.provider {
+            case .onDevice:
+                return "Apple Intelligence is text-only — images fall back to your local Ollama vision "
+                    + "model. Choose “Ollama (local)” to pick it, or a cloud provider."
+            case .ollama:
+                return "Images use your Ollama model if it’s multimodal, else your best installed vision model."
+            case .openAICompatible:
+                return "Images go to your \(serviceName(draft.openAIBaseURL)) text model — it must be "
+                    + "multimodal. Otherwise pick a dedicated image provider below."
+            case .anthropic:
+                return "Images go to your Anthropic text model — use a vision Claude, or pick a "
+                    + "dedicated image provider below."
+            }
         case .ollama:
-            return mainOllamaIsVision
-                ? "Your main model already handles images — nothing else needed."
-                : "“Use main model” picks your best installed vision model for images."
+            return "Images are identified locally by Ollama — nothing leaves your Mac."
         case .openAICompatible:
-            return "“Use main model” sends images to your \(serviceName(draft.openAIBaseURL)) model "
-                + "(must be multimodal). Pick a local vision model above to handle images on-device instead."
+            return "Images are sent to \(serviceName(draft.visionOpenAIBaseURL)) — use a multimodal "
+                + "model (e.g. gpt-4o)."
         case .anthropic:
-            return "“Use main model” sends images to your Anthropic model. Pick a local vision model "
-                + "above to handle images on-device instead."
+            return "Images are sent to Anthropic — use a vision Claude model (e.g. claude-3-5-sonnet)."
         }
     }
 
-    private var mainOllamaIsVision: Bool {
-        !draft.ollamaModel.isEmpty && OllamaModels.isVision(draft.ollamaModel)
+    static let openAIServices = ["openai", "groq", "openrouter", "custom"]
+
+    /// Base URL for a known service preset, or the user's custom URL.
+    static func openAIServiceURL(_ service: String, custom: String) -> String {
+        switch service {
+        case "openai": "https://api.openai.com/v1"
+        case "groq": "https://api.groq.com/openai/v1"
+        case "openrouter": "https://openrouter.ai/api/v1"
+        default: custom.isEmpty ? "https://api.openai.com/v1" : custom
+        }
     }
 
-    /// Quick presets that fill the OpenAI-compatible base URL (Custom leaves it editable).
-    private var openAIPreset: Binding<String> {
-        Binding(
-            get: {
-                let host = (URL(string: draft.openAIBaseURL)?.host ?? "").lowercased()
-                if host.contains("groq") { return "groq" }
-                if host.contains("openrouter") { return "openrouter" }
-                if host.contains("openai") { return "openai" }
-                return "custom"
-            },
-            set: { id in
-                switch id {
-                case "openai": draft.openAIBaseURL = "https://api.openai.com/v1"
-                case "groq": draft.openAIBaseURL = "https://api.groq.com/openai/v1"
-                case "openrouter": draft.openAIBaseURL = "https://openrouter.ai/api/v1"
-                default: break
-                }
-            })
+    /// Infer the service id from a stored base URL (for migration / first load).
+    static func openAIServiceID(forURL urlString: String) -> String {
+        let host = (URL(string: urlString)?.host ?? "").lowercased()
+        if host.contains("groq") { return "groq" }
+        if host.contains("openrouter") { return "openrouter" }
+        if host.contains("openai") { return "openai" }
+        return "custom"
+    }
+
+    /// Service pickers: switching just changes the active service (the key/model fields bind straight
+    /// into the per-service dicts, so each service keeps its own) and reloads that service's catalog.
+    private var openAIServiceBinding: Binding<String> {
+        Binding(get: { draft.openAIService },
+                set: { draft.openAIService = $0; openAIModels = []; Task { await loadCloudModels() } })
+    }
+    private var visionOpenAIServiceBinding: Binding<String> {
+        Binding(get: { draft.visionOpenAIService },
+                set: { draft.visionOpenAIService = $0; visionOpenAIModels = []; Task { await loadVisionModels() } })
+    }
+
+    /// Per-service field bindings (the shared key, and each role's model).
+    private func openAIKeyField(_ service: String) -> Binding<String> {
+        Binding(get: { draft.openAIKeyByService[service] ?? "" },
+                set: { draft.openAIKeyByService[service] = $0 })
+    }
+    private func openAITextModelField(_ service: String) -> Binding<String> {
+        Binding(get: { draft.openAIModelByService[service] ?? "" },
+                set: { draft.openAIModelByService[service] = $0 })
+    }
+    private func openAIVisionModelField(_ service: String) -> Binding<String> {
+        Binding(get: { draft.visionOpenAIModelByService[service] ?? "" },
+                set: { draft.visionOpenAIModelByService[service] = $0 })
     }
 
     private var privacyLine: String {
@@ -477,13 +638,46 @@ struct SettingsView: View {
         var d = Draft()
         d.provider = intelligence.preferred
         d.ollamaModel = intelligence.ollamaModel
+        d.ollamaBaseURL = OllamaEndpoint.customURLString
+        d.ollamaAutoStart = UserDefaults.standard.bool(forKey: "ollama.autoStart")
         d.visionModel = intelligence.visionModel
-        d.openAIBaseURL = intelligence.openAIBaseURL
-        d.openAIModel = intelligence.openAIModel
         d.anthropicBaseURL = intelligence.anthropicBaseURL
         d.anthropicModel = intelligence.anthropicModel
-        d.openAIKey = Keychain.getMigrating("openai.apiKey", legacyDefaultsKey: "openai.apiKey") ?? ""
         d.anthropicKey = Keychain.getMigrating("anthropic.apiKey", legacyDefaultsKey: "anthropic.apiKey") ?? ""
+        d.visionEngine = intelligence.visionEngine
+        d.visionAnthropicBaseURL = intelligence.visionAnthropicBaseURL
+        d.visionAnthropicModel = intelligence.visionAnthropicModel
+        d.visionAnthropicKey = Keychain.get("vision.anthropic.apiKey") ?? ""
+        // OpenAI-compatible: shared per-service key store + per-role model stores.
+        let oaSvc = UserDefaults.standard.string(forKey: "intelligence.openai.service")
+            ?? Self.openAIServiceID(forURL: intelligence.openAIBaseURL)
+        d.openAIService = oaSvc
+        d.openAICustomBaseURL = UserDefaults.standard.string(forKey: "intelligence.openai.customBaseURL")
+            ?? (oaSvc == "custom" ? intelligence.openAIBaseURL : "https://api.openai.com/v1")
+        let voaSvc = UserDefaults.standard.string(forKey: "intelligence.vision.openai.service")
+            ?? Self.openAIServiceID(forURL: intelligence.visionOpenAIBaseURL)
+        d.visionOpenAIService = voaSvc
+        d.visionOpenAICustomBaseURL = UserDefaults.standard.string(forKey: "intelligence.vision.openai.customBaseURL")
+            ?? (voaSvc == "custom" ? intelligence.visionOpenAIBaseURL : "https://api.openai.com/v1")
+        for s in Self.openAIServices {
+            d.openAIKeyByService[s] = Keychain.get("openai.svc.\(s).key") ?? ""
+            d.openAIModelByService[s] = UserDefaults.standard.string(forKey: "intelligence.openai.svc.\(s).model") ?? ""
+            d.visionOpenAIModelByService[s] = UserDefaults.standard.string(forKey: "intelligence.vision.openai.svc.\(s).model") ?? ""
+        }
+        // Migrate legacy single keys into the shared per-service store.
+        if (d.openAIKeyByService[oaSvc] ?? "").isEmpty {
+            d.openAIKeyByService[oaSvc] = Keychain.getMigrating("openai.apiKey", legacyDefaultsKey: "openai.apiKey") ?? ""
+        }
+        if (d.openAIKeyByService[voaSvc] ?? "").isEmpty {
+            d.openAIKeyByService[voaSvc] = Keychain.get("vision.openai.apiKey") ?? ""
+        }
+        if (d.openAIModelByService[oaSvc] ?? "").isEmpty, !intelligence.openAIModel.isEmpty {
+            d.openAIModelByService[oaSvc] = intelligence.openAIModel
+        }
+        if (d.visionOpenAIModelByService[voaSvc] ?? "").isEmpty, !intelligence.visionOpenAIModel.isEmpty {
+            d.visionOpenAIModelByService[voaSvc] = intelligence.visionOpenAIModel
+        }
+
         for connector in Connectors.all {
             d.connectorEnabled[connector.id] = connector.isEnabled
             if connector.keyAccount != nil { d.connectorKeys[connector.id] = connector.key() }
@@ -491,26 +685,58 @@ struct SettingsView: View {
         d.localOnly = UserDefaults.standard.bool(forKey: "privacy.localOnly")
         d.pretranslate = UserDefaults.standard.object(forKey: "translation.pretranslate") as? Bool ?? true
         d.launchAtLogin = LoginItem.isEnabled
-        // Heal an inconsistent saved state (local-only + a cloud engine).
+        // Heal an inconsistent saved state (local-only + a cloud engine / cloud image provider).
         if d.localOnly, !d.provider.isLocalKind { d.provider = .onDevice }
+        if d.localOnly, d.visionEngine == .openAICompatible || d.visionEngine == .anthropic {
+            d.visionEngine = .ollama
+        }
         draft = d
         saved = d
-        // Pre-load the cloud catalog if a cloud engine is already configured (mirrors Ollama).
+        // Pre-load the cloud catalogs if a cloud engine/image provider is already configured.
         await loadCloudModels()
+        await loadVisionModels()
     }
 
     private func apply() {
-        // Local-only must mean local: a cloud engine is committed as on-device.
+        // Local-only must mean local: a cloud engine / cloud image provider is committed as local.
         if draft.localOnly, !draft.provider.isLocalKind { draft.provider = .onDevice }
+        if draft.localOnly, draft.visionEngine == .openAICompatible || draft.visionEngine == .anthropic {
+            draft.visionEngine = .ollama
+        }
         intelligence.preferred = draft.provider
         intelligence.ollamaModel = draft.ollamaModel
+        OllamaEndpoint.customURLString = draft.ollamaBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        UserDefaults.standard.set(draft.ollamaAutoStart, forKey: "ollama.autoStart")
+        Task { await OllamaEndpoint.autodetect() }   // re-resolve the effective server after a change
         intelligence.visionModel = draft.visionModel
-        intelligence.openAIBaseURL = draft.openAIBaseURL
-        intelligence.openAIModel = draft.openAIModel
         intelligence.anthropicBaseURL = draft.anthropicBaseURL
         intelligence.anthropicModel = draft.anthropicModel
-        Keychain.set(draft.openAIKey, for: "openai.apiKey")
         Keychain.set(draft.anthropicKey, for: "anthropic.apiKey")
+        intelligence.visionEngine = draft.visionEngine
+        intelligence.visionAnthropicBaseURL = draft.visionAnthropicBaseURL
+        intelligence.visionAnthropicModel = draft.visionAnthropicModel
+        Keychain.set(draft.visionAnthropicKey, for: "vision.anthropic.apiKey")
+
+        // OpenAI-compatible: persist the shared per-service key + each role's per-service model, then
+        // commit the active service of each role as the coordinator's effective config.
+        for s in Self.openAIServices {
+            Keychain.set(draft.openAIKeyByService[s] ?? "", for: "openai.svc.\(s).key")
+            UserDefaults.standard.set(draft.openAIModelByService[s] ?? "", forKey: "intelligence.openai.svc.\(s).model")
+            UserDefaults.standard.set(draft.visionOpenAIModelByService[s] ?? "", forKey: "intelligence.vision.openai.svc.\(s).model")
+        }
+        UserDefaults.standard.set(draft.openAIService, forKey: "intelligence.openai.service")
+        UserDefaults.standard.set(draft.openAICustomBaseURL, forKey: "intelligence.openai.customBaseURL")
+        UserDefaults.standard.set(draft.visionOpenAIService, forKey: "intelligence.vision.openai.service")
+        UserDefaults.standard.set(draft.visionOpenAICustomBaseURL, forKey: "intelligence.vision.openai.customBaseURL")
+        // Active text config
+        intelligence.openAIBaseURL = Self.openAIServiceURL(draft.openAIService, custom: draft.openAICustomBaseURL)
+        intelligence.openAIModel = draft.openAIModelByService[draft.openAIService] ?? ""
+        Keychain.set(draft.openAIKeyByService[draft.openAIService] ?? "", for: "openai.apiKey")
+        // Active image config (key shared from the same per-service store)
+        intelligence.visionOpenAIBaseURL = Self.openAIServiceURL(draft.visionOpenAIService, custom: draft.visionOpenAICustomBaseURL)
+        intelligence.visionOpenAIModel = draft.visionOpenAIModelByService[draft.visionOpenAIService] ?? ""
+        Keychain.set(draft.openAIKeyByService[draft.visionOpenAIService] ?? "", for: "vision.openai.apiKey")
+
         for connector in Connectors.all {
             UserDefaults.standard.set(draft.connectorEnabled[connector.id] ?? connector.defaultEnabled,
                                       forKey: connector.enabledKey)
@@ -738,9 +964,11 @@ enum ConnectionTest {
             let models = await OllamaModels.installed()
             if !models.isEmpty { return .ok(ms()) }
             let up = await OllamaProvider().checkAvailability()
+            let host = OllamaEndpoint.baseURL.host ?? "localhost"
+            let port = OllamaEndpoint.baseURL.port.map { ":\($0)" } ?? ""
             return up
                 ? .failure("Ollama is running but has no models. Try `ollama pull qwen3:4b`.")
-                : .failure("Can't reach Ollama at localhost:11434. Is `ollama serve` running?")
+                : .failure("Can't reach Ollama at \(host)\(port). Is the Ollama app running?")
 
         case .openAICompatible:
             return await testOpenAI(base: openAIBaseURL, key: openAIKey, model: openAIModel, ms: ms)
