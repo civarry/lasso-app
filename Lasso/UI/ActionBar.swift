@@ -25,7 +25,15 @@ struct ActionBar: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
                             ForEach(coordinator.actions, id: \.id) { action in
-                                ActionPill(title: action.title, systemImage: action.systemImage) {
+                                let blocked = (coordinator.context.map { action.needsVision(for: $0) } ?? false)
+                                    && !(coordinator.intelligence?.visionAvailable ?? false)
+                                ActionPill(
+                                    title: action.title, systemImage: action.systemImage,
+                                    disabled: blocked,
+                                    help: blocked
+                                        ? "\(action.title) needs a vision model — install Ollama or add a cloud image model in Settings ▸ Intelligence ▸ Image."
+                                        : nil
+                                ) {
                                     coordinator.run(action)
                                 }
                             }
@@ -55,6 +63,8 @@ struct ActionBar: View {
 private struct ActionPill: View {
     let title: String
     let systemImage: String
+    var disabled: Bool = false
+    var help: String? = nil
     let action: () -> Void
     @State private var hovering = false
 
@@ -64,11 +74,14 @@ private struct ActionPill: View {
                 .font(.callout)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-                .background(.white.opacity(hovering ? 0.20 : 0.10),
+                .background(.white.opacity(hovering && !disabled ? 0.20 : 0.10),
                             in: RoundedRectangle(cornerRadius: Theme.pillRadius))
+                .opacity(disabled ? 0.4 : 1)
         }
         .buttonStyle(PressableStyle())
+        .disabled(disabled)
         .onHover { hovering = $0 }
+        .help(help ?? "")
         .animation(.easeOut(duration: 0.12), value: hovering)
     }
 }

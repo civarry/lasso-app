@@ -1,5 +1,18 @@
 import Foundation
 
+/// Short-TTL cache of Ollama reachability, so repeated availability checks reuse one probe instead of
+/// hammering the server (and flooding the console when it's down).
+private actor ReachabilityCache {
+    static let shared = ReachabilityCache()
+    private var cache: [String: (ok: Bool, at: Date)] = [:]
+
+    func value(_ key: String, ttl: TimeInterval) -> Bool? {
+        guard let entry = cache[key], Date().timeIntervalSince(entry.at) < ttl else { return nil }
+        return entry.ok
+    }
+    func store(_ key: String, _ ok: Bool) { cache[key] = (ok, Date()) }
+}
+
 /// Single source of truth for where the local Ollama server lives. Every normal install answers on
 /// the standard `localhost:11434`, so that's the default — but a user can set a custom URL, and in
 /// "Auto" mode we probe a short candidate list (custom → `OLLAMA_HOST` → localhost → 127.0.0.1) and
@@ -59,12 +72,18 @@ enum OllamaEndpoint {
         return nil
     }
 
-    /// True if an Ollama server answers `/api/tags` at `url`.
-    static func isReachable(_ url: URL) async -> Bool {
+    /// True if an Ollama server answers `/api/tags` at `url`. Results are cached briefly so the many
+    /// callers (status, vision availability, autodetect) don't re-probe — and spam the console with
+    /// connection-refused noise — on every trigger.
+    static func isReachable(_ url: URL, maxAge: TimeInterval = 8) async -> Bool {
+        let key = url.absoluteString
+        if let cached = await ReachabilityCache.shared.value(key, ttl: maxAge) { return cached }
         var request = URLRequest(url: url.appendingPathComponent("api/tags"))
         request.timeoutInterval = 2
-        guard let (_, response) = try? await URLSession.shared.data(for: request) else { return false }
-        return (response as? HTTPURLResponse)?.statusCode == 200
+        let ok = ((try? await URLSession.shared.data(for: request))
+            .flatMap { ($0.1 as? HTTPURLResponse)?.statusCode }) == 200
+        await ReachabilityCache.shared.store(key, ok)
+        return ok
     }
 
     /// User-facing connection status for Settings.

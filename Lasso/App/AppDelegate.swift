@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             if UserDefaults.standard.bool(forKey: "ollama.autoStart") { await OllamaLauncher.start() }
             await OllamaEndpoint.autodetect()
+            await IntelligenceCoordinator.shared.refreshVisionAvailability()
         }
 
         Log.app.notice("Lasso launched. Capture hotkey active.")

@@ -301,8 +301,10 @@ final class IntelligenceCoordinator {
                 model: anthropicModel)
             if await cloud.isAvailable() { usedOffDeviceThisSession = true; return cloud }
             return nil
-        case .ollama, .onDevice:
+        case .ollama:
             return await localOllamaVision()
+        case .onDevice:
+            return nil   // Apple is text-only; no silent Ollama fallback — the user picks an image provider
         }
     }
 
@@ -324,6 +326,39 @@ final class IntelligenceCoordinator {
             guard let ollama = await activeVisionProvider() as? OllamaVisionProvider else { return }
             await ollama.preload()
         }
+    }
+
+    /// Cached: is a vision backend available (a local Ollama vision model, or a configured cloud
+    /// image model)? Drives greying of vision features. Refreshed at launch, after Save, and on
+    /// capture. Side-effect-free — unlike `activeVisionProvider`, it never flips the privacy flag.
+    private(set) var visionAvailable = false
+
+    func refreshVisionAvailability() async {
+        visionAvailable = await computeVisionAvailability()
+    }
+
+    private func computeVisionAvailability() async -> Bool {
+        func cloudReady(_ keyAccount: String, _ model: String) -> Bool {
+            !(Keychain.get(keyAccount) ?? "").isEmpty && !model.isEmpty
+        }
+        switch effectiveVisionEngine {
+        case .openAICompatible: return cloudReady("vision.openai.apiKey", visionOpenAIModel)
+        case .anthropic:        return cloudReady("vision.anthropic.apiKey", visionAnthropicModel)
+        case .ollama:           return await hasInstalledVisionModel()
+        case .matchText:
+            switch effectivePreferred {
+            case .openAICompatible: return cloudReady("openai.apiKey", openAIModel)
+            case .anthropic:        return cloudReady("anthropic.apiKey", anthropicModel)
+            case .ollama:           return await hasInstalledVisionModel()
+            case .onDevice:         return false   // Apple can't see images; no fallback
+            }
+        }
+    }
+
+    private func hasInstalledVisionModel() async -> Bool {
+        let installed = await OllamaModels.installed()
+        if installed.contains(where: OllamaModels.isVision) { return true }
+        return !ollamaModel.isEmpty && OllamaModels.isVision(ollamaModel)
     }
 
     /// Heuristic: does the prompt ask for tabular/structured output? Kept conservative.

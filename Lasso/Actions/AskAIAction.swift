@@ -14,6 +14,8 @@ struct AskAIAction: CaptureAction {
     let relevancePriority = 40
 
     func isRelevant(to ctx: CaptureContext) -> Bool { true }
+    // Text selections answer from the text model; only an image with no readable text needs vision.
+    func needsVision(for ctx: CaptureContext) -> Bool { (ctx.ocrText ?? "").isEmpty }
 
     func perform(_ ctx: CaptureContext) async throws -> ActionResult {
         .custom(AnyView(AskAIView(intelligence: intelligence, image: ctx.image, ocrText: ctx.ocrText)))

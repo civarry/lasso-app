@@ -88,6 +88,9 @@ final class CaptureCoordinator {
         }
         guard !shots.isEmpty else { return }
         isActive = true
+        // Refresh vision availability in the background (don't block the overlay) so the bar greys
+        // the right pills — and picks up Ollama having just come up.
+        if let intelligence { Task { await intelligence.refreshVisionAvailability() } }
         KeyboardShortcuts.enable(.cancelCapture)
         presentOverlays()
         installKeyMonitor()

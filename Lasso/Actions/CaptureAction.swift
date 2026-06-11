@@ -95,10 +95,15 @@ protocol CaptureAction {
     /// Is this action useful for the current selection? (e.g. QR only if a code is present.)
     func isRelevant(to ctx: CaptureContext) -> Bool
 
+    /// Does this action need to *see* the image for this selection? Such actions are greyed in the
+    /// bar when no vision backend (Ollama or a cloud image model) is available. Default: no.
+    func needsVision(for ctx: CaptureContext) -> Bool
+
     /// Run it. Return a result to show, or perform a side effect and return `.none`.
     func perform(_ ctx: CaptureContext) async throws -> ActionResult
 }
 
 extension CaptureAction {
     var relevancePriority: Int { 100 }
+    func needsVision(for ctx: CaptureContext) -> Bool { false }
 }

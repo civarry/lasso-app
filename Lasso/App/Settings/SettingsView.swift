@@ -177,9 +177,7 @@ struct SettingsView: View {
     /// Whether the Ollama config block is relevant: either role uses Ollama, or Apple text falls back
     /// to local Ollama for images.
     private var usesOllama: Bool {
-        draft.provider == .ollama
-            || draft.visionEngine == .ollama
-            || (draft.visionEngine == .matchText && draft.provider == .onDevice)
+        draft.provider == .ollama || draft.visionEngine == .ollama
     }
 
     // MARK: - Connectors (the "bring your own tool" store)
@@ -212,6 +210,10 @@ struct SettingsView: View {
             }
 
             Section {
+                Label("Connectors power Identify, so they need a vision model. Set one up under "
+                      + "Intelligence ▸ Image (install Ollama or add a cloud image model).",
+                      systemImage: "eye")
+                    .font(.caption).foregroundStyle(.secondary)
                 caption("Each connector is optional and independent — Lasso works with none connected: "
                         + "Apple Intelligence, OCR and Translate run on-device. Your AI model is chosen "
                         + "on the Intelligence tab; your keys are stored in the Keychain.")
@@ -476,8 +478,8 @@ struct SettingsView: View {
         case .matchText:
             switch draft.provider {
             case .onDevice:
-                return "Apple Intelligence is text-only — images fall back to your local Ollama vision "
-                    + "model. Choose “Ollama (local)” to pick it, or a cloud provider."
+                return "Apple Intelligence is text-only and can’t see images — choose “Ollama (local)” "
+                    + "or a cloud image provider for Identify."
             case .ollama:
                 return "Images use your Ollama model if it’s multimodal, else your best installed vision model."
             case .openAICompatible:
@@ -747,6 +749,7 @@ struct SettingsView: View {
         UserDefaults.standard.set(draft.localOnly, forKey: "privacy.localOnly")
         UserDefaults.standard.set(draft.pretranslate, forKey: "translation.pretranslate")
         if draft.launchAtLogin != saved.launchAtLogin { LoginItem.set(draft.launchAtLogin) }
+        Task { await intelligence.refreshVisionAvailability() }   // re-grey vision features as needed
         saved = draft
     }
 }

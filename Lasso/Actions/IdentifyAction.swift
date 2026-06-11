@@ -12,6 +12,7 @@ struct IdentifyAction: CaptureAction {
     let relevancePriority = 12
 
     func isRelevant(to ctx: CaptureContext) -> Bool { true }
+    func needsVision(for ctx: CaptureContext) -> Bool { true }   // Identify always reads the image
 
     func perform(_ ctx: CaptureContext) async throws -> ActionResult {
         let anchor = CaptureCoordinator.shared.activeSelectionScreenRect()
