@@ -13,6 +13,7 @@ enum ActionBarStyle: String, CaseIterable, Identifiable {
 struct ActionBar: View {
     @Bindable var coordinator: CaptureCoordinator
     @AppStorage("ui.actionBarStyle") private var styleRaw = ActionBarStyle.compact.rawValue
+    @AppStorage("ui.actionBarHideUnavailable") private var hideUnavailable = false
     private var style: ActionBarStyle { ActionBarStyle(rawValue: styleRaw) ?? .compact }
 
     var body: some View {
@@ -52,21 +53,24 @@ struct ActionBar: View {
 
     @ViewBuilder private var pillItems: some View {
         let vision = coordinator.intelligence?.visionAvailable ?? false
-        ForEach(Array(coordinator.actions.enumerated()), id: \.element.id) { index, action in
-            let reason = coordinator.context.flatMap { action.disabledReason(for: $0, visionAvailable: vision) }
+        // Resolve each action's disabled reason; in minimal mode, drop the unavailable ones entirely.
+        let resolved = coordinator.actions.map { action -> (action: any CaptureAction, reason: String?) in
+            (action, coordinator.context.flatMap { action.disabledReason(for: $0, visionAvailable: vision) })
+        }
+        let shown = hideUnavailable ? resolved.filter { $0.reason == nil } : resolved
+
+        ForEach(Array(shown.enumerated()), id: \.element.action.id) { index, item in
             ActionPill(
-                title: action.title, systemImage: action.systemImage, style: style,
-                index: index, disabled: reason != nil, help: reason
+                title: item.action.title, systemImage: item.action.systemImage, style: style,
+                index: index, disabled: item.reason != nil, help: item.reason
             ) {
-                coordinator.run(action)
+                coordinator.run(item.action)
             }
         }
-        ActionPill(title: "Copy image", systemImage: "doc.on.doc", style: style,
-                   index: coordinator.actions.count) {
+        ActionPill(title: "Copy image", systemImage: "doc.on.doc", style: style, index: shown.count) {
             coordinator.copyImageAndClose()
         }
-        ActionPill(title: "Save", systemImage: "square.and.arrow.down", style: style,
-                   index: coordinator.actions.count + 1) {
+        ActionPill(title: "Save", systemImage: "square.and.arrow.down", style: style, index: shown.count + 1) {
             coordinator.saveImageAndClose()
         }
     }

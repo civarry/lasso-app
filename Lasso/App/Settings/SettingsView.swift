@@ -66,6 +66,7 @@ struct SettingsView: View {
     @State private var modelLoadNote: String?
     @State private var ollamaStatus: OllamaEndpoint.Status?
     @AppStorage("ui.actionBarStyle") private var actionBarStyle = ActionBarStyle.compact.rawValue
+    @AppStorage("ui.actionBarHideUnavailable") private var hideUnavailable = false
 
     private var isDirty: Bool { draft != saved }
 
@@ -120,19 +121,17 @@ struct SettingsView: View {
                     ForEach(ActionBarStyle.allCases) { Text($0.label).tag($0.rawValue) }
                 }
                 .pickerStyle(.segmented)
-                caption(ActionBarStyle(rawValue: actionBarStyle) == .compact
-                        ? "Compact — just icons; names appear on hover. Narrow single row."
-                        : "Cozy — icons with inline names. Single row, sized to fit.")
+                caption("Compact: icons only · Cozy: icons with names.")
+                Toggle("Auto-hide unavailable actions", isOn: $hideUnavailable)
+                caption("Off: greyed out in place.")
             }
             Section("Privacy") {
                 Toggle("Local-only mode", isOn: $draft.localOnly)
-                caption("Contacts nothing but your chosen model endpoint — turns off web search, "
-                        + "favicons, and every incidental network call. Recommended on managed or "
-                        + "work Macs. On-device or Ollama keeps everything on this machine.")
+                caption("Blocks all network calls except your chosen model. Best for work Macs.")
             }
             Section("Translation") {
                 Toggle("Pre-translate selections", isOn: $draft.pretranslate)
-                caption("Translates foreign text in the background so Translate is instant. On-device only.")
+                caption("Translates in the background so Translate is instant.")
             }
         }
         .formStyle(.grouped)
