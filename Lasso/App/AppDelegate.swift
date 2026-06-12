@@ -20,8 +20,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Optionally start Ollama, then resolve the server (custom URL / localhost / 127.0.0.1) so the
         // first capture uses a server that actually answers, instead of probing on the hot path.
         Task {
-            if UserDefaults.standard.bool(forKey: "ollama.autoStart") { await OllamaLauncher.start() }
-            await OllamaEndpoint.autodetect()
+            // Only touch Ollama when the config actually uses it — keeps cloud-only setups quiet.
+            if IntelligenceCoordinator.shared.usesOllama {
+                if UserDefaults.standard.bool(forKey: "ollama.autoStart") { await OllamaLauncher.start() }
+                await OllamaEndpoint.autodetect()
+            }
             await IntelligenceCoordinator.shared.refreshVisionAvailability()
         }
 
