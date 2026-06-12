@@ -19,17 +19,6 @@ struct ActionBar: View {
     var body: some View {
         GlassPanel {
             VStack(alignment: .leading, spacing: 8) {
-                // Detected data (links/phones/QR) — only when present.
-                if let items = coordinator.context?.detectedData, !items.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(items) { item in
-                                DataPill(item: item) { coordinator.open(item) }
-                            }
-                        }
-                    }
-                }
-
                 // A single row sized to its contents — the floating bar just grows as wide as needed,
                 // so nothing wraps or scrolls. Compact (icons) is narrow; labeled is wider.
                 HStack(spacing: 6) {
@@ -39,6 +28,18 @@ struct ActionBar: View {
                     closeButton
                 }
                 .id(styleRaw)   // rebuild cleanly if the style is switched while the bar is open
+
+                // Detected data (links/phones/QR) — below the actions, so it never collides with the
+                // hover labels that float above the action row.
+                if let items = coordinator.context?.detectedData, !items.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(items) { item in
+                                DataPill(item: item) { coordinator.open(item) }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
