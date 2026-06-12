@@ -7,8 +7,9 @@ struct OCRCopyAction: CaptureAction {
     let systemImage = "text.viewfinder"
     let relevancePriority = 10
 
-    func isRelevant(to ctx: CaptureContext) -> Bool {
-        ctx.ocrText?.isEmpty == false
+    func isRelevant(to ctx: CaptureContext) -> Bool { true }
+    func disabledReason(for ctx: CaptureContext, visionAvailable: Bool) -> String? {
+        ctx.ocrText?.isEmpty == false ? nil : "No text detected in the selection."
     }
 
     func perform(_ ctx: CaptureContext) async throws -> ActionResult {

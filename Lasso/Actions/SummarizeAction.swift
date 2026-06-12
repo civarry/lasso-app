@@ -9,8 +9,9 @@ struct SummarizeAction: CaptureAction {
     let systemImage = "sparkles"
     let relevancePriority = 30
 
-    func isRelevant(to ctx: CaptureContext) -> Bool {
-        (ctx.ocrText?.count ?? 0) > 40
+    func isRelevant(to ctx: CaptureContext) -> Bool { true }
+    func disabledReason(for ctx: CaptureContext, visionAvailable: Bool) -> String? {
+        (ctx.ocrText?.count ?? 0) > 40 ? nil : "Select more text to summarize."
     }
 
     func perform(_ ctx: CaptureContext) async throws -> ActionResult {

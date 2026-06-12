@@ -12,7 +12,10 @@ struct IdentifyAction: CaptureAction {
     let relevancePriority = 12
 
     func isRelevant(to ctx: CaptureContext) -> Bool { true }
-    func needsVision(for ctx: CaptureContext) -> Bool { true }   // Identify always reads the image
+    func disabledReason(for ctx: CaptureContext, visionAvailable: Bool) -> String? {
+        visionAvailable ? nil
+            : "Identify needs a vision model — install Ollama or add a cloud image model in Settings ▸ Intelligence ▸ Image."
+    }
 
     func perform(_ ctx: CaptureContext) async throws -> ActionResult {
         let anchor = CaptureCoordinator.shared.activeSelectionScreenRect()

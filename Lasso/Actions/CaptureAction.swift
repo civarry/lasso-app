@@ -92,12 +92,14 @@ protocol CaptureAction {
     /// Lower sorts first in the ActionBar.
     var relevancePriority: Int { get }
 
-    /// Is this action useful for the current selection? (e.g. QR only if a code is present.)
+    /// Should this action appear at all? Core actions return `true` always (they hold a fixed slot in
+    /// the bar and grey out via `disabledReason`); situational ones (e.g. QR) appear only when present.
     func isRelevant(to ctx: CaptureContext) -> Bool
 
-    /// Does this action need to *see* the image for this selection? Such actions are greyed in the
-    /// bar when no vision backend (Ollama or a cloud image model) is available. Default: no.
-    func needsVision(for ctx: CaptureContext) -> Bool
+    /// Why this action is greyed for the current selection (nil = enabled). Keeping core actions
+    /// always-present but disabled-until-applicable means the bar never resizes or reorders when the
+    /// OCR pre-pass finishes — fixed width, fixed positions.
+    func disabledReason(for ctx: CaptureContext, visionAvailable: Bool) -> String?
 
     /// Run it. Return a result to show, or perform a side effect and return `.none`.
     func perform(_ ctx: CaptureContext) async throws -> ActionResult
@@ -105,5 +107,5 @@ protocol CaptureAction {
 
 extension CaptureAction {
     var relevancePriority: Int { 100 }
-    func needsVision(for ctx: CaptureContext) -> Bool { false }
+    func disabledReason(for ctx: CaptureContext, visionAvailable: Bool) -> String? { nil }
 }

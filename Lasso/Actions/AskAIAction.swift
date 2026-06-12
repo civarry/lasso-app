@@ -15,7 +15,11 @@ struct AskAIAction: CaptureAction {
 
     func isRelevant(to ctx: CaptureContext) -> Bool { true }
     // Text selections answer from the text model; only an image with no readable text needs vision.
-    func needsVision(for ctx: CaptureContext) -> Bool { (ctx.ocrText ?? "").isEmpty }
+    func disabledReason(for ctx: CaptureContext, visionAvailable: Bool) -> String? {
+        let hasText = (ctx.ocrText ?? "").isEmpty == false
+        return (hasText || visionAvailable) ? nil
+            : "Ask AI needs text in the selection, or a vision model for image questions (Settings ▸ Intelligence ▸ Image)."
+    }
 
     func perform(_ ctx: CaptureContext) async throws -> ActionResult {
         .custom(AnyView(AskAIView(intelligence: intelligence, image: ctx.image, ocrText: ctx.ocrText)))

@@ -65,6 +65,7 @@ struct SettingsView: View {
     @State private var loadingModels = false
     @State private var modelLoadNote: String?
     @State private var ollamaStatus: OllamaEndpoint.Status?
+    @AppStorage("ui.actionBarStyle") private var actionBarStyle = ActionBarStyle.compact.rawValue
 
     private var isDirty: Bool { draft != saved }
 
@@ -113,6 +114,15 @@ struct SettingsView: View {
             Section("Capture") {
                 KeyboardShortcuts.Recorder("Shortcut", name: .capture)
                 Toggle("Launch at login", isOn: $draft.launchAtLogin)
+            }
+            Section("Appearance") {
+                Picker("Action bar", selection: $actionBarStyle) {
+                    ForEach(ActionBarStyle.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                caption(ActionBarStyle(rawValue: actionBarStyle) == .compact
+                        ? "Compact — just icons; names appear on hover. Narrow single row."
+                        : "Cozy — icons with inline names. Single row, sized to fit.")
             }
             Section("Privacy") {
                 Toggle("Local-only mode", isOn: $draft.localOnly)

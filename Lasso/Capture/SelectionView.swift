@@ -12,6 +12,7 @@ struct CaptureSessionView: View {
     @State private var dragStart: CGPoint?
     @State private var liveRect: CGRect?
     @State private var panelHeight: CGFloat = 0
+    @State private var panelWidth: CGFloat = 460   // measured from the bar; seeds the on-screen clamp
 
     private var selectionRect: CGRect? {
         if let liveRect { return liveRect }
@@ -75,7 +76,6 @@ struct CaptureSessionView: View {
     }
 
     private func anchoredUI(rect: CGRect, in size: CGSize) -> some View {
-        let panelWidth: CGFloat = 460
         let margin: CGFloat = 12
         let gap: CGFloat = 14
 
@@ -100,8 +100,10 @@ struct CaptureSessionView: View {
         return VStack(alignment: .leading, spacing: 10) {
             ActionBar(coordinator: coordinator)
         }
-        .frame(width: panelWidth, alignment: .leading)
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panelHeight = $0 }
+        .fixedSize()   // size to the bar's content so labels never truncate
+        .onGeometryChange(for: CGSize.self) { $0.size } action: {
+            panelWidth = $0.width; panelHeight = $0.height
+        }
         .offset(x: x + coordinator.panelDragOffset.width,
                 y: y + coordinator.panelDragOffset.height)
     }
