@@ -361,7 +361,23 @@ struct SettingsView: View {
         Task {
             try? await Task.sleep(for: .milliseconds(400))
             guard staged == draft.ollamaBaseURL else { return }   // superseded by newer keystrokes
-            ollamaStatus = await OllamaEndpoint.status(for: staged)
+            let status = await OllamaEndpoint.status(for: staged)
+            ollamaStatus = status
+            if status.ok {   // server's up — (re)load the installed model list
+                availableModels = await OllamaModels.installed()
+                modelsLoaded = true
+                await intelligence.refreshVisionAvailability()
+            }
+        }
+    }
+
+    /// Manually re-fetch the installed Ollama models (e.g. after starting Ollama or pulling a model).
+    private func reloadOllamaModels() {
+        Task {
+            availableModels = await OllamaModels.installed()
+            modelsLoaded = true
+            ollamaStatus = await OllamaEndpoint.status(for: draft.ollamaBaseURL)
+            await intelligence.refreshVisionAvailability()
         }
     }
 
@@ -587,16 +603,26 @@ struct SettingsView: View {
     @ViewBuilder
     private func modelPicker(_ label: String, selection: Binding<String>,
                              autoLabel: String = "Auto") -> some View {
-        if noModels {
-            LabeledContent(label) { Text("No Ollama models").foregroundStyle(.secondary) }
-        } else {
-            Picker(label, selection: selection) {
-                Text(autoLabel).tag("")
-                let current = selection.wrappedValue
-                if !current.isEmpty, !availableModels.contains(current) {
-                    Text("\(current) (not installed)").tag(current)
+        LabeledContent(label) {
+            HStack(spacing: 8) {
+                if noModels {
+                    Text("No Ollama models").foregroundStyle(.secondary)
+                } else {
+                    Picker("", selection: selection) {
+                        Text(autoLabel).tag("")
+                        let current = selection.wrappedValue
+                        if !current.isEmpty, !availableModels.contains(current) {
+                            Text("\(current) (not installed)").tag(current)
+                        }
+                        ForEach(availableModels, id: \.self) { Text($0).tag($0) }
+                    }
+                    .labelsHidden().fixedSize()
                 }
-                ForEach(availableModels, id: \.self) { Text($0).tag($0) }
+                Button { reloadOllamaModels() } label: {
+                    Image(systemName: "arrow.clockwise").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Refresh installed models")
             }
         }
     }
