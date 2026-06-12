@@ -17,10 +17,10 @@ struct ActionBar: View {
     private var style: ActionBarStyle { ActionBarStyle(rawValue: styleRaw) ?? .compact }
 
     var body: some View {
-        GlassPanel {
-            VStack(alignment: .leading, spacing: 8) {
-                // A single row sized to its contents — the floating bar just grows as wide as needed,
-                // so nothing wraps or scrolls. Compact (icons) is narrow; labeled is wider.
+        VStack(alignment: .leading, spacing: 8) {
+            // The action bar panel. A single row sized to its contents — the floating bar grows as
+            // wide as needed, so nothing wraps or scrolls. Compact is narrow; cozy is wider.
+            GlassPanel {
                 HStack(spacing: 6) {
                     DragHandle(coordinator: coordinator)
                     HStack(spacing: 6) { pillItems }
@@ -28,15 +28,14 @@ struct ActionBar: View {
                     closeButton
                 }
                 .id(styleRaw)   // rebuild cleanly if the style is switched while the bar is open
+            }
 
-                // Detected data (links/phones/QR) — below the actions, so it never collides with the
-                // hover labels that float above the action row.
-                if let items = coordinator.context?.detectedData, !items.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(items) { item in
-                                DataPill(item: item) { coordinator.open(item) }
-                            }
+            // Detected dates/links/QR as separate chips floating *below* the bar (outside the panel).
+            if let items = coordinator.context?.detectedData, !items.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(items) { item in
+                            DataPill(item: item) { coordinator.open(item) }
                         }
                     }
                 }
@@ -159,7 +158,9 @@ private struct DataPill: View {
                 .padding(.horizontal, 9)
                 .padding(.vertical, 5)
                 .frame(maxWidth: 220)
-                .background(.tint.opacity(hovering ? 0.38 : 0.22), in: Capsule())
+                .background(.tint.opacity(hovering ? 0.45 : 0.30), in: Capsule())
+                .background(.regularMaterial, in: Capsule())   // legible as a floating chip
+                .overlay(Capsule().strokeBorder(.white.opacity(0.12)))
         }
         .buttonStyle(PressableStyle())
         .onHover { hovering = $0 }
