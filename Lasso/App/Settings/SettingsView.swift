@@ -159,7 +159,7 @@ struct SettingsView: View {
                     ForEach(availableProviders) { Text($0.label).tag($0) }
                 }
                 providerConfig
-                connectionRow
+                if showsConnectionRow { connectionRow }
                 caption(privacyLine)
             }
 
@@ -490,6 +490,11 @@ struct SettingsView: View {
         default:
             break
         }
+    }
+
+    /// Hide Test for MLX until its model is downloaded (nothing to test, and the result is stale).
+    private var showsConnectionRow: Bool {
+        draft.provider == .mlx ? MLXProvider.isDownloaded(draft.mlxModel) : true
     }
 
     /// "Test connection" + inline result. Validates the *staged* (unsaved) config so the user gets
