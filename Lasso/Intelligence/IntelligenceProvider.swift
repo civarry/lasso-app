@@ -391,7 +391,10 @@ final class IntelligenceCoordinator {
             if await cloud.isAvailable() { usedOffDeviceThisSession = true; return cloud }
             return nil
         case .mlx:
-            return nil
+            // A VLM text model serves images too — reuse it (one model for both roles).
+            guard MLXProvider.isVision(mlxModel) else { return nil }
+            let provider = MLXVisionProvider(modelID: mlxModel)
+            return await provider.isAvailable() ? provider : nil
         case .ollama:
             return await localOllamaVision()
         case .onDevice:
@@ -445,7 +448,7 @@ final class IntelligenceCoordinator {
             case .openAICompatible: return cloudReady("openai.apiKey", openAIModel) && Self.looksMultimodal(openAIModel)
             case .anthropic:        return cloudReady("anthropic.apiKey", anthropicModel) && Self.looksMultimodal(anthropicModel)
             case .ollama:           return await hasInstalledVisionModel()
-            case .mlx:              return false
+            case .mlx:              return MLXProvider.isVision(mlxModel) && MLXProvider.isDownloaded(mlxModel)
             case .onDevice:         return false   // Apple can't see images; no fallback
             }
         }
@@ -533,7 +536,7 @@ final class IntelligenceCoordinator {
         case .ollama:
             return OllamaModels.isVision(await resolvedTextModel())
         case .mlx:
-            return false
+            return MLXProvider.isVision(mlxModel)   // a VLM text model can take images natively
         case .openAICompatible:
             return Self.looksMultimodal(openAIModel)
         case .anthropic:

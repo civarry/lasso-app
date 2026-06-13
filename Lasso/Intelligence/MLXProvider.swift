@@ -58,8 +58,11 @@ struct MLXProvider: IntelligenceProvider {
                         instructions: Self.systemPrompt,
                         history: history.prior,
                         generateParameters: .init(maxTokens: 1024, temperature: 0.2))
+                    // If the turn carries an image (and this is a VLM), pass it natively so one VLM
+                    // can serve both text and vision — no separate vision model needed.
                     for try await chunk in session.streamResponse(
-                        to: history.prompt, role: history.role, images: [], videos: []) {
+                        to: history.prompt, role: history.role,
+                        images: Self.images(from: messages), videos: []) {
                         continuation.yield(chunk)
                     }
                     continuation.finish()
@@ -92,6 +95,23 @@ struct MLXProvider: IntelligenceProvider {
             }
         }
         return (Array(prior), last.text, mlxRole(for: last.role))
+    }
+
+    /// The image attached to the latest user turn (if any), as an MLX vision input.
+    private static func images(from turns: [ChatTurn]) -> [UserInput.Image] {
+        guard let base64 = turns.last(where: { $0.role == .user })?.imageBase64,
+              let data = Data(base64Encoded: base64),
+              let ciImage = CIImage(data: data) else { return [] }
+        return [.ciImage(ciImage)]
+    }
+
+    /// Heuristic: is this MLX model id a vision-language model (so it can serve images *and* text)?
+    static func isVision(_ id: String) -> Bool {
+        let n = id.lowercased()
+        return n.contains("-vl") || n.contains("vl-") || n.contains("vlm") || n.contains("vision")
+            || n.contains("llava") || n.contains("paligemma") || n.contains("pixtral")
+            || n.contains("moondream") || n.contains("internvl") || n.contains("smolvlm")
+            || n.contains("minicpm-v")
     }
 
     private static func mlxRole(for role: ChatTurn.Role) -> Chat.Message.Role {
