@@ -105,13 +105,49 @@ struct MLXProvider: IntelligenceProvider {
         return [.ciImage(ciImage)]
     }
 
-    /// Heuristic: is this MLX model id a vision-language model (so it can serve images *and* text)?
+    /// Whether an MLX model is a vision-language model (serves images *and* text). For a downloaded
+    /// model this reads its config.json (authoritative: a VLM has a `vision_config` / VLM
+    /// `model_type`); otherwise it falls back to a name heuristic until it's downloaded.
     static func isVision(_ id: String) -> Bool {
+        if let config = downloadedConfig(id) {
+            if config["vision_config"] != nil { return true }
+            if let type = config["model_type"] as? String,
+               visionModelTypes.contains(type.lowercased()) { return true }
+            if let archs = config["architectures"] as? [String],
+               archs.contains(where: { let a = $0.lowercased(); return a.contains("vl") || a.contains("vision") }) {
+                return true
+            }
+            return false   // config present, no vision signal → genuinely text-only
+        }
+        return nameLooksVision(id)
+    }
+
+    private static let visionModelTypes: Set<String> = [
+        "qwen2_vl", "qwen2_5_vl", "llava", "llava_next", "paligemma", "pixtral", "idefics2",
+        "idefics3", "mllama", "internvl_chat", "molmo", "smolvlm", "minicpm-v", "gemma3",
+    ]
+
+    private static func nameLooksVision(_ id: String) -> Bool {
         let n = id.lowercased()
         return n.contains("-vl") || n.contains("vl-") || n.contains("vlm") || n.contains("vision")
             || n.contains("llava") || n.contains("paligemma") || n.contains("pixtral")
             || n.contains("moondream") || n.contains("internvl") || n.contains("smolvlm")
             || n.contains("minicpm-v")
+    }
+
+    /// Read a downloaded model's config.json from the HF cache snapshot (nil if not downloaded).
+    private static func downloadedConfig(_ id: String) -> [String: Any]? {
+        let snapshots = MLXCache.directory(for: id).appendingPathComponent("snapshots", isDirectory: true)
+        guard let dirs = try? FileManager.default.contentsOfDirectory(
+            at: snapshots, includingPropertiesForKeys: nil) else { return nil }
+        for dir in dirs {
+            let url = dir.appendingPathComponent("config.json")
+            if let data = try? Data(contentsOf: url),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                return json
+            }
+        }
+        return nil
     }
 
     private static func mlxRole(for role: ChatTurn.Role) -> Chat.Message.Role {
