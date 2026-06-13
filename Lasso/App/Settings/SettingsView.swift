@@ -112,8 +112,9 @@ struct SettingsView: View {
 
     private var general: some View {
         Form {
-            Section("Capture") {
-                KeyboardShortcuts.Recorder("Shortcut", name: .capture)
+            Section("Shortcuts") {
+                KeyboardShortcuts.Recorder("Capture", name: .capture)
+                KeyboardShortcuts.Recorder("Chat", name: .chat)
                 Toggle("Launch at login", isOn: $draft.launchAtLogin)
             }
             Section("Appearance") {

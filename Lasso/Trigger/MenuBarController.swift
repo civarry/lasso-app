@@ -10,6 +10,10 @@ struct MenuBarController: View {
             CaptureCoordinator.shared.begin()
         }
 
+        Button("Open Chat") {
+            ChatPanelController.shared.present()
+        }
+
         Divider()
 
         Button("Settings…") {

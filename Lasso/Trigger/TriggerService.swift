@@ -18,10 +18,16 @@ final class TriggerService {
             CaptureCoordinator.shared.cancel()
         }
         KeyboardShortcuts.disable(.cancelCapture)
+
+        // Chat panel: separate global shortcut (default ⌥⌘A). Press again to dismiss.
+        KeyboardShortcuts.onKeyUp(for: .chat) {
+            ChatPanelController.shared.toggle()
+        }
     }
 }
 
 extension KeyboardShortcuts.Name {
     static let capture = Self("capture", default: .init(.space, modifiers: [.option, .command]))
     static let cancelCapture = Self("cancelCapture", default: .init(.escape))
+    static let chat = Self("chat", default: .init(.a, modifiers: [.option, .command]))
 }
