@@ -107,8 +107,15 @@ struct MLXProvider: IntelligenceProvider {
         Set(UserDefaults.standard.stringArray(forKey: downloadedKey) ?? [])
     }
 
+    /// Downloaded == present in the on-disk Hugging Face cache (source of truth), so models fetched
+    /// before tracking existed — or by other tools — are recognised too.
     static func isDownloaded(_ id: String) -> Bool {
-        downloadedModels().contains(normalizedID(id))
+        let snapshots = MLXCache.directory(for: id).appendingPathComponent("snapshots", isDirectory: true)
+        if let entries = try? FileManager.default.contentsOfDirectory(atPath: snapshots.path),
+           !entries.isEmpty {
+            return true
+        }
+        return downloadedModels().contains(normalizedID(id))   // fallback
     }
 
     static func markDownloaded(_ id: String) {
