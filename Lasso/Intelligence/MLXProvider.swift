@@ -117,6 +117,21 @@ struct MLXProvider: IntelligenceProvider {
         UserDefaults.standard.set(Array(set), forKey: downloadedKey)
     }
 
+    static func unmarkDownloaded(_ id: String) {
+        var set = downloadedModels()
+        set.remove(normalizedID(id))
+        UserDefaults.standard.set(Array(set), forKey: downloadedKey)
+    }
+
+    /// Delete a downloaded model's cached files from disk and forget it (BYOM: the user manages
+    /// their models). Also evicts the in-memory container so the freed model isn't reused this session.
+    static func remove(_ entry: MLXCache.Entry) async throws {
+        try MLXCache.remove(entry)
+        unmarkDownloaded(entry.repoID)
+        await MLXModelCache.shared.evict(MLXCache.directoryName(for: entry.repoID))
+        await MLXModelCache.shared.evict(entry.repoID)
+    }
+
     static func normalizedID(_ id: String) -> String {
         let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? defaultModelID : trimmed
@@ -147,5 +162,75 @@ private actor MLXModelCache {
         containers[modelID] = container
         MLXProvider.markDownloaded(modelID)   // a successful load means it's cached on disk
         return container
+    }
+
+    func evict(_ key: String) { containers[key] = nil }
+}
+
+/// Read-only view of the on-disk Hugging Face model cache used by MLX, for "what's downloaded" +
+/// removal in Settings. Layout: <root>/models--<org>--<name>; root honours HF_HOME /
+/// HUGGINGFACE_HUB_CACHE, else ~/.cache/huggingface/hub.
+enum MLXCache {
+    struct Entry: Identifiable {
+        let repoID: String
+        let url: URL
+        let sizeBytes: Int64
+        var id: String { url.path }
+    }
+
+    static func root() -> URL {
+        let env = ProcessInfo.processInfo.environment
+        if let hub = env["HUGGINGFACE_HUB_CACHE"], !hub.isEmpty {
+            return URL(fileURLWithPath: hub, isDirectory: true)
+        }
+        if let home = env["HF_HOME"], !home.isEmpty {
+            return URL(fileURLWithPath: home, isDirectory: true).appendingPathComponent("hub", isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
+    }
+
+    static func directoryName(for repoID: String) -> String {
+        "models--" + MLXProvider.normalizedID(repoID).replacingOccurrences(of: "/", with: "--")
+    }
+
+    /// Downloaded models found on disk, with their size.
+    static func installed() -> [Entry] {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(
+            at: root(), includingPropertiesForKeys: [.isDirectoryKey]) else { return [] }
+        return items.compactMap { url -> Entry? in
+            let name = url.lastPathComponent
+            guard name.hasPrefix("models--"),
+                  (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+            else { return nil }
+            return Entry(repoID: repoID(fromDirName: name), url: url, sizeBytes: size(of: url))
+        }.sorted { $0.repoID.localizedCaseInsensitiveCompare($1.repoID) == .orderedAscending }
+    }
+
+    /// "models--org--name" → "org/name" (repo ids have a single slash → first "--").
+    static func repoID(fromDirName name: String) -> String {
+        let stripped = String(name.dropFirst("models--".count))
+        guard let range = stripped.range(of: "--") else { return stripped }
+        return stripped.replacingCharacters(in: range, with: "/")
+    }
+
+    static func size(of url: URL) -> Int64 {
+        guard let en = FileManager.default.enumerator(
+            at: url, includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileSizeKey]) else { return 0 }
+        var total: Int64 = 0
+        for case let file as URL in en {
+            let v = try? file.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey])
+            total += Int64(v?.totalFileAllocatedSize ?? v?.fileSize ?? 0)
+        }
+        return total
+    }
+
+    static func remove(_ entry: Entry) throws {
+        try FileManager.default.removeItem(at: entry.url)
+        // Best-effort: drop the matching lock dir too.
+        let locks = root().appendingPathComponent(".locks", isDirectory: true)
+            .appendingPathComponent(entry.url.lastPathComponent, isDirectory: true)
+        try? FileManager.default.removeItem(at: locks)
     }
 }

@@ -67,6 +67,7 @@ struct SettingsView: View {
     @State private var modelLoadNote: String?
     @State private var ollamaStatus: OllamaEndpoint.Status?
     @State private var mlxDownload: MLXDownloadState = .idle
+    @State private var mlxInstalled: [MLXCache.Entry] = []
 
     enum MLXDownloadState: Equatable { case idle, downloading, ready, failed(String) }
     @AppStorage("ui.actionBarStyle") private var actionBarStyle = ActionBarStyle.compact.rawValue
@@ -271,6 +272,7 @@ struct SettingsView: View {
         case .mlx:
             TextField("Model", text: $draft.mlxModel, prompt: Text(MLXProvider.defaultModelID))
                 .onChange(of: draft.mlxModel) { mlxDownload = .idle }
+                .onAppear { refreshMLXInstalled() }
             HStack(spacing: 8) {
                 Button(MLXProvider.isDownloaded(draft.mlxModel) ? "Re-download" : "Download model") {
                     downloadMLXModel()
@@ -282,6 +284,20 @@ struct SettingsView: View {
             caption("Native MLX runs fully on-device. The model downloads once from Hugging Face "
                 + "(that fetch leaves your Mac); after that, inference is local. Paste any MLX text "
                 + "model id, e.g. \(MLXProvider.defaultModelID).")
+            if !mlxInstalled.isEmpty {
+                LabeledContent("Downloaded") {
+                    VStack(alignment: .trailing, spacing: 6) {
+                        ForEach(mlxInstalled) { entry in
+                            HStack(spacing: 8) {
+                                Text(entry.repoID).font(.caption).lineLimit(1).truncationMode(.middle)
+                                Text(byteString(entry.sizeBytes)).font(.caption2).foregroundStyle(.secondary)
+                                Button("Remove", role: .destructive) { removeMLXModel(entry) }
+                                    .controlSize(.small)
+                            }
+                        }
+                    }
+                }
+            }
         case .openAICompatible:
             Picker("Service", selection: openAIServiceBinding) {
                 Text("OpenAI").tag("openai")
@@ -579,7 +595,26 @@ struct SettingsView: View {
             } catch {
                 mlxDownload = .failed(error.localizedDescription)
             }
+            refreshMLXInstalled()
         }
+    }
+
+    private func refreshMLXInstalled() {
+        mlxInstalled = MLXCache.installed()
+    }
+
+    private func removeMLXModel(_ entry: MLXCache.Entry) {
+        Task {
+            try? await MLXProvider.remove(entry)
+            if MLXProvider.normalizedID(draft.mlxModel) == MLXProvider.normalizedID(entry.repoID) {
+                mlxDownload = .idle
+            }
+            refreshMLXInstalled()
+        }
+    }
+
+    private func byteString(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
     nonisolated static func openAIServiceURL(_ service: String, custom: String) -> String {
