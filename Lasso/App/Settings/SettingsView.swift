@@ -534,7 +534,7 @@ struct SettingsView: View {
     static let openAIServices = ["openai", "groq", "openrouter", "custom"]
 
     /// Base URL for a known service preset, or the user's custom URL.
-    static func openAIServiceURL(_ service: String, custom: String) -> String {
+    nonisolated static func openAIServiceURL(_ service: String, custom: String) -> String {
         switch service {
         case "openai": "https://api.openai.com/v1"
         case "groq": "https://api.groq.com/openai/v1"
