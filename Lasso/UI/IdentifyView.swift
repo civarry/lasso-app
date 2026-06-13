@@ -356,12 +356,33 @@ struct IdentifyView: View {
     private func maybeSynthesize() {
         guard vision.settled, sources.settled, !synthStarted else { return }
         synthStarted = true
+        // Code / text / UI captures have no photo subject to identify — point the user to the right
+        // tool instead of returning a weak "no subject" answer.
+        if let redirect = Self.redirectMessage(for: intent) {
+            summary = redirect
+            Log.intelligence.notice("⏱ identify redirect (\(intent.rawValue, privacy: .public))")
+            return
+        }
         Task {
             let tRank = Date()
             rankHits()    // word-overlap ordering of web/community hits before synthesizing
             Log.intelligence.notice("⏱ rank: \(Self.ms(tRank), privacy: .public)")
             await startSynthesis()
         }
+    }
+
+    /// For non-subject captures (code / plain text / app UI) Identify isn't the right tool — guide the
+    /// user to the actions that are. Returns nil for everything else (normal identification).
+    private static func redirectMessage(for intent: IdentifyIntent) -> String? {
+        let kind: String
+        switch intent {
+        case .code: kind = "code"
+        case .ui:   kind = "an app screenshot"
+        case .text: kind = "mostly text"
+        default:    return nil
+        }
+        return "This looks like \(kind), not a photo to identify. To work with it, use **Copy text**, "
+            + "**Ask AI**, **Summarize**, or **Continue in chat** on the selection."
     }
 
     private func startSynthesis() async {
