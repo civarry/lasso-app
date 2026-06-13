@@ -12,4 +12,5 @@ enum Log {
     static let ocr = Logger(subsystem: subsystem, category: "ocr")
     static let intelligence = Logger(subsystem: subsystem, category: "intelligence")
     static let permissions = Logger(subsystem: subsystem, category: "permissions")
+    static let chat = Logger(subsystem: subsystem, category: "chat")
 }

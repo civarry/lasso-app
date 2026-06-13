@@ -161,6 +161,7 @@ final class ChatController {
         seededContext = nil
         isStreaming = true
 
+        Log.chat.notice("send: typedChars=\(typed.count, privacy: .public) hasImage=\(image != nil, privacy: .public) history=\(self.messages.count, privacy: .public)")
         streamTask?.cancel()
         streamTask = Task { [weak self] in
             await self?.runTurn(typed: typed, image: image, context: context,
@@ -170,25 +171,45 @@ final class ChatController {
 
     private func runTurn(typed: String, image: CGImage?, context: String?,
                          userID: UUID, assistantID: UUID) async {
+        let t0 = Date()
+        func ms() -> Int { Int(Date().timeIntervalSince(t0) * 1000) }
+        Log.chat.notice("runTurn ▶ begin")
+
         var userText = typed
         if let context, !context.isEmpty {
             userText = "Context — text I selected on screen:\n\(context)\n\n"
                 + (typed.isEmpty ? "What does this say / mean?" : typed)
+            Log.chat.notice("runTurn · folded seeded context (\(context.count, privacy: .public) chars)")
         }
         var imageBase64: String?
 
         if let image {
-            if await intelligence.textModelSupportsVision() {
+            Log.chat.notice("runTurn · image present — checking native vision (+\(ms(), privacy: .public)ms)")
+            let native = await intelligence.textModelSupportsVision()
+            Log.chat.notice("runTurn · textModelSupportsVision=\(native, privacy: .public) (+\(ms(), privacy: .public)ms)")
+            if native {
                 imageBase64 = ImageEncoder.jpegBase64(image)
+                Log.chat.notice("runTurn · native encode done, base64=\(imageBase64?.count ?? 0, privacy: .public) chars (+\(ms(), privacy: .public)ms)")
             }
             if imageBase64 == nil {
                 // Text-only model: describe the image via the vision provider and fold it in.
+                Log.chat.notice("runTurn · resolving vision provider for describe (+\(ms(), privacy: .public)ms)")
+                let vision = await intelligence.activeVisionProvider()
+                Log.chat.notice("runTurn · vision provider=\(vision == nil ? "nil" : "\(type(of: vision!))", privacy: .public) (+\(ms(), privacy: .public)ms)")
                 var described: String?
-                if let vision = await intelligence.activeVisionProvider() {
+                if let vision {
+                    let label = intelligence.imageEngineLabel
+                    update(assistantID) { $0.statusText = "Looking at the image… · \(label)" }
                     let prompt = typed.isEmpty
                         ? "Describe this image in detail."
                         : "Describe this image in detail to help answer: \(typed)"
-                    described = try? await vision.describe(image, prompt: prompt)
+                    Log.chat.notice("runTurn · describe START (+\(ms(), privacy: .public)ms)")
+                    do {
+                        described = try await vision.describe(image, prompt: prompt)
+                        Log.chat.notice("runTurn · describe DONE len=\(described?.count ?? 0, privacy: .public) (+\(ms(), privacy: .public)ms)")
+                    } catch {
+                        Log.chat.error("runTurn · describe FAILED: \(error.localizedDescription, privacy: .public) (+\(ms(), privacy: .public)ms)")
+                    }
                 }
                 if let described, !described.isEmpty {
                     userText = """
@@ -200,6 +221,7 @@ final class ChatController {
                     """
                 } else {
                     // No backend could read the image — don't send a blank/garbage turn.
+                    Log.chat.error("runTurn · no usable image description — surfacing error (+\(ms(), privacy: .public)ms)")
                     finishError(assistantID,
                         "I couldn't read that image — your current model can't see images. Set an "
                         + "Image provider under Settings ▸ Intelligence ▸ Image (a local Ollama vision "
@@ -212,18 +234,29 @@ final class ChatController {
         // Persist what was actually sent so the description / image carries into follow-up turns.
         update(userID) { $0.promptText = userText; $0.imageBase64 = imageBase64 }
 
+        let textLabel = intelligence.textEngineLabel
+        update(assistantID) { $0.statusText = "Thinking… · \(textLabel)" }
         let turns = buildTurns(newUserText: userText, imageBase64: imageBase64)
-        if Task.isCancelled { return }
+        let totalChars = turns.reduce(0) { $0 + $1.text.count }
+        Log.chat.notice("runTurn · built \(turns.count, privacy: .public) turns, \(totalChars, privacy: .public) chars — stream START (+\(ms(), privacy: .public)ms)")
+        if Task.isCancelled { Log.chat.notice("runTurn · cancelled before stream"); return }
 
+        var deltas = 0
+        var chars = 0
+        var firstTokenMs = -1
         do {
             for try await delta in intelligence.respond(messages: turns) {
-                if Task.isCancelled { return }
+                if Task.isCancelled { Log.chat.notice("runTurn · cancelled mid-stream after \(chars, privacy: .public) chars"); return }
+                if firstTokenMs < 0 { firstTokenMs = ms(); Log.chat.notice("runTurn · first token (+\(firstTokenMs, privacy: .public)ms)") }
+                deltas += 1; chars += delta.count
                 update(assistantID) { $0.text += delta }
             }
         } catch {
+            Log.chat.error("runTurn · stream ERROR after \(chars, privacy: .public) chars: \(error.localizedDescription, privacy: .public) (+\(ms(), privacy: .public)ms)")
             finishError(assistantID, error.localizedDescription)
             return
         }
+        Log.chat.notice("runTurn ✓ stream DONE deltas=\(deltas, privacy: .public) chars=\(chars, privacy: .public) (+\(ms(), privacy: .public)ms)")
         finishStreaming(assistantID)
     }
 

@@ -231,6 +231,34 @@ final class IntelligenceCoordinator {
             : "All processing stayed on this Mac."
     }
 
+    /// Human label for the configured **text** engine (e.g. "Groq · openai/gpt-oss-20b").
+    var textEngineLabel: String {
+        switch effectivePreferred {
+        case .onDevice: return "Apple Intelligence"
+        case .ollama: return ollamaModel.isEmpty ? "Ollama (auto)" : "Ollama · \(ollamaModel)"
+        case .openAICompatible: return "\(openAIDisplayName()) · \(openAIModel)"
+        case .anthropic: return "Anthropic · \(anthropicModel)"
+        }
+    }
+
+    /// Human label for the configured **image** (vision) backend (e.g. "OpenAI · gpt-4o").
+    var imageEngineLabel: String {
+        func cloudName(_ urlString: String) -> String {
+            let host = (URL(string: urlString)?.host ?? "").lowercased()
+            if host.contains("groq") { return "Groq" }
+            if host.contains("openrouter") { return "OpenRouter" }
+            if host.contains("openai") { return "OpenAI" }
+            if host == "localhost" || host == "127.0.0.1" { return "Local" }
+            return "Cloud"
+        }
+        switch effectiveVisionEngine {
+        case .matchText: return textEngineLabel   // images go through the text model
+        case .ollama: return visionModel.isEmpty ? "Ollama vision (auto)" : "Ollama · \(visionModel)"
+        case .openAICompatible: return "\(cloudName(visionOpenAIBaseURL)) · \(visionOpenAIModel)"
+        case .anthropic: return "Anthropic · \(visionAnthropicModel)"
+        }
+    }
+
     /// SF Symbol + short location note for the last provider, for result attribution.
     var lastProviderIcon: String {
         lastProviderIsAppleOnDevice ? "cpu" : (lastProviderIsLocal ? "server.rack" : "cloud")
@@ -445,7 +473,10 @@ final class IntelligenceCoordinator {
         AsyncThrowingStream { continuation in
             let task = Task { [weak self] in
                 guard let self else { continuation.finish(); return }
+                let t0 = Date()
+                Log.chat.notice("coordinator.respond · resolving active provider…")
                 let provider = await self.activeProvider()
+                Log.chat.notice("coordinator.respond · provider=\(provider.name, privacy: .public) local=\(provider.isLocal, privacy: .public) (+\(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public)ms)")
                 self.lastProviderName = provider.name
                 self.lastProviderIsAppleOnDevice = provider.isAppleOnDevice
                 self.lastProviderIsLocal = provider.isLocal

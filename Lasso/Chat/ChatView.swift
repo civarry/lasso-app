@@ -191,12 +191,22 @@ struct ChatView: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 6) {
-            Image(systemName: providerIcon).font(.caption2)
-            Text(providerNote).font(.caption2)
-            Spacer()
+        VStack(alignment: .leading, spacing: 2) {
+            footerLine(icon: textIcon, role: "Text", label: intelligence.textEngineLabel)
+            if chat.imageInputAvailable {
+                footerLine(icon: imageIcon, role: "Image", label: intelligence.imageEngineLabel)
+            }
         }
         .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func footerLine(icon: String, role: String, label: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon).font(.caption2)
+            Text("\(role) · \(label)")
+                .font(.caption2).lineLimit(1).truncationMode(.middle)
+        }
     }
 
     private var canSend: Bool {
@@ -207,13 +217,20 @@ struct ChatView: View {
         intelligence.lastProviderName.isEmpty ? intelligence.effectivePreferred.label
             : intelligence.lastProviderName
     }
-    private var providerIcon: String {
-        intelligence.lastProviderName.isEmpty ? "cpu" : intelligence.lastProviderIcon
+    /// Locality icon (cpu = Apple on-device, server.rack = local Ollama, cloud = remote).
+    private var textIcon: String {
+        switch intelligence.effectivePreferred {
+        case .onDevice: "cpu"
+        case .ollama: "server.rack"
+        case .openAICompatible, .anthropic: "cloud"
+        }
     }
-    private var providerNote: String {
-        intelligence.lastProviderName.isEmpty
-            ? "\(engineName) · on this Mac"
-            : "\(intelligence.lastProviderName) · \(intelligence.lastProviderLocationNote)"
+    private var imageIcon: String {
+        switch intelligence.effectiveVisionEngine {
+        case .matchText: textIcon
+        case .ollama: "server.rack"
+        case .openAICompatible, .anthropic: "cloud"
+        }
     }
 
     private func attachImage() {
@@ -248,7 +265,11 @@ private struct MessageBubble: View {
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
                 if message.isStreaming && message.text.isEmpty {
-                    ProgressView().controlSize(.small)
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text(message.statusText ?? "…")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 } else if !message.text.isEmpty {
                     MarkdownView(text: message.text, fontSize: fontSize)
                         .textSelection(.enabled)

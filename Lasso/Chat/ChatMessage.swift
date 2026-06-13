@@ -17,6 +17,8 @@ struct ChatMessage: Identifiable, @unchecked Sendable {
     var isStreaming: Bool = false
     /// Set on an assistant message when the request failed, so the bubble can style it as an error.
     var isError: Bool = false
+    /// Live progress shown before the first token arrives ("Looking at the image…", "Thinking…").
+    var statusText: String?
 
     /// The text actually sent to the model for this turn — may differ from `text` because it folds in
     /// seeded capture context or an image description. Used to rebuild conversation history so context
