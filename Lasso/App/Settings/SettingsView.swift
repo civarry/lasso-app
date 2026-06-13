@@ -277,22 +277,20 @@ struct SettingsView: View {
         case .ollama:
             modelPicker("Model", selection: $draft.ollamaModel)
         case .mlx:
-            LabeledContent("Model") {
-                HStack(spacing: 6) {
-                    Picker("", selection: mlxModelBinding) {
-                        ForEach(Self.mlxSuggestions, id: \.id) { Text($0.name).tag($0.id) }
-                        Divider()
-                        Text("Custom…").tag(Self.mlxCustomTag)
-                    }
-                    .labelsHidden()
-                    mlxDownloadControl
-                }
+            // Clean Picker row — flush right, identical to the other selection rows.
+            Picker("Model", selection: mlxModelBinding) {
+                ForEach(Self.mlxSuggestions, id: \.id) { Text($0.name).tag($0.id) }
+                Divider()
+                Text("Custom…").tag(Self.mlxCustomTag)
             }
             .onAppear { refreshMLXInstalled(); refreshMLXRemoteSize() }
             .onChange(of: draft.mlxModel) { mlxDownload = .idle; refreshMLXRemoteSize() }
             if mlxIsCustom {
                 TextField("Model id", text: $draft.mlxModel, prompt: Text(MLXProvider.defaultModelID))
             }
+
+            // Download / progress on its own left-aligned row (doesn't disturb the Picker layout).
+            mlxDownloadRow
 
             // Other downloaded models (manage/cleanup) — only when there are extras.
             if !otherDownloadedMLX.isEmpty {
@@ -580,38 +578,48 @@ struct SettingsView: View {
     /// Base URL for a known service preset, or the user's custom URL.
     // MARK: - MLX download
 
-    /// Inline download state in the Model row: download icon (+ size) → progress % → green check.
+    /// Download / progress on its own row (keeps the Model Picker clean). Nothing shows once the
+    /// selected model is downloaded — it then lives in the "Downloaded models" list with Remove.
     @ViewBuilder
-    private var mlxDownloadControl: some View {
+    private var mlxDownloadRow: some View {
         if mlxDownload == .downloading {
-            if let total = mlxRemoteSize, total > 0 {
-                ProgressView(value: mlxProgress).frame(width: 56)
-                Text("\(Int(mlxProgress * 100))%").font(.caption2).monospacedDigit().foregroundStyle(.secondary)
-            } else {
-                ProgressView().controlSize(.small)
+            HStack(spacing: 8) {
+                if let total = mlxRemoteSize, total > 0 {
+                    ProgressView(value: mlxProgress).frame(width: 120)
+                    Text("\(Int(mlxProgress * 100))% · \(byteString(mlxDownloadedBytes)) / \(byteString(total))")
+                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                } else {
+                    ProgressView().controlSize(.small)
+                    Text("Downloading…").font(.caption).foregroundStyle(.secondary)
+                }
+                Button("Cancel") { cancelMLXDownload() }.controlSize(.small)
+                Spacer()
             }
-            Button { cancelMLXDownload() } label: { Image(systemName: "xmark.circle.fill") }
-                .buttonStyle(.borderless).foregroundStyle(.secondary).help("Cancel download")
         } else if case .failed(let message) = mlxDownload {
-            Button { downloadMLXModel() } label: { Image(systemName: "arrow.clockwise.circle") }
-                .buttonStyle(.borderless).foregroundStyle(.orange).help(message)
-        } else if MLXProvider.isDownloaded(draft.mlxModel) {
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                .help("Downloaded — on this Mac")
-        } else {
-            Button { downloadMLXModel() } label: { Image(systemName: "arrow.down.circle") }
-                .buttonStyle(.borderless)
+            HStack(spacing: 8) {
+                Button { downloadMLXModel() } label: { Label("Retry", systemImage: "arrow.clockwise") }
+                Text(message).font(.caption).foregroundStyle(.orange).lineLimit(2)
+                Spacer()
+            }
+        } else if !MLXProvider.isDownloaded(draft.mlxModel) {
+            HStack(spacing: 8) {
+                Button { downloadMLXModel() } label: {
+                    Label(mlxDownloadLabel, systemImage: "arrow.down.circle")
+                }
                 .disabled(draft.localOnly)
-                .help(mlxDownloadHelp)   // size now loads reliably (onChange), so hover shows it
+                if draft.localOnly {
+                    Text("Local-only mode blocks downloads").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
         }
     }
 
-    /// Hover text for the download icon — surfaces the size here instead of inline.
-    private var mlxDownloadHelp: String {
-        if draft.localOnly { return "Local-only mode blocks downloads (the fetch leaves your Mac)" }
-        if mlxSizeLoading { return "Checking download size…" }
-        if let size = mlxRemoteSize { return "Download this model · \(byteString(size))" }
-        return "Download this model"
+    /// Download button label with the size shown directly (no hover needed).
+    private var mlxDownloadLabel: String {
+        if mlxSizeLoading { return "Download model · checking size…" }
+        if let size = mlxRemoteSize { return "Download model · \(byteString(size))" }
+        return "Download model"
     }
 
     private func downloadMLXModel() {
