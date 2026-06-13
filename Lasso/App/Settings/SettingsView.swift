@@ -75,6 +75,7 @@ struct SettingsView: View {
     @State private var mlxDownloadedBytes: Int64 = 0
     @State private var mlxDownloadTask: Task<Void, Never>?
     @State private var mlxPollTask: Task<Void, Never>?
+    @State private var mlxRemoveConfirm = false
 
     enum MLXDownloadState: Equatable { case idle, downloading, ready, failed(String) }
     @AppStorage("ui.actionBarStyle") private var actionBarStyle = ActionBarStyle.compact.rawValue
@@ -505,12 +506,25 @@ struct SettingsView: View {
             Button("Test") { runTest() }
                 .buttonStyle(.bordered)
                 .disabled(testState == .testing)
-            if draft.provider == .mlx, let entry = currentModelEntry {
-                Button("Remove", role: .destructive) { removeMLXModel(entry) }
-                    .buttonStyle(.bordered)
+            if draft.provider == .mlx, MLXProvider.isDownloaded(draft.mlxModel) {
+                Label("On this Mac", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green).font(.caption)
             }
             Spacer()
             testResultView
+            if draft.provider == .mlx, let entry = currentModelEntry {
+                Button { mlxRemoveConfirm = true } label: { Image(systemName: "trash") }
+                    .buttonStyle(.borderless).foregroundStyle(.red)
+                    .help("Remove this model")
+                    .confirmationDialog("Remove \(entry.repoID)?",
+                                        isPresented: $mlxRemoveConfirm, titleVisibility: .visible) {
+                        Button("Remove", role: .destructive) { removeMLXModel(entry) }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Deletes the downloaded files (\(byteString(entry.sizeBytes))). "
+                            + "You can download it again later.")
+                    }
+            }
         }
     }
 
@@ -615,9 +629,8 @@ struct SettingsView: View {
                 Spacer()
             }
         } else {
-            // Selected model is on disk. (Remove lives on the Test row below.)
-            Label("On this Mac", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green).font(.caption)
+            // Downloaded: status + Remove live on the Test row below.
+            EmptyView()
         }
     }
 
