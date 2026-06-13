@@ -13,4 +13,20 @@ enum Log {
     static let intelligence = Logger(subsystem: subsystem, category: "intelligence")
     static let permissions = Logger(subsystem: subsystem, category: "permissions")
     static let chat = Logger(subsystem: subsystem, category: "chat")
+    static let mlx = Logger(subsystem: subsystem, category: "mlx")
+}
+
+/// App memory footprint (≈ Activity Monitor's "Memory") for diagnostics.
+enum MemoryReport {
+    static func footprintMB() -> Int {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? Int(info.phys_footprint / (1024 * 1024)) : 0
+    }
 }

@@ -268,7 +268,12 @@ private actor MLXModelCache {
                    progress: (@Sendable (Progress) -> Void)? = nil) async throws -> ModelContainer {
         startMemoryPressureMonitorIfNeeded()
         scheduleIdleEviction()
-        if let container = containers[modelID] { return container }
+        if let container = containers[modelID] {
+            Log.mlx.notice("reuse \(modelID, privacy: .public) (in memory) · mem=\(MemoryReport.footprintMB(), privacy: .public)MB")
+            return container
+        }
+        Log.mlx.notice("load START \(modelID, privacy: .public) · mem=\(MemoryReport.footprintMB(), privacy: .public)MB")
+        let t0 = Date()
         let container: ModelContainer
         if let progress {
             container = try await #huggingFaceLoadModelContainer(
@@ -280,17 +285,21 @@ private actor MLXModelCache {
         containers[modelID] = container
         MLXProvider.markDownloaded(modelID)   // a successful load means it's cached on disk
         scheduleIdleEviction()
+        let ms = Int(Date().timeIntervalSince(t0) * 1000)
+        Log.mlx.notice("load DONE \(modelID, privacy: .public) in \(ms, privacy: .public)ms · loaded=\(self.containers.count, privacy: .public) · mem=\(MemoryReport.footprintMB(), privacy: .public)MB")
         return container
     }
 
     func evict(_ key: String) { containers[key] = nil }
 
     /// Drop all cached models and release MLX's GPU buffer cache to free unified memory.
-    func evictAll() {
+    func evictAll(reason: String) {
         guard !containers.isEmpty else { return }
+        let count = containers.count
+        let before = MemoryReport.footprintMB()
         containers.removeAll()
         MLX.Memory.clearCache()   // release MLX's GPU buffer cache
-        Log.intelligence.notice("MLX: freed cached models to reclaim memory")
+        Log.mlx.notice("EVICT \(count, privacy: .public) model(s) [\(reason, privacy: .public)] · mem \(before, privacy: .public)→\(MemoryReport.footprintMB(), privacy: .public)MB")
     }
 
     private func scheduleIdleEviction() {
@@ -298,7 +307,7 @@ private actor MLXModelCache {
         idleEviction = Task { [weak self] in
             try? await Task.sleep(nanoseconds: Self.idleSeconds * 1_000_000_000)
             if Task.isCancelled { return }
-            await self?.evictAll()
+            await self?.evictAll(reason: "idle 3m")
         }
     }
 
@@ -306,7 +315,7 @@ private actor MLXModelCache {
         guard pressureSource == nil else { return }
         let source = DispatchSource.makeMemoryPressureSource(
             eventMask: [.warning, .critical], queue: .global(qos: .utility))
-        source.setEventHandler { Task { await MLXModelCache.shared.evictAll() } }
+        source.setEventHandler { Task { await MLXModelCache.shared.evictAll(reason: "memory pressure") } }
         source.resume()
         pressureSource = source
     }
