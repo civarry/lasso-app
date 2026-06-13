@@ -11,6 +11,7 @@ struct SettingsView: View {
         var ollamaModel = ""
         var ollamaBaseURL = ""          // custom Ollama server URL; "" = Auto (localhost:11434)
         var ollamaAutoStart = false     // start Ollama when Lasso launches (only if installed)
+        var mlxModel = MLXProvider.defaultModelID
         var visionModel = ""
         // OpenAI-compatible. The API *key* is shared per service (it's the account key, not per role),
         // so Text and Image reuse it for the same service. The *model* is per role + service. Each
@@ -254,7 +255,7 @@ struct SettingsView: View {
     /// Engines offered in the picker — cloud options are hidden in local-only mode (Apple/Ollama
     /// only). Keyed to the *saved* setting so it only changes after Save & Apply, not while editing.
     private var availableProviders: [ProviderKind] {
-        saved.localOnly ? [.onDevice, .ollama] : ProviderKind.allCases
+        saved.localOnly ? [.onDevice, .ollama, .mlx] : ProviderKind.allCases
     }
 
     @ViewBuilder
@@ -264,6 +265,9 @@ struct SettingsView: View {
             EmptyView()
         case .ollama:
             modelPicker("Model", selection: $draft.ollamaModel)
+        case .mlx:
+            TextField("Model", text: $draft.mlxModel, prompt: Text(MLXProvider.defaultModelID))
+            caption("Experimental native MLX path. Uses MLX Swift LM in-process; model download UX is still rough.")
         case .openAICompatible:
             Picker("Service", selection: openAIServiceBinding) {
                 Text("OpenAI").tag("openai")
@@ -508,6 +512,8 @@ struct SettingsView: View {
                     + "or a cloud image provider for Identify."
             case .ollama:
                 return "Images use your Ollama model if it’s multimodal, else your best installed vision model."
+            case .mlx:
+                return "MLX text is local, but this experiment is text-only for now — choose a dedicated image provider below."
             case .openAICompatible:
                 return "Images go to your \(serviceName(draft.openAIBaseURL)) text model — it must be "
                     + "multimodal. Otherwise pick a dedicated image provider below."
@@ -577,7 +583,7 @@ struct SettingsView: View {
                 + "selection still goes to that endpoint. Use Apple or Ollama for full isolation."
         }
         switch draft.provider {
-        case .onDevice, .ollama:
+        case .onDevice, .ollama, .mlx:
             return "Runs on this Mac — nothing leaves your device."
         case .openAICompatible:
             return serviceName(draft.openAIBaseURL) == "a local server"
@@ -678,6 +684,7 @@ struct SettingsView: View {
         d.ollamaModel = intelligence.ollamaModel
         d.ollamaBaseURL = OllamaEndpoint.customURLString
         d.ollamaAutoStart = UserDefaults.standard.bool(forKey: "ollama.autoStart")
+        d.mlxModel = intelligence.mlxModel
         d.visionModel = intelligence.visionModel
         d.anthropicBaseURL = intelligence.anthropicBaseURL
         d.anthropicModel = intelligence.anthropicModel
@@ -743,6 +750,7 @@ struct SettingsView: View {
         }
         intelligence.preferred = draft.provider
         intelligence.ollamaModel = draft.ollamaModel
+        intelligence.mlxModel = draft.mlxModel.trimmingCharacters(in: .whitespacesAndNewlines)
         OllamaEndpoint.customURLString = draft.ollamaBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         UserDefaults.standard.set(draft.ollamaAutoStart, forKey: "ollama.autoStart")
         Task { await OllamaEndpoint.autodetect() }   // re-resolve the effective server after a change
@@ -1008,6 +1016,11 @@ enum ConnectionTest {
             return up
                 ? .failure("Ollama is running but has no models. Try `ollama pull qwen3:4b`.")
                 : .failure("Can't reach Ollama at \(host)\(port). Is the Ollama app running?")
+
+        case .mlx:
+            return await MLXProvider().checkAvailability()
+                ? .ok(ms())
+                : .failure("MLX runtime is wired, but the model adapter is still experimental.")
 
         case .openAICompatible:
             return await testOpenAI(base: openAIBaseURL, key: openAIKey, model: openAIModel, ms: ms)

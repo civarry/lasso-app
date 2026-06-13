@@ -55,6 +55,7 @@ extension IntelligenceProvider {
 enum ProviderKind: String, CaseIterable, Identifiable, Sendable {
     case onDevice
     case ollama
+    case mlx
     case openAICompatible
     case anthropic
 
@@ -63,6 +64,7 @@ enum ProviderKind: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .onDevice: "Apple Intelligence"
         case .ollama: "Ollama (local)"
+        case .mlx: "MLX (local)"
         case .openAICompatible: "OpenAI-compatible"
         case .anthropic: "Anthropic"
         }
@@ -70,7 +72,7 @@ enum ProviderKind: String, CaseIterable, Identifiable, Sendable {
 
     /// True for backends that keep everything on the Mac (a localhost OpenAI-compatible URL is
     /// still cloud-kind here; the provider itself reports the precise `isLocal`).
-    var isLocalKind: Bool { self == .onDevice || self == .ollama }
+    var isLocalKind: Bool { self == .onDevice || self == .ollama || self == .mlx }
 }
 
 /// Independent provider for image understanding (Identify / Ask-AI-on-image), chosen separately from
@@ -147,6 +149,11 @@ final class IntelligenceCoordinator {
         didSet { UserDefaults.standard.set(anthropicModel, forKey: "intelligence.anthropic.model") }
     }
 
+    /// MLX model identifier or registry key. Empty means "Auto" for the experimental native path.
+    var mlxModel: String {
+        didSet { UserDefaults.standard.set(mlxModel, forKey: "intelligence.mlx.model") }
+    }
+
     /// True once any cloud/off-machine call is made this session — surfaced by the privacy badge.
     private(set) var usedOffDeviceThisSession = false
 
@@ -173,6 +180,7 @@ final class IntelligenceCoordinator {
         self.openAIModel = defaults.string(forKey: "intelligence.openai.model") ?? "gpt-4o-mini"
         self.anthropicBaseURL = defaults.string(forKey: "intelligence.anthropic.baseURL") ?? "https://api.anthropic.com"
         self.anthropicModel = defaults.string(forKey: "intelligence.anthropic.model") ?? "claude-3-5-haiku-latest"
+        self.mlxModel = defaults.string(forKey: "intelligence.mlx.model") ?? MLXProvider.defaultModelID
         self.visionOpenAIBaseURL = defaults.string(forKey: "intelligence.vision.openai.baseURL") ?? "https://api.openai.com/v1"
         self.visionOpenAIModel = defaults.string(forKey: "intelligence.vision.openai.model") ?? "gpt-4o"
         self.visionAnthropicBaseURL = defaults.string(forKey: "intelligence.vision.anthropic.baseURL") ?? "https://api.anthropic.com"
@@ -236,6 +244,7 @@ final class IntelligenceCoordinator {
         switch effectivePreferred {
         case .onDevice: return "Apple Intelligence"
         case .ollama: return ollamaModel.isEmpty ? "Ollama (auto)" : "Ollama · \(ollamaModel)"
+        case .mlx: return mlxModel.isEmpty ? "MLX (auto)" : "MLX · \(mlxModel)"
         case .openAICompatible: return "\(openAIDisplayName()) · \(openAIModel)"
         case .anthropic: return "Anthropic · \(anthropicModel)"
         }
@@ -296,6 +305,8 @@ final class IntelligenceCoordinator {
             return onDevice
         case .ollama:
             return OllamaProvider(model: await resolvedTextModel())
+        case .mlx:
+            return MLXProvider(modelID: mlxModel.isEmpty ? MLXProvider.defaultModelID : mlxModel)
         case .openAICompatible:
             let url = URL(string: openAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
             return OpenAICompatibleProvider(
@@ -366,6 +377,8 @@ final class IntelligenceCoordinator {
                 model: anthropicModel)
             if await cloud.isAvailable() { usedOffDeviceThisSession = true; return cloud }
             return nil
+        case .mlx:
+            return nil
         case .ollama:
             return await localOllamaVision()
         case .onDevice:
@@ -418,6 +431,7 @@ final class IntelligenceCoordinator {
             case .openAICompatible: return cloudReady("openai.apiKey", openAIModel) && Self.looksMultimodal(openAIModel)
             case .anthropic:        return cloudReady("anthropic.apiKey", anthropicModel) && Self.looksMultimodal(anthropicModel)
             case .ollama:           return await hasInstalledVisionModel()
+            case .mlx:              return false
             case .onDevice:         return false   // Apple can't see images; no fallback
             }
         }
@@ -504,6 +518,8 @@ final class IntelligenceCoordinator {
             return false
         case .ollama:
             return OllamaModels.isVision(await resolvedTextModel())
+        case .mlx:
+            return false
         case .openAICompatible:
             return Self.looksMultimodal(openAIModel)
         case .anthropic:

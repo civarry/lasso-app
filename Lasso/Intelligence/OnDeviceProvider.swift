@@ -118,7 +118,12 @@ struct OnDeviceProvider: IntelligenceProvider {
             instructions: "Extract a clear table from the user's request and the on-screen text. "
                 + "Use concise headers and one value per column for each row.")
         let prompt = Self.compose(prompt: instruction, context: context)
-        let table = try await session.respond(to: prompt, generating: GeneratedTable.self).content
+        let table: GeneratedTable
+        do {
+            table = try await session.respond(to: prompt, generating: GeneratedTable.self).content
+        } catch {
+            throw Self.friendly(error)
+        }
         return Self.markdown(from: table)
     }
 

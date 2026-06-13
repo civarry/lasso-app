@@ -370,12 +370,33 @@ final class ChatController {
         var turns: [ChatTurn] = [.init(role: .system, text: Self.systemPrompt)]
         // Exclude the just-appended user-display and assistant-placeholder messages. Use each
         // message's persisted `promptText` (with any folded image description) so context carries.
+        // Assistant thoughts are UI/debug affordances, not conversation content.
         for m in messages.dropLast(2) {
+            let role: ChatTurn.Role = m.role == .user ? .user : .assistant
+            let text = role == .assistant
+                ? Self.stripThoughtBlocks(from: m.promptText ?? m.text)
+                : (m.promptText ?? m.text)
             turns.append(.init(role: m.role == .user ? .user : .assistant,
-                               text: m.promptText ?? m.text, imageBase64: m.imageBase64))
+                               text: text, imageBase64: m.imageBase64))
         }
         turns.append(.init(role: .user, text: newUserText, imageBase64: imageBase64))
         return trim(turns)
+    }
+
+    private static func stripThoughtBlocks(from text: String) -> String {
+        var remaining = text
+        var result = ""
+        while let start = remaining.range(of: "<think>", options: [.caseInsensitive]) {
+            result += remaining[..<start.lowerBound]
+            let afterStart = remaining[start.upperBound...]
+            guard let end = afterStart.range(of: "</think>", options: [.caseInsensitive]) else {
+                remaining = ""
+                break
+            }
+            remaining = String(afterStart[end.upperBound...])
+        }
+        result += remaining
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Keep the system turn + most recent turns under the char budget, dropping the oldest.
