@@ -217,16 +217,18 @@ final class ChatController {
                 var described: String?
                 var describeError: Error?
                 if let vision {
-                    update(assistantID) { $0.statusText = "Looking at the image… · \(label)" }
+                    let stepID = addStep(assistantID, icon: "eye", text: "Looking at the image · \(label)")
                     let prompt = typed.isEmpty
                         ? "Describe this image in detail."
                         : "Describe this image in detail to help answer: \(typed)"
                     Log.chat.notice("runTurn · describe START (+\(ms(), privacy: .public)ms)")
                     do {
                         described = try await vision.describe(image, prompt: prompt)
+                        completeStep(assistantID, stepID, text: "Looked at the image · \(label)")
                         Log.chat.notice("runTurn · describe DONE len=\(described?.count ?? 0, privacy: .public) (+\(ms(), privacy: .public)ms)")
                     } catch {
                         describeError = error
+                        completeStep(assistantID, stepID, text: "Couldn't read the image · \(label)")
                         Log.chat.error("runTurn · describe FAILED: \(error.localizedDescription, privacy: .public) (+\(ms(), privacy: .public)ms)")
                     }
                 }
@@ -260,22 +262,30 @@ final class ChatController {
         }
 
         // Fold in the connector evidence started above (waits only if it's still running).
+        let searchStepID: UUID? = (webSearchOn && webConnectorsAvailable)
+            ? addStep(assistantID, icon: "globe", text: "Searching the web…") : nil
         if webSearchOn, webConnectorsAvailable {
-            update(assistantID) { $0.statusText = "Searching the web…" }
             Log.chat.notice("runTurn · awaiting web evidence (+\(ms(), privacy: .public)ms)")
         }
         if let evidence = await evidenceResult {
             userText = appendEvidence(userText, evidence)
             let hits = Array(evidence.hits.prefix(6))
             update(assistantID) { $0.sources = hits }
+            if let searchStepID {
+                var text = "Found \(hits.count) source\(hits.count == 1 ? "" : "s")"
+                if let guess = evidence.bestGuess, !guess.isEmpty { text = "Identified “\(guess)” · " + text }
+                completeStep(assistantID, searchStepID, text: text, links: hits)
+            }
             Log.chat.notice("runTurn · evidence: guess=\(evidence.bestGuess ?? "-", privacy: .public) hits=\(hits.count, privacy: .public) (+\(ms(), privacy: .public)ms)")
+        } else if let searchStepID {
+            completeStep(assistantID, searchStepID, text: "No web results")
         }
 
         // Persist what was actually sent so the description / image carries into follow-up turns.
         update(userID) { $0.promptText = userText; $0.imageBase64 = imageBase64 }
 
         let textLabel = intelligence.textEngineLabel
-        update(assistantID) { $0.statusText = "Thinking… · \(textLabel)" }
+        let answerStepID = addStep(assistantID, icon: "sparkles", text: "Answering · \(textLabel)")
         let turns = buildTurns(newUserText: userText, imageBase64: imageBase64)
         let totalChars = turns.reduce(0) { $0 + $1.text.count }
         Log.chat.notice("runTurn · built \(turns.count, privacy: .public) turns, \(totalChars, privacy: .public) chars — stream START (+\(ms(), privacy: .public)ms)")
@@ -284,13 +294,25 @@ final class ChatController {
         var deltas = 0
         var chars = 0
         var firstTokenMs = -1
+        var raw = ""              // full stream, so we can split <think> reasoning from the answer
+        var thinkStart: Date?
         do {
             for try await delta in intelligence.respond(messages: turns) {
                 if Task.isCancelled { Log.chat.notice("runTurn · cancelled mid-stream after \(chars, privacy: .public) chars"); return }
                 if firstTokenMs < 0 { firstTokenMs = ms(); Log.chat.notice("runTurn · first token (+\(firstTokenMs, privacy: .public)ms)") }
                 deltas += 1; chars += delta.count
-                update(assistantID) { $0.text += delta }
+                raw += delta
+                let split = Self.splitReasoning(raw)
+                if split.thinking, thinkStart == nil { thinkStart = Date() }
+                let secs: Int? = (!split.thinking && !split.reasoning.isEmpty)
+                    ? thinkStart.map { max(1, Int(Date().timeIntervalSince($0))) } : nil
+                update(assistantID) {
+                    $0.reasoning = split.reasoning
+                    $0.text = split.answer
+                    if let secs, $0.reasoningSeconds == nil { $0.reasoningSeconds = secs }
+                }
             }
+            completeStep(assistantID, answerStepID, text: "Answered · \(textLabel)")
         } catch {
             Log.chat.error("runTurn · stream ERROR after \(chars, privacy: .public) chars: \(error.localizedDescription, privacy: .public) (+\(ms(), privacy: .public)ms)")
             finishError(assistantID, error.localizedDescription)
@@ -418,10 +440,49 @@ final class ChatController {
         if let i = messages.firstIndex(where: { $0.id == id }) { mutate(&messages[i]) }
     }
 
+    /// Append an in-progress activity step to an assistant message; returns its id for completion.
+    @discardableResult
+    private func addStep(_ id: UUID, icon: String, text: String) -> UUID {
+        let step = ActivityStep(icon: icon, text: text)
+        update(id) { $0.steps.append(step) }
+        return step.id
+    }
+
+    private func completeStep(_ id: UUID, _ stepID: UUID, text: String? = nil,
+                             links: [WebSourcesProvider.Hit] = []) {
+        update(id) { msg in
+            guard let i = msg.steps.firstIndex(where: { $0.id == stepID }) else { return }
+            msg.steps[i].done = true
+            if let text { msg.steps[i].text = text }
+            if !links.isEmpty { msg.steps[i].links = links }
+        }
+    }
+
+    /// Split a model's raw stream into reasoning (inside `<think>…</think>`) and the answer. Handles
+    /// the partial mid-stream state (open tag, not yet closed) so the thought streams live.
+    static func splitReasoning(_ raw: String) -> (reasoning: String, answer: String, thinking: Bool) {
+        guard let open = raw.range(of: "<think>", options: [.caseInsensitive]) else {
+            return ("", raw, false)
+        }
+        let prefix = String(raw[..<open.lowerBound])
+        let afterOpen = raw[open.upperBound...]
+        if let close = afterOpen.range(of: "</think>", options: [.caseInsensitive]) {
+            let reasoning = String(afterOpen[..<close.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let answer = (prefix + String(afterOpen[close.upperBound...]))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return (reasoning, answer, false)
+        }
+        return (String(afterOpen).trimmingCharacters(in: .whitespacesAndNewlines),
+                prefix.trimmingCharacters(in: .whitespacesAndNewlines), true)
+    }
+
     private func finishStreaming(_ id: UUID) {
         update(id) {
             $0.isStreaming = false
-            if $0.text.isEmpty { $0.text = "(No response.)" }
+            if $0.text.isEmpty {
+                $0.text = $0.reasoning.isEmpty ? "(No response.)" : "(No answer — see the thinking above.)"
+            }
         }
         isStreaming = false
     }

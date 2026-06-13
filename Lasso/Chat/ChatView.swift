@@ -294,6 +294,8 @@ private struct MessageBubble: View {
 
     private var isUser: Bool { message.role == .user }
 
+    private var hasTrace: Bool { !message.steps.isEmpty || !message.reasoning.isEmpty }
+
     var body: some View {
         // User messages: a right-aligned tinted bubble (kept narrow). Assistant messages: full-width
         // with no bubble (ChatGPT/Claude style) so tables, code, and long text get the whole panel.
@@ -306,20 +308,19 @@ private struct MessageBubble: View {
                         .frame(maxWidth: 240, maxHeight: 180)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
-                if message.isStreaming && message.text.isEmpty {
+                if !isUser, hasTrace {
+                    TraceView(message: message)
+                }
+                if message.isStreaming && message.text.isEmpty && !hasTrace {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
-                        Text(message.statusText ?? "…")
-                            .font(.caption).foregroundStyle(.secondary)
+                        Text("Thinking…").font(.caption).foregroundStyle(.secondary)
                     }
                 } else if !message.text.isEmpty {
                     MarkdownView(text: message.text, fontSize: fontSize)
                         .textSelection(.enabled)
                         .foregroundStyle(message.isError ? Color.orange : Color.primary)
                         .fixedSize(horizontal: false, vertical: true)
-                }
-                if !message.sources.isEmpty, !message.text.isEmpty {
-                    sources
                 }
             }
             .padding(.horizontal, isUser ? 11 : 2).padding(.vertical, isUser ? 8 : 2)
@@ -329,24 +330,86 @@ private struct MessageBubble: View {
         }
     }
 
-    private var sources: some View {
+}
+
+// MARK: - Activity trace ("Thought for Xs" + steps)
+
+/// Collapsible record of what the assistant did for a turn — model reasoning (from `<think>`) and the
+/// pipeline steps (looked at image, searched the web, pages it read). Auto-expands while the turn is
+/// running so progress is visible live, then collapses to a one-line summary.
+private struct TraceView: View {
+    let message: ChatMessage
+    @State private var expanded = true
+
+    private var summary: String {
+        if message.isStreaming {
+            return message.steps.last(where: { !$0.done })?.text
+                ?? (message.reasoning.isEmpty ? "Working…" : "Thinking…")
+        }
+        if let secs = message.reasoningSeconds { return "Thought for \(secs)s" }
+        if !message.reasoning.isEmpty { return "Thought process" }
+        return "Activity"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } } label: {
+                HStack(spacing: 6) {
+                    if message.isStreaming { ProgressView().controlSize(.small) }
+                    else { Image(systemName: "sparkles").font(.caption2) }
+                    Text(summary).font(.caption).fontWeight(.medium)
+                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold))
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                }
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    if !message.reasoning.isEmpty {
+                        Text(message.reasoning)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    ForEach(message.steps) { step in
+                        stepRow(step)
+                    }
+                }
+                .padding(.leading, 4)
+            }
+        }
+        .padding(8)
+        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.08)))
+        .onChange(of: message.isStreaming) { _, streaming in
+            if !streaming { withAnimation(.easeOut(duration: 0.2)) { expanded = false } }
+        }
+    }
+
+    @ViewBuilder
+    private func stepRow(_ step: ActivityStep) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text("Sources").font(.caption2).fontWeight(.semibold).foregroundStyle(.secondary)
-            ForEach(message.sources) { hit in
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: step.done ? "checkmark.circle.fill" : step.icon)
+                    .font(.caption2)
+                    .foregroundStyle(step.done ? Color.green.opacity(0.8) : .secondary)
+                Text(step.text).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(step.links) { hit in
                 if let url = hit.url {
                     Link(destination: url) {
                         Label(hit.title, systemImage: "link")
                             .font(.caption2).lineLimit(1).truncationMode(.middle)
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .padding(.leading, 18)
                 }
             }
         }
-        .padding(.top, 2)
-    }
-
-    private var bubbleBackground: some ShapeStyle {
-        message.role == .user ? AnyShapeStyle(.tint.opacity(0.22))
-            : AnyShapeStyle(.white.opacity(0.07))
     }
 }

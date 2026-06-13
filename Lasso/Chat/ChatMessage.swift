@@ -29,4 +29,22 @@ struct ChatMessage: Identifiable, @unchecked Sendable {
     var imageBase64: String?
     /// Web/connector sources used to ground this assistant turn, shown as tappable links.
     var sources: [WebSourcesProvider.Hit] = []
+
+    /// Background activity for this assistant turn (looked at image, searched web, read pages…),
+    /// shown as an expandable trace like other LLM chats.
+    var steps: [ActivityStep] = []
+    /// The model's chain-of-thought, if it emits one (e.g. Qwen3 / DeepSeek `<think>…</think>`).
+    /// Shown in a collapsible "Thought for Xs" section, separate from the answer.
+    var reasoning: String = ""
+    /// Seconds the model spent reasoning (set when the `<think>` block closes).
+    var reasoningSeconds: Int?
+}
+
+/// One step in an assistant turn's background activity trace.
+struct ActivityStep: Identifiable, Sendable {
+    let id = UUID()
+    var icon: String
+    var text: String
+    var links: [WebSourcesProvider.Hit] = []
+    var done: Bool = false
 }
