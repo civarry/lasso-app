@@ -75,6 +75,7 @@ struct SettingsView: View {
     @State private var mlxDownloadedBytes: Int64 = 0
     @State private var mlxDownloadTask: Task<Void, Never>?
     @State private var mlxPollTask: Task<Void, Never>?
+    @State private var mlxManageExpanded = false
 
     enum MLXDownloadState: Equatable { case idle, downloading, ready, failed(String) }
     @AppStorage("ui.actionBarStyle") private var actionBarStyle = ActionBarStyle.compact.rawValue
@@ -292,17 +293,21 @@ struct SettingsView: View {
             // Download / progress on its own left-aligned row (doesn't disturb the Picker layout).
             mlxDownloadRow
 
-            // Other downloaded models (manage/cleanup) — only when there are extras.
-            if !otherDownloadedMLX.isEmpty {
-                Text("Downloaded models").font(.caption).foregroundStyle(.secondary)
-                ForEach(otherDownloadedMLX) { entry in
-                    HStack(spacing: 8) {
-                        Text(entry.repoID).font(.caption).foregroundStyle(.secondary)
-                            .lineLimit(1).truncationMode(.middle)
-                        Text(byteString(entry.sizeBytes)).font(.caption2).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Remove", role: .destructive) { removeMLXModel(entry) }.controlSize(.small)
+            // Manage downloads — collapsed to one summary line by default to stay minimal.
+            if !mlxInstalled.isEmpty {
+                DisclosureGroup(isExpanded: $mlxManageExpanded) {
+                    ForEach(mlxInstalled) { entry in
+                        HStack(spacing: 8) {
+                            Text(entry.repoID).font(.caption).foregroundStyle(.secondary)
+                                .lineLimit(1).truncationMode(.middle)
+                            Text(byteString(entry.sizeBytes)).font(.caption2).foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Remove", role: .destructive) { removeMLXModel(entry) }.controlSize(.small)
+                        }
                     }
+                } label: {
+                    Text("Downloaded models · \(mlxInstalled.count) · \(byteString(mlxTotalDownloaded))")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
         case .openAICompatible:
@@ -502,11 +507,6 @@ struct SettingsView: View {
             Button("Test") { runTest() }
                 .buttonStyle(.bordered)
                 .disabled(testState == .testing)
-            // The downloaded MLX model is what "Test" exercises, so Remove sits with it.
-            if draft.provider == .mlx, currentModelEntry != nil {
-                Button("Remove", role: .destructive) { removeCurrentMLXModel() }
-                    .buttonStyle(.bordered)
-            }
             Spacer()
             testResultView
         }
@@ -669,16 +669,8 @@ struct SettingsView: View {
         refreshMLXInstalled()
     }
 
-    private var currentModelEntry: MLXCache.Entry? {
-        mlxInstalled.first { MLXProvider.normalizedID($0.repoID) == MLXProvider.normalizedID(draft.mlxModel) }
-    }
-
-    private var otherDownloadedMLX: [MLXCache.Entry] {
-        mlxInstalled.filter { MLXProvider.normalizedID($0.repoID) != MLXProvider.normalizedID(draft.mlxModel) }
-    }
-
-    private func removeCurrentMLXModel() {
-        if let entry = currentModelEntry { removeMLXModel(entry) }
+    private var mlxTotalDownloaded: Int64 {
+        mlxInstalled.reduce(0) { $0 + $1.sizeBytes }
     }
 
     private func refreshMLXInstalled() {
