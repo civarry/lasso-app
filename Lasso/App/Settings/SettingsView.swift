@@ -277,21 +277,20 @@ struct SettingsView: View {
         case .mlx:
             LabeledContent("Model") {
                 HStack(spacing: 6) {
-                    TextField("", text: $draft.mlxModel, prompt: Text(MLXProvider.defaultModelID))
-                        .labelsHidden()
-                        .frame(minWidth: 150)
-                    Menu("Suggested") {
-                        ForEach(Self.mlxSuggestions, id: \.id) { suggestion in
-                            Button(suggestion.name) { draft.mlxModel = suggestion.id; mlxDownload = .idle }
-                        }
+                    Picker("", selection: mlxModelBinding) {
+                        ForEach(Self.mlxSuggestions, id: \.id) { Text($0.name).tag($0.id) }
+                        Divider()
+                        Text("Custom…").tag(Self.mlxCustomTag)
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
+                    .labelsHidden()
                     mlxDownloadControl
                 }
             }
-            .onChange(of: draft.mlxModel) { mlxDownload = .idle; refreshMLXRemoteSize() }
             .onAppear { refreshMLXInstalled(); refreshMLXRemoteSize() }
+            if mlxIsCustom {
+                TextField("Model id", text: $draft.mlxModel, prompt: Text(MLXProvider.defaultModelID))
+                    .onChange(of: draft.mlxModel) { mlxDownload = .idle; refreshMLXRemoteSize() }
+            }
 
             // Other downloaded models (manage/cleanup) — only when there are extras.
             ForEach(otherDownloadedMLX) { entry in
@@ -691,6 +690,26 @@ struct SettingsView: View {
 
     /// Curated mlx-community text models (4-bit, small→larger) for the Suggested menu. You can still
     /// paste any MLX text model id from huggingface.co/models?library=mlx into the field.
+    private static let mlxCustomTag = "__mlx_custom__"
+    private static var mlxSuggestionIDs: Set<String> { Set(mlxSuggestions.map(\.id)) }
+
+    /// Picker selection: a suggestion id, or the Custom sentinel when the model isn't a suggestion.
+    private var mlxModelBinding: Binding<String> {
+        Binding(
+            get: { Self.mlxSuggestionIDs.contains(draft.mlxModel) ? draft.mlxModel : Self.mlxCustomTag },
+            set: { newValue in
+                if newValue == Self.mlxCustomTag {
+                    if Self.mlxSuggestionIDs.contains(draft.mlxModel) { draft.mlxModel = "" }
+                } else {
+                    draft.mlxModel = newValue
+                }
+                mlxDownload = .idle
+                refreshMLXRemoteSize()
+            })
+    }
+
+    private var mlxIsCustom: Bool { !Self.mlxSuggestionIDs.contains(draft.mlxModel) }
+
     private static let mlxSuggestions: [(name: String, id: String)] = [
         ("Qwen3 0.6B · 4-bit — tiny & fast", "mlx-community/Qwen3-0.6B-4bit"),
         ("Llama 3.2 1B · 4-bit", "mlx-community/Llama-3.2-1B-Instruct-4bit"),
