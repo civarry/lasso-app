@@ -281,13 +281,10 @@ struct SettingsView: View {
             // (downloaded) / outline (available) download icon, and the row label is the current model.
             LabeledContent("Model") {
                 Menu {
-                    ForEach(Self.mlxSuggestions, id: \.id) { suggestion in
-                        Button { draft.mlxModel = suggestion.id } label: {
-                            Label(suggestion.name,
-                                  systemImage: MLXProvider.isDownloaded(suggestion.id)
-                                      ? "arrow.down.circle.fill" : "arrow.down.circle")
-                        }
-                    }
+                    // Downloaded models first, then the rest.
+                    ForEach(mlxDownloadedSuggestions, id: \.id) { mlxMenuItem($0) }
+                    if !mlxDownloadedSuggestions.isEmpty, !mlxAvailableSuggestions.isEmpty { Divider() }
+                    ForEach(mlxAvailableSuggestions, id: \.id) { mlxMenuItem($0) }
                     Divider()
                     Button("Custom…") {
                         if Self.mlxSuggestionIDs.contains(draft.mlxModel) { draft.mlxModel = "" }
@@ -721,6 +718,23 @@ struct SettingsView: View {
     private static var mlxSuggestionIDs: Set<String> { Set(mlxSuggestions.map(\.id)) }
 
     private var mlxIsCustom: Bool { !Self.mlxSuggestionIDs.contains(draft.mlxModel) }
+
+    // Suggestions split by state (preserves original order within each group).
+    private var mlxDownloadedSuggestions: [(name: String, id: String)] {
+        Self.mlxSuggestions.filter { MLXProvider.isDownloaded($0.id) }
+    }
+    private var mlxAvailableSuggestions: [(name: String, id: String)] {
+        Self.mlxSuggestions.filter { !MLXProvider.isDownloaded($0.id) }
+    }
+
+    @ViewBuilder
+    private func mlxMenuItem(_ suggestion: (name: String, id: String)) -> some View {
+        Button { draft.mlxModel = suggestion.id } label: {
+            Label(suggestion.name,
+                  systemImage: MLXProvider.isDownloaded(suggestion.id)
+                      ? "arrow.down.circle.fill" : "arrow.down.circle")
+        }
+    }
 
     /// The menu's label: the selected suggestion's name, or the custom id (or "Custom…" when empty).
     private var mlxMenuLabel: String {
