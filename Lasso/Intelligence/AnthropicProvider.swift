@@ -47,23 +47,44 @@ struct AnthropicProvider: IntelligenceProvider {
     }
 
     func respond(prompt: String, context: String?) -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
+        var user = prompt
+        if let context, !context.isEmpty { user += "\n\n--- On-screen text ---\n\(context)" }
+        return stream(messages: [["role": "user", "content": user]])
+    }
+
+    /// Native multi-turn chat. A turn with an image becomes an image content block + text
+    /// (requires a vision-capable Claude — the caller routes others to a text description instead).
+    func respond(messages: [ChatTurn]) -> AsyncThrowingStream<String, Error> {
+        let wire: [[String: Any]] = messages.filter { $0.role != .system }.map { turn in
+            if let base64 = turn.imageBase64 {
+                return ["role": turn.role.rawValue, "content": [
+                    ["type": "image",
+                     "source": ["type": "base64", "media_type": "image/jpeg", "data": base64]],
+                    ["type": "text", "text": turn.text],
+                ]]
+            }
+            return ["role": turn.role.rawValue, "content": turn.text]
+        }
+        return stream(messages: wire)
+    }
+
+    private func stream(messages: [[String: Any]]) -> AsyncThrowingStream<String, Error> {
+        // Encode up front so the (non-Sendable) message dictionaries don't cross into the Task closure.
+        let body = try? JSONSerialization.data(withJSONObject: [
+            "model": model, "max_tokens": 1024, "stream": true,
+            "system": Self.systemPrompt,
+            "messages": messages,
+        ])
+        return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
+                    guard let body else { throw IntelligenceError.server("Couldn't encode the request.") }
                     var request = URLRequest(url: Self.messagesURL(base: baseURL))
                     request.httpMethod = "POST"
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
                     request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-
-                    var user = prompt
-                    if let context, !context.isEmpty { user += "\n\n--- On-screen text ---\n\(context)" }
-                    let body: [String: Any] = [
-                        "model": model, "max_tokens": 1024, "stream": true,
-                        "system": Self.systemPrompt,
-                        "messages": [["role": "user", "content": user]],
-                    ]
-                    request.httpBody = try JSONSerialization.data(withJSONObject: body)
+                    request.httpBody = body
 
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
                     guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {

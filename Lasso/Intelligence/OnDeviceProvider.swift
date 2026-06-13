@@ -19,6 +19,30 @@ struct OnDeviceProvider: IntelligenceProvider {
     }
 
     func respond(prompt: String, context: String?) -> AsyncThrowingStream<String, Error> {
+        stream(fullPrompt: Self.compose(prompt: prompt, context: context))
+    }
+
+    /// Multi-turn for the Chat panel. Apple's model is text-only and the session here is rebuilt per
+    /// turn, so the conversation is replayed as a single labelled transcript (any attached image has
+    /// already been converted to a text description upstream).
+    func respond(messages: [ChatTurn]) -> AsyncThrowingStream<String, Error> {
+        let instructions = messages.first(where: { $0.role == .system })?.text ?? Self.instructions
+        let transcript = messages
+            .filter { $0.role != .system && !$0.text.isEmpty }
+            .map { turn -> String in
+                switch turn.role {
+                case .user: "User: \(turn.text)"
+                case .assistant: "Assistant: \(turn.text)"
+                case .system: turn.text
+                }
+            }
+            .joined(separator: "\n\n")
+        let full = transcript.isEmpty ? "" : "\(transcript)\n\nAssistant:"
+        return stream(fullPrompt: full, instructions: instructions)
+    }
+
+    private func stream(fullPrompt full: String, instructions: String = Self.instructions)
+        -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -26,8 +50,7 @@ struct OnDeviceProvider: IntelligenceProvider {
                         throw IntelligenceError.unavailable(
                             "Apple Intelligence is off or unsupported on this Mac.")
                     }
-                    let session = LanguageModelSession(instructions: Self.instructions)
-                    let full = Self.compose(prompt: prompt, context: context)
+                    let session = LanguageModelSession(instructions: instructions)
 
                     // FoundationModels streams *cumulative* snapshots; convert to deltas so the
                     // ResultPane can simply append (matches the Ollama provider's contract).

@@ -71,21 +71,55 @@ struct OpenAICompatibleProvider: IntelligenceProvider {
     }
 
     func respond(prompt: String, context: String?) -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
+        var user = prompt
+        if let context, !context.isEmpty { user += "\n\n--- On-screen text ---\n\(context)" }
+        return stream(messages: [
+            ["role": "system", "content": Self.systemPrompt],
+            ["role": "user", "content": user],
+        ])
+    }
+
+    /// Native multi-turn chat. A turn with an image becomes a multimodal `content` array
+    /// (text + `image_url` data URL); requires a multimodal model (the caller routes others to a
+    /// text description instead).
+    func respond(messages: [ChatTurn]) -> AsyncThrowingStream<String, Error> {
+        var wire: [[String: Any]] = []
+        if !messages.contains(where: { $0.role == .system }) {
+            wire.append(["role": "system", "content": Self.systemPrompt])
+        }
+        for turn in messages {
+            if let base64 = turn.imageBase64 {
+                wire.append([
+                    "role": turn.role.rawValue,
+                    "content": [
+                        ["type": "text", "text": turn.text],
+                        ["type": "image_url", "image_url": ["url": "data:image/jpeg;base64,\(base64)"]],
+                    ],
+                ])
+            } else {
+                wire.append(["role": turn.role.rawValue, "content": turn.text])
+            }
+        }
+        return stream(messages: wire)
+    }
+
+    private func stream(messages: [[String: Any]]) -> AsyncThrowingStream<String, Error> {
+        // Encode the body up front so the (non-Sendable) message dictionaries don't cross into the
+        // stream's Task closure.
+        let body = try? JSONSerialization.data(withJSONObject: [
+            "model": model, "stream": true, "messages": messages,
+        ])
+        return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
+                    guard let body else { throw IntelligenceError.server("Couldn't encode the request.") }
                     var request = URLRequest(url: Self.chatCompletionsURL(base: baseURL))
                     request.httpMethod = "POST"
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     if !apiKey.isEmpty {
                         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
                     }
-                    var user = prompt
-                    if let context, !context.isEmpty { user += "\n\n--- On-screen text ---\n\(context)" }
-                    request.httpBody = try JSONEncoder().encode(ChatRequest(
-                        model: model, stream: true,
-                        messages: [.init(role: "system", content: Self.systemPrompt),
-                                   .init(role: "user", content: user)]))
+                    request.httpBody = body
 
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
                     guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
@@ -161,13 +195,6 @@ struct OpenAICompatibleVisionProvider: VisionProvider {
 }
 
 // MARK: - Wire types
-
-private struct ChatRequest: Encodable {
-    struct Message: Encodable { let role: String; let content: String }
-    let model: String
-    let stream: Bool
-    let messages: [Message]
-}
 
 private struct ChatChunk: Decodable {
     struct Choice: Decodable { struct Delta: Decodable { let content: String? }; let delta: Delta }

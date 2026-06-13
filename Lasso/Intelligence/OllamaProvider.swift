@@ -34,10 +34,36 @@ struct OllamaProvider: IntelligenceProvider {
     }
 
     func respond(prompt: String, context: String?) -> AsyncThrowingStream<String, Error> {
+        var userContent = prompt
+        if let context, !context.isEmpty {
+            userContent += "\n\n--- On-screen text ---\n\(context)"
+        }
+        return stream(messages: [
+            .init(role: "system", content: Self.systemPrompt),
+            .init(role: "user", content: userContent),
+        ])
+    }
+
+    /// Native multi-turn chat. Maps each `ChatTurn` to an Ollama message; a turn carrying an image
+    /// sets the per-message `images: [base64]` (the model must be multimodal — the caller routes
+    /// non-vision models through a text description instead).
+    func respond(messages: [ChatTurn]) -> AsyncThrowingStream<String, Error> {
+        var wire: [ChatRequest.Message] = []
+        if !messages.contains(where: { $0.role == .system }) {
+            wire.append(.init(role: "system", content: Self.systemPrompt))
+        }
+        for turn in messages {
+            wire.append(.init(role: turn.role.rawValue, content: turn.text,
+                              images: turn.imageBase64.map { [$0] }))
+        }
+        return stream(messages: wire)
+    }
+
+    private func stream(messages: [ChatRequest.Message]) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let request = try makeChatRequest(prompt: prompt, context: context)
+                    let request = try makeChatRequest(messages: messages)
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
                     guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                         let code = (response as? HTTPURLResponse)?.statusCode ?? -1
@@ -68,23 +94,11 @@ struct OllamaProvider: IntelligenceProvider {
         }
     }
 
-    private func makeChatRequest(prompt: String, context: String?) throws -> URLRequest {
+    private func makeChatRequest(messages: [ChatRequest.Message]) throws -> URLRequest {
         var request = URLRequest(url: baseURL.appendingPathComponent("api/chat"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        var userContent = prompt
-        if let context, !context.isEmpty {
-            userContent += "\n\n--- On-screen text ---\n\(context)"
-        }
-        let body = ChatRequest(
-            model: model,
-            stream: true,
-            messages: [
-                .init(role: "system", content: Self.systemPrompt),
-                .init(role: "user", content: userContent),
-            ]
-        )
+        let body = ChatRequest(model: model, stream: true, messages: messages)
         request.httpBody = try JSONEncoder().encode(body)
         return request
     }
@@ -93,7 +107,11 @@ struct OllamaProvider: IntelligenceProvider {
 // MARK: - Wire types
 
 private struct ChatRequest: Encodable {
-    struct Message: Encodable { let role: String; let content: String }
+    struct Message: Encodable {
+        let role: String
+        let content: String
+        var images: [String]? = nil   // base64 JPEGs, for multimodal models
+    }
     let model: String
     let stream: Bool
     let messages: [Message]

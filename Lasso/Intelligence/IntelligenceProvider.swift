@@ -16,6 +16,39 @@ protocol IntelligenceProvider: Sendable {
     func checkAvailability() async -> Bool
     /// Stream a response as **incremental deltas** (append to accumulate).
     func respond(prompt: String, context: String?) -> AsyncThrowingStream<String, Error>
+    /// Stream a response to a **multi-turn** conversation (for the Chat panel). Deltas, same as above.
+    func respond(messages: [ChatTurn]) -> AsyncThrowingStream<String, Error>
+}
+
+/// One message in a chat conversation, sent to a provider. A user turn may carry an image — encoded
+/// base64 JPEG — for providers whose model is natively multimodal; text-only models get the image
+/// folded into the text upstream (see `ChatController`).
+struct ChatTurn: Sendable {
+    enum Role: String, Sendable { case system, user, assistant }
+    var role: Role
+    var text: String
+    var imageBase64: String?
+
+    init(role: Role, text: String, imageBase64: String? = nil) {
+        self.role = role
+        self.text = text
+        self.imageBase64 = imageBase64
+    }
+}
+
+extension IntelligenceProvider {
+    /// Default multi-turn bridge for providers without a native implementation: flatten the history
+    /// into a single prompt + context so the single-turn `respond` still carries the conversation.
+    func respond(messages: [ChatTurn]) -> AsyncThrowingStream<String, Error> {
+        let convo = messages.filter { $0.role != .system }
+        let last = convo.last?.text ?? ""
+        let priorLines = convo.dropLast().map { turn -> String in
+            let speaker = turn.role == .user ? "User" : "Assistant"
+            return "\(speaker): \(turn.text)"
+        }
+        let context = priorLines.isEmpty ? nil : priorLines.joined(separator: "\n\n")
+        return respond(prompt: last, context: context)
+    }
 }
 
 /// Which backend to use. Persisted in Settings.
@@ -346,13 +379,16 @@ final class IntelligenceCoordinator {
             !(Keychain.get(keyAccount) ?? "").isEmpty && !model.isEmpty
         }
         switch effectiveVisionEngine {
+        // Explicit image provider: the user deliberately picked it for images — trust the config.
         case .openAICompatible: return cloudReady("vision.openai.apiKey", visionOpenAIModel)
         case .anthropic:        return cloudReady("vision.anthropic.apiKey", visionAnthropicModel)
         case .ollama:           return await hasInstalledVisionModel()
+        // "Same as text": only counts as vision if the *text* model can actually see (a text-only
+        // cloud model like Groq gpt-oss must not masquerade as a vision backend).
         case .matchText:
             switch effectivePreferred {
-            case .openAICompatible: return cloudReady("openai.apiKey", openAIModel)
-            case .anthropic:        return cloudReady("anthropic.apiKey", anthropicModel)
+            case .openAICompatible: return cloudReady("openai.apiKey", openAIModel) && Self.looksMultimodal(openAIModel)
+            case .anthropic:        return cloudReady("anthropic.apiKey", anthropicModel) && Self.looksMultimodal(anthropicModel)
             case .ollama:           return await hasInstalledVisionModel()
             case .onDevice:         return false   // Apple can't see images; no fallback
             }
@@ -402,5 +438,58 @@ final class IntelligenceCoordinator {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    /// Stream a response to a multi-turn conversation from the active provider (the Chat panel).
+    func respond(messages: [ChatTurn]) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task { [weak self] in
+                guard let self else { continuation.finish(); return }
+                let provider = await self.activeProvider()
+                self.lastProviderName = provider.name
+                self.lastProviderIsAppleOnDevice = provider.isAppleOnDevice
+                self.lastProviderIsLocal = provider.isLocal
+                if !provider.isLocal { self.usedOffDeviceThisSession = true }
+                do {
+                    for try await delta in provider.respond(messages: messages) {
+                        continuation.yield(delta)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Whether the active **text** model can natively accept an image in a chat message. Drives the
+    /// Chat panel's "send the image natively vs. describe it via the vision provider" routing. Apple
+    /// on-device is text-only; Ollama is checked by model name; cloud uses a conservative name
+    /// heuristic (a native send that still fails falls back to a vision description upstream).
+    func textModelSupportsVision() async -> Bool {
+        switch effectivePreferred {
+        case .onDevice:
+            return false
+        case .ollama:
+            return OllamaModels.isVision(await resolvedTextModel())
+        case .openAICompatible:
+            return Self.looksMultimodal(openAIModel)
+        case .anthropic:
+            return Self.looksMultimodal(anthropicModel)
+        }
+    }
+
+    /// Conservative "is this cloud model multimodal" check by name. Errs toward false so we fall back
+    /// to the dedicated vision provider rather than firing an image at a text-only model.
+    static func looksMultimodal(_ model: String) -> Bool {
+        let m = model.lowercased()
+        // Anthropic: Claude 3+ are all vision-capable.
+        if m.contains("claude-3") || m.contains("claude-4") || m.contains("claude-sonnet")
+            || m.contains("claude-opus") || m.contains("claude-haiku") { return true }
+        let hints = ["4o", "4.1", "gpt-5", "o3", "o4", "gemini", "-vl", "vl-", "llava", "vision",
+                     "pixtral", "qwen-vl", "qwen2-vl", "qwen2.5-vl", "qwen3-vl", "llama-3.2-11b",
+                     "llama-3.2-90b", "internvl", "minicpm-v"]
+        return hints.contains { m.contains($0) }
     }
 }
