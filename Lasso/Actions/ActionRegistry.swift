@@ -16,7 +16,6 @@ final class ActionRegistry {
         registry.register(TranslateAction())
         registry.register(SummarizeAction(intelligence: intelligence))
         registry.register(AskAIAction(intelligence: intelligence))
-        registry.register(ContinueInChatAction())
         registry.register(QRAction())
         registry.register(ColorPickerAction())
         registry.register(IdentifyAction(intelligence: intelligence))
