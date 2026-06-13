@@ -592,18 +592,19 @@ struct SettingsView: View {
             Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 .help("Downloaded — on this Mac")
         } else {
-            Button { downloadMLXModel() } label: {
-                HStack(spacing: 3) {
-                    Image(systemName: "arrow.down.circle")
-                    if let size = mlxRemoteSize { Text(byteString(size)).font(.caption2) }
-                    else if mlxSizeLoading { Text("…").font(.caption2) }
-                }
-            }
-            .buttonStyle(.borderless)
-            .disabled(draft.localOnly)
-            .help(draft.localOnly ? "Local-only mode blocks downloads (the fetch leaves your Mac)"
-                  : "Download this model")
+            Button { downloadMLXModel() } label: { Image(systemName: "arrow.down.circle") }
+                .buttonStyle(.borderless)
+                .disabled(draft.localOnly)
+                .help(mlxDownloadHelp)
         }
+    }
+
+    /// Hover text for the download icon — surfaces the size here instead of inline.
+    private var mlxDownloadHelp: String {
+        if draft.localOnly { return "Local-only mode blocks downloads (the fetch leaves your Mac)" }
+        if mlxSizeLoading { return "Checking download size…" }
+        if let size = mlxRemoteSize { return "Download this model · \(byteString(size))" }
+        return "Download this model"
     }
 
     private func downloadMLXModel() {
