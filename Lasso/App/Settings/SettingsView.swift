@@ -275,44 +275,51 @@ struct SettingsView: View {
         case .ollama:
             modelPicker("Model", selection: $draft.ollamaModel)
         case .mlx:
-            HStack(spacing: 8) {
-                TextField("Model", text: $draft.mlxModel, prompt: Text(MLXProvider.defaultModelID))
-                Menu("Suggested") {
-                    ForEach(Self.mlxSuggestions, id: \.id) { suggestion in
-                        Button(suggestion.name) { draft.mlxModel = suggestion.id; mlxDownload = .idle }
+            LabeledContent("Model") {
+                HStack(spacing: 6) {
+                    TextField("Model", text: $draft.mlxModel, prompt: Text(MLXProvider.defaultModelID))
+                        .frame(minWidth: 150)
+                    Menu("Suggested") {
+                        ForEach(Self.mlxSuggestions, id: \.id) { suggestion in
+                            Button(suggestion.name) { draft.mlxModel = suggestion.id; mlxDownload = .idle }
+                        }
                     }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
             }
             .onChange(of: draft.mlxModel) { mlxDownload = .idle; refreshMLXRemoteSize() }
             .onAppear { refreshMLXInstalled(); refreshMLXRemoteSize() }
+
+            // One compact status/action row for the selected model.
             HStack(spacing: 8) {
-                Button(mlxDownloadButtonTitle) {
-                    downloadMLXModel()
-                }
-                .disabled(mlxDownload == .downloading || draft.localOnly)
                 if mlxDownload == .downloading {
                     mlxProgressView
+                } else if MLXProvider.isDownloaded(draft.mlxModel) {
+                    Label("On this Mac", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green).font(.caption)
+                    if let size = currentModelEntry?.sizeBytes {
+                        Text(byteString(size)).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Remove", role: .destructive) { removeCurrentMLXModel() }.controlSize(.small)
                 } else {
-                    Text(mlxStatusText).font(.caption).foregroundStyle(mlxStatusColor)
+                    Button(mlxDownloadButtonTitle) { downloadMLXModel() }
+                        .disabled(draft.localOnly)
+                    Text(draft.localOnly ? "Local-only blocks downloads" : "Downloads once, then runs on-device")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
                 }
             }
-            caption("Native MLX runs fully on-device. The model downloads once from Hugging Face "
-                + "(that fetch leaves your Mac); after that, inference is local. Paste any MLX text "
-                + "model id, e.g. \(MLXProvider.defaultModelID).")
-            if !mlxInstalled.isEmpty {
-                LabeledContent("Downloaded") {
-                    VStack(alignment: .trailing, spacing: 6) {
-                        ForEach(mlxInstalled) { entry in
-                            HStack(spacing: 8) {
-                                Text(entry.repoID).font(.caption).lineLimit(1).truncationMode(.middle)
-                                Text(byteString(entry.sizeBytes)).font(.caption2).foregroundStyle(.secondary)
-                                Button("Remove", role: .destructive) { removeMLXModel(entry) }
-                                    .controlSize(.small)
-                            }
-                        }
-                    }
+
+            // Other downloaded models (manage/cleanup) — only when there are extras.
+            ForEach(otherDownloadedMLX) { entry in
+                HStack(spacing: 8) {
+                    Text(entry.repoID).font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                    Text(byteString(entry.sizeBytes)).font(.caption2).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Remove", role: .destructive) { removeMLXModel(entry) }.controlSize(.small)
                 }
             }
         case .openAICompatible:
@@ -655,6 +662,18 @@ struct SettingsView: View {
         if mlxSizeLoading { return base + " · checking size…" }
         if let size = mlxRemoteSize { return base + " · ≈ \(byteString(size))" }
         return base
+    }
+
+    private var currentModelEntry: MLXCache.Entry? {
+        mlxInstalled.first { MLXProvider.normalizedID($0.repoID) == MLXProvider.normalizedID(draft.mlxModel) }
+    }
+
+    private var otherDownloadedMLX: [MLXCache.Entry] {
+        mlxInstalled.filter { MLXProvider.normalizedID($0.repoID) != MLXProvider.normalizedID(draft.mlxModel) }
+    }
+
+    private func removeCurrentMLXModel() {
+        if let entry = currentModelEntry { removeMLXModel(entry) }
     }
 
     private func refreshMLXInstalled() {
