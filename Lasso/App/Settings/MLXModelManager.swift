@@ -21,6 +21,8 @@ struct MLXModelManager: View {
     @State private var pollTask: Task<Void, Never>?
     @State private var installed: [MLXCache.Entry] = []
     @State private var removeConfirm = false
+    @State private var lastProgressAt = Date()
+    @State private var stalled = false
 
     private var suggestionIDs: Set<String> { Set(suggestions.map(\.id)) }
     private var isCustom: Bool { !suggestionIDs.contains(modelID) }
@@ -84,6 +86,10 @@ struct MLXModelManager: View {
                     Text("Downloading…").font(.caption).foregroundStyle(.secondary)
                 }
                 Button("Cancel") { cancel() }.controlSize(.small)
+                if stalled {
+                    Text("slow or stalled — Cancel & retry if needed")
+                        .font(.caption2).foregroundStyle(.orange)
+                }
                 Spacer()
             }
         } else if case .failed(let message) = phase {
@@ -155,22 +161,30 @@ struct MLXModelManager: View {
         phase = .downloading
         progress = 0
         downloadedBytes = 0
+        stalled = false
+        lastProgressAt = Date()
         let total = remoteSize
-        let dir = MLXCache.directory(for: id)
 
+        // Watchdog: if the loader reports no progress for a while, flag it as possibly stalled.
         pollTask?.cancel()
         pollTask = Task {
             while !Task.isCancelled {
-                let onDisk = await Task.detached { MLXCache.size(of: dir) }.value
-                downloadedBytes = onDisk
-                if let total, total > 0 { progress = min(1, Double(onDisk) / Double(total)) }
-                try? await Task.sleep(nanoseconds: 600_000_000)
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                if phase == .downloading, Date().timeIntervalSince(lastProgressAt) > 30 { stalled = true }
             }
         }
         downloadTask?.cancel()
         downloadTask = Task {
             do {
-                try await MLXProvider.ensureDownloaded(id)
+                // Real loader progress (fraction of bytes received) — moves as it downloads.
+                try await MLXProvider.ensureDownloaded(id) { frac in
+                    Task { @MainActor in
+                        progress = frac
+                        if let total { downloadedBytes = Int64(frac * Double(total)) }
+                        lastProgressAt = Date()
+                        stalled = false
+                    }
+                }
                 if Task.isCancelled { return }
                 progress = 1
                 phase = .idle
@@ -190,6 +204,7 @@ struct MLXModelManager: View {
         phase = .idle
         progress = 0
         downloadedBytes = 0
+        stalled = false
         refreshInstalled()
     }
 

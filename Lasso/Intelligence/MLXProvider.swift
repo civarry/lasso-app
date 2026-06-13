@@ -148,14 +148,19 @@ struct MLXProvider: IntelligenceProvider {
 
     /// Fetch the model into the local Hugging Face cache (explicit user action from Settings). The
     /// fetch leaves the Mac, so it's blocked in Local-only mode. Once cached, inference is fully local.
-    static func ensureDownloaded(_ id: String) async throws {
+    /// `progress` reports the loader's real fraction completed (0–1).
+    static func ensureDownloaded(
+        _ id: String, progress: @Sendable @escaping (Double) -> Void = { _ in }
+    ) async throws {
         let modelID = normalizedID(id)
         if PrivacyMode.localOnly, !isDownloaded(modelID) {
             throw IntelligenceError.unavailable(
                 "Local-only mode is on, so the MLX model can't be downloaded (the fetch leaves your "
                 + "Mac). Turn Local-only off to download it once; inference stays on-device after that.")
         }
-        _ = try await MLXModelCache.shared.container(for: modelID)
+        _ = try await MLXModelCache.shared.container(for: modelID) { p in
+            progress(p.fractionCompleted)
+        }
     }
 }
 
@@ -194,10 +199,17 @@ private actor MLXModelCache {
 
     private var containers: [String: ModelContainer] = [:]
 
-    func container(for modelID: String) async throws -> ModelContainer {
+    func container(for modelID: String,
+                   progress: (@Sendable (Progress) -> Void)? = nil) async throws -> ModelContainer {
         if let container = containers[modelID] { return container }
-        let container = try await #huggingFaceLoadModelContainer(
-            configuration: ModelConfiguration(id: modelID))
+        let container: ModelContainer
+        if let progress {
+            container = try await #huggingFaceLoadModelContainer(
+                configuration: ModelConfiguration(id: modelID), progressHandler: progress)
+        } else {
+            container = try await #huggingFaceLoadModelContainer(
+                configuration: ModelConfiguration(id: modelID))
+        }
         containers[modelID] = container
         MLXProvider.markDownloaded(modelID)   // a successful load means it's cached on disk
         return container

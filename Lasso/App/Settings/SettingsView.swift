@@ -77,6 +77,8 @@ struct SettingsView: View {
     @State private var mlxDownloadTask: Task<Void, Never>?
     @State private var mlxPollTask: Task<Void, Never>?
     @State private var mlxRemoveConfirm = false
+    @State private var mlxLastProgressAt = Date()
+    @State private var mlxStalled = false
 
     enum MLXDownloadState: Equatable { case idle, downloading, ready, failed(String) }
     @AppStorage("ui.actionBarStyle") private var actionBarStyle = ActionBarStyle.compact.rawValue
@@ -615,6 +617,10 @@ struct SettingsView: View {
                     Text("Downloading…").font(.caption).foregroundStyle(.secondary)
                 }
                 Button("Cancel") { cancelMLXDownload() }.controlSize(.small)
+                if mlxStalled {
+                    Text("slow or stalled — Cancel & retry if needed")
+                        .font(.caption2).foregroundStyle(.orange)
+                }
                 Spacer()
             }
         } else if case .failed(let message) = mlxDownload {
@@ -656,25 +662,33 @@ struct SettingsView: View {
         mlxDownload = .downloading
         mlxProgress = 0
         mlxDownloadedBytes = 0
+        mlxStalled = false
+        mlxLastProgressAt = Date()
         let total = mlxRemoteSize
-        let dir = MLXCache.directory(for: id)
 
-        // The loader doesn't surface progress, so derive a real % by watching the cache dir grow
-        // against the known total size.
+        // Watchdog: flag a possible stall if the loader reports no progress for a while.
         mlxPollTask?.cancel()
         mlxPollTask = Task {
             while !Task.isCancelled {
-                let onDisk = await Task.detached { MLXCache.size(of: dir) }.value
-                mlxDownloadedBytes = onDisk
-                if let total, total > 0 { mlxProgress = min(1, Double(onDisk) / Double(total)) }
-                try? await Task.sleep(nanoseconds: 600_000_000)
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                if mlxDownload == .downloading, Date().timeIntervalSince(mlxLastProgressAt) > 30 {
+                    mlxStalled = true
+                }
             }
         }
 
         mlxDownloadTask?.cancel()
         mlxDownloadTask = Task {
             do {
-                try await MLXProvider.ensureDownloaded(id)
+                // Real loader progress (fraction of bytes received).
+                try await MLXProvider.ensureDownloaded(id) { frac in
+                    Task { @MainActor in
+                        mlxProgress = frac
+                        if let total { mlxDownloadedBytes = Int64(frac * Double(total)) }
+                        mlxLastProgressAt = Date()
+                        mlxStalled = false
+                    }
+                }
                 if Task.isCancelled { return }
                 mlxProgress = 1
                 mlxDownload = .ready
@@ -695,6 +709,7 @@ struct SettingsView: View {
         mlxDownload = .idle
         mlxProgress = 0
         mlxDownloadedBytes = 0
+        mlxStalled = false
         refreshMLXInstalled()
     }
 
