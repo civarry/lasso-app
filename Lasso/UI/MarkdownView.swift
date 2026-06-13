@@ -19,6 +19,9 @@ struct MarkdownView: View {
     @ViewBuilder
     private func view(for block: MarkdownBlock) -> some View {
         switch block {
+        case .thought(let s):
+            ThoughtDisclosure(text: s, fontSize: fontSize)
+
         case .paragraph(let s):
             inline(s).font(.system(size: fontSize))
 
@@ -47,9 +50,10 @@ struct MarkdownView: View {
             }
 
         case .code(let s):
-            ScrollView(.horizontal, showsIndicators: false) {
+            HScroll {
                 Text(s)
                     .font(.system(size: fontSize - 1, design: .monospaced))
+                    .textSelection(.enabled)
                     .padding(8)
             }
             .background(RoundedRectangle(cornerRadius: 6).fill(.white.opacity(0.08)))
@@ -65,7 +69,7 @@ struct MarkdownView: View {
 
     private func tableView(header: [String], rows: [[String]]) -> some View {
         let columnCount = max(header.count, rows.map(\.count).max() ?? 0)
-        return ScrollView(.horizontal, showsIndicators: false) {
+        return HScroll {
             Grid(alignment: .topLeading, horizontalSpacing: 14, verticalSpacing: 6) {
                 GridRow {
                     ForEach(0..<columnCount, id: \.self) { c in
@@ -94,9 +98,69 @@ struct MarkdownView: View {
     }
 }
 
+// MARK: - Horizontal scroll with an overflow affordance
+
+/// Wraps wide content (tables, code) in a horizontal scroll view that shows the scrollbar and a
+/// right-edge fade *only when the content actually overflows* — a clear "there's more →" hint so
+/// users don't have to discover Shift-scroll. Trackpad horizontal swipe works as usual.
+private struct HScroll<Content: View>: View {
+    @ViewBuilder var content: Content
+    @State private var contentWidth: CGFloat = 0
+    @State private var viewportWidth: CGFloat = 0
+
+    private var overflowing: Bool { contentWidth > viewportWidth + 1 }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: true) {
+            content
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { viewportWidth = $0 }
+        .overlay(alignment: .trailing) {
+            if overflowing {
+                LinearGradient(
+                    colors: [Color(nsColor: .windowBackgroundColor).opacity(0),
+                             Color(nsColor: .windowBackgroundColor)],
+                    startPoint: .leading, endPoint: .trailing)
+                    .frame(width: 26)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+}
+
+// MARK: - Collapsible model thoughts
+
+private struct ThoughtDisclosure: View {
+    let text: String
+    let fontSize: CGFloat
+    @State private var expanded = true
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            MarkdownView(text: text, fontSize: max(11, fontSize - 1))
+                .foregroundStyle(.secondary)
+                .padding(.leading, 13)
+                .padding(.top, 4)
+                .overlay(alignment: .leading) {
+                    Rectangle()
+                        .fill(.secondary.opacity(0.28))
+                        .frame(width: 1)
+                        .padding(.vertical, 3)
+                }
+        } label: {
+            Label("Thought", systemImage: "brain.head.profile")
+                .font(.system(size: max(11, fontSize - 2), weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .disclosureGroupStyle(.automatic)
+    }
+}
+
 // MARK: - Parser
 
 enum MarkdownBlock {
+    case thought(String)
     case paragraph(String)
     case heading(level: Int, text: String)
     case bullets([String])
@@ -107,6 +171,35 @@ enum MarkdownBlock {
 
 enum MarkdownParser {
     static func parse(_ text: String) -> [MarkdownBlock] {
+        var blocks: [MarkdownBlock] = []
+        var cursor = text.startIndex
+
+        while let open = text.range(of: "<think>", options: .caseInsensitive,
+                                    range: cursor..<text.endIndex) {
+            blocks.append(contentsOf: parsePlain(String(text[cursor..<open.lowerBound])))
+
+            let thoughtStart = open.upperBound
+            if let close = text.range(of: "</think>", options: .caseInsensitive,
+                                      range: thoughtStart..<text.endIndex) {
+                appendThought(String(text[thoughtStart..<close.lowerBound]), to: &blocks)
+                cursor = close.upperBound
+            } else {
+                appendThought(String(text[thoughtStart..<text.endIndex]), to: &blocks)
+                cursor = text.endIndex
+                break
+            }
+        }
+
+        blocks.append(contentsOf: parsePlain(String(text[cursor..<text.endIndex])))
+        return blocks
+    }
+
+    private static func appendThought(_ text: String, to blocks: inout [MarkdownBlock]) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { blocks.append(.thought(trimmed)) }
+    }
+
+    fileprivate static func parsePlain(_ text: String) -> [MarkdownBlock] {
         let lines = text.components(separatedBy: "\n")
         var blocks: [MarkdownBlock] = []
         var paragraph: [String] = []

@@ -7,6 +7,7 @@ struct ChatView: View {
     @AppStorage("ui.resultTextScale") private var textScale = 1.0
     @FocusState private var inputFocused: Bool
     @State private var isDropTarget = false
+    @State private var showModelInfo = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -48,11 +49,11 @@ struct ChatView: View {
             Image(systemName: "lasso").foregroundStyle(.tint)
             Text("Chat").font(.headline)
             Spacer()
+            modelChip
             Button { chat.newChat(); inputFocused = true } label: {
-                Label("New", systemImage: "square.and.pencil")
+                Image(systemName: "square.and.pencil")
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(IconButtonStyle())
             .help("New chat — clears the conversation")
             .disabled(!chat.canClear)
 
@@ -61,6 +62,57 @@ struct ChatView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+    }
+
+    /// Compact model indicator in the header; opens a popover with full Text/Image/privacy details.
+    private var modelChip: some View {
+        Button { showModelInfo.toggle() } label: {
+            HStack(spacing: 4) {
+                Image(systemName: textIcon).font(.system(size: 9))
+                Text(Self.shortModel(intelligence.textEngineLabel))
+                    .font(.caption).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold))
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(.white.opacity(0.06), in: Capsule())
+            .overlay(Capsule().strokeBorder(.white.opacity(0.10)))
+        }
+        .buttonStyle(.plain)
+        .help("Models & privacy")
+        .popover(isPresented: $showModelInfo, arrowEdge: .bottom) { modelInfoPopover }
+    }
+
+    private var modelInfoPopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Models").font(.headline)
+            Label { Text("Text · \(intelligence.textEngineLabel)") } icon: {
+                Image(systemName: textIcon)
+            }
+            if chat.imageInputAvailable {
+                Label { Text("Image · \(intelligence.imageEngineLabel)") } icon: {
+                    Image(systemName: imageIcon)
+                }
+            }
+            Divider()
+            Label {
+                Text(intelligence.privacyNote)
+            } icon: {
+                Image(systemName: intelligence.usedOffDeviceThisSession ? "cloud" : "lock.fill")
+            }
+            .foregroundStyle(.secondary)
+            Text("Change models in Settings ▸ Intelligence.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .font(.callout)
+        .padding(14)
+        .frame(width: 300, alignment: .leading)
+    }
+
+    /// "Groq · openai/gpt-oss-20b" → "gpt-oss-20b" for the compact chip.
+    private static func shortModel(_ label: String) -> String {
+        let afterDot = label.components(separatedBy: " · ").last ?? label
+        return afterDot.components(separatedBy: "/").last ?? afterDot
     }
 
     // MARK: - Conversation
@@ -181,8 +233,6 @@ struct ChatView: View {
                         .help("Send")
                 }
             }
-
-            footer
         }
         .padding(12)
     }
@@ -199,25 +249,6 @@ struct ChatView: View {
         .frame(maxWidth: 240, alignment: .leading)
     }
 
-    private var footer: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            footerLine(icon: textIcon, role: "Text", label: intelligence.textEngineLabel)
-            if chat.imageInputAvailable {
-                footerLine(icon: imageIcon, role: "Image", label: intelligence.imageEngineLabel)
-            }
-        }
-        .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func footerLine(icon: String, role: String, label: String) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: icon).font(.caption2)
-            Text("\(role) · \(label)")
-                .font(.caption2).lineLimit(1).truncationMode(.middle)
-        }
-    }
-
     private var canSend: Bool {
         !chat.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || chat.pendingImage != nil
     }
@@ -226,19 +257,19 @@ struct ChatView: View {
         intelligence.lastProviderName.isEmpty ? intelligence.effectivePreferred.label
             : intelligence.lastProviderName
     }
-    /// Locality icon (cpu = Apple on-device, server.rack = local Ollama, cloud = remote).
+    /// Locality icon (cpu = Apple on-device, cloud = remote, server.rack = any local backend).
     private var textIcon: String {
         switch intelligence.effectivePreferred {
         case .onDevice: "cpu"
-        case .ollama: "server.rack"
         case .openAICompatible, .anthropic: "cloud"
+        default: "server.rack"   // ollama / other local backends
         }
     }
     private var imageIcon: String {
         switch intelligence.effectiveVisionEngine {
         case .matchText: textIcon
-        case .ollama: "server.rack"
         case .openAICompatible, .anthropic: "cloud"
+        default: "server.rack"
         }
     }
 
@@ -261,11 +292,13 @@ private struct MessageBubble: View {
     let message: ChatMessage
     let fontSize: CGFloat
 
+    private var isUser: Bool { message.role == .user }
+
     var body: some View {
+        // User messages: a right-aligned tinted bubble (kept narrow). Assistant messages: full-width
+        // with no bubble (ChatGPT/Claude style) so tables, code, and long text get the whole panel.
         HStack(spacing: 0) {
-            // A single-side gutter so the opposite edge can use (almost) the full panel width —
-            // user messages hug the right, assistant messages the left, both filling the rest.
-            if message.role == .user { Spacer(minLength: 36) }
+            if isUser { Spacer(minLength: 36) }
             VStack(alignment: .leading, spacing: 6) {
                 if let image = message.image {
                     Image(decorative: image, scale: 1)
@@ -289,9 +322,10 @@ private struct MessageBubble: View {
                     sources
                 }
             }
-            .padding(.horizontal, 11).padding(.vertical, 8)
-            .background(bubbleBackground, in: RoundedRectangle(cornerRadius: 12))
-            if message.role == .assistant { Spacer(minLength: 36) }
+            .padding(.horizontal, isUser ? 11 : 2).padding(.vertical, isUser ? 8 : 2)
+            .background(isUser ? AnyShapeStyle(.tint.opacity(0.22)) : AnyShapeStyle(.clear),
+                        in: RoundedRectangle(cornerRadius: 12))
+            .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
         }
     }
 
