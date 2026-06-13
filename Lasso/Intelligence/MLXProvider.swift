@@ -289,7 +289,7 @@ private actor MLXModelCache {
     func evictAll() {
         guard !containers.isEmpty else { return }
         containers.removeAll()
-        MLX.GPU.clearCache()
+        MLX.Memory.clearCache()   // release MLX's GPU buffer cache
         Log.intelligence.notice("MLX: freed cached models to reclaim memory")
     }
 

@@ -72,7 +72,7 @@ final class ChatController {
     links, phone numbers, emails and dates appear as quick action chips.
     • Chat (this panel): press ⌥⌘A. Multi-turn conversation, attach images (button, ⌘V paste, or \
     drag-and-drop), and optional web grounding.
-    • Models: choose a Text engine and a separate Image (vision) engine independently — Apple \
+    • Models: choose a Language model and a separate Image (vision) model independently — Apple \
     Intelligence, local Ollama, local MLX, or a cloud model (OpenAI-compatible / Anthropic). \
     On-device and private by default; cloud is opt-in; a Local-only mode blocks all non-local calls.
     • Connectors (optional): Web search (Wikipedia / DuckDuckGo / Reddit), Tavily, SerpApi, and \

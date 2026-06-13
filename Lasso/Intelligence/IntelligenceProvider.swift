@@ -88,7 +88,7 @@ enum VisionEngine: String, CaseIterable, Identifiable, Sendable {
     var id: String { rawValue }
     var label: String {
         switch self {
-        case .matchText: "Same as text engine"
+        case .matchText: "Same as language model"
         case .ollama: "Ollama (local)"
         case .mlx: "MLX (local)"
         case .openAICompatible: "OpenAI-compatible"

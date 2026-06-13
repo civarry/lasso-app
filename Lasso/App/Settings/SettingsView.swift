@@ -583,12 +583,12 @@ struct SettingsView: View {
             case .mlx:
                 return MLXProvider.isVision(draft.mlxModel)
                     ? "Your MLX model is a vision-language model, so it handles images too — one local model for both."
-                    : "Your MLX text model can't see images — pick a VL model above, or choose a dedicated image provider below."
+                    : "Your MLX language model can't see images — pick a VL model above, or choose a dedicated image provider below."
             case .openAICompatible:
-                return "Images go to your \(serviceName(draft.openAIBaseURL)) text model — it must be "
+                return "Images go to your \(serviceName(draft.openAIBaseURL)) language model — it must be "
                     + "multimodal. Otherwise pick a dedicated image provider below."
             case .anthropic:
-                return "Images go to your Anthropic text model — use a vision Claude, or pick a "
+                return "Images go to your Anthropic language model — use a vision Claude, or pick a "
                     + "dedicated image provider below."
             }
         case .ollama:
