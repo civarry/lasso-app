@@ -280,7 +280,12 @@ struct SettingsView: View {
         case .mlx:
             // Clean Picker row — flush right, identical to the other selection rows.
             Picker("Model", selection: mlxModelBinding) {
-                ForEach(Self.mlxSuggestions, id: \.id) { Text($0.name).tag($0.id) }
+                ForEach(Self.mlxSuggestions, id: \.id) { suggestion in
+                    Label(suggestion.name,
+                          systemImage: MLXProvider.isDownloaded(suggestion.id)
+                              ? "checkmark.circle.fill" : "arrow.down.circle")
+                        .tag(suggestion.id)
+                }
                 Divider()
                 Text("Custom…").tag(Self.mlxCustomTag)
             }
