@@ -581,7 +581,9 @@ struct SettingsView: View {
             case .ollama:
                 return "Images use your Ollama model if it’s multimodal, else your best installed vision model."
             case .mlx:
-                return "MLX text is local, but this experiment is text-only for now — choose a dedicated image provider below."
+                return MLXProvider.isVision(draft.mlxModel)
+                    ? "Your MLX model is a vision-language model, so it handles images too — one local model for both."
+                    : "Your MLX text model can't see images — pick a VL model above, or choose a dedicated image provider below."
             case .openAICompatible:
                 return "Images go to your \(serviceName(draft.openAIBaseURL)) text model — it must be "
                     + "multimodal. Otherwise pick a dedicated image provider below."
@@ -756,16 +758,19 @@ struct SettingsView: View {
 
     /// Curated mlx-community text models (4-bit, small→larger) for the Suggested menu. You can still
     /// paste any MLX text model id from huggingface.co/models?library=mlx into the field.
-    private static var mlxSuggestionIDs: Set<String> { Set(mlxSuggestions.map(\.id)) }
+    /// The Text engine menu offers text models **and** VL models — a VLM also generates text, so it
+    /// can serve both roles (one model for text + Identify).
+    static var mlxTextSuggestions: [(name: String, id: String)] { mlxSuggestions + mlxVisionSuggestions }
+    private static var mlxSuggestionIDs: Set<String> { Set(mlxTextSuggestions.map(\.id)) }
 
     private var mlxIsCustom: Bool { !Self.mlxSuggestionIDs.contains(draft.mlxModel) }
 
     // Suggestions split by state (preserves original order within each group).
     private var mlxDownloadedSuggestions: [(name: String, id: String)] {
-        Self.mlxSuggestions.filter { MLXProvider.isDownloaded($0.id) }
+        Self.mlxTextSuggestions.filter { MLXProvider.isDownloaded($0.id) }
     }
     private var mlxAvailableSuggestions: [(name: String, id: String)] {
-        Self.mlxSuggestions.filter { !MLXProvider.isDownloaded($0.id) }
+        Self.mlxTextSuggestions.filter { !MLXProvider.isDownloaded($0.id) }
     }
 
     @ViewBuilder
@@ -779,7 +784,7 @@ struct SettingsView: View {
 
     /// The menu's label: the selected suggestion's name, or the custom id (or "Custom…" when empty).
     private var mlxMenuLabel: String {
-        if let suggestion = Self.mlxSuggestions.first(where: { $0.id == draft.mlxModel }) {
+        if let suggestion = Self.mlxTextSuggestions.first(where: { $0.id == draft.mlxModel }) {
             return suggestion.name
         }
         return draft.mlxModel.isEmpty ? "Custom…" : draft.mlxModel
