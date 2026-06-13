@@ -28,6 +28,13 @@ final class ChatPanelController: NSObject, NSWindowDelegate {
         present()
     }
 
+    /// Open the panel continuing a one-shot exchange (e.g. Ask AI) so the user can ask follow-ups.
+    func continueInChat(question: String, answer: String, context: String?, image: CGImage?) {
+        ChatController.shared.continueWith(question: question, answer: answer,
+                                           context: context, image: image)
+        present()
+    }
+
     func present() {
         if let panel {
             NSApp.activate(ignoringOtherApps: true)

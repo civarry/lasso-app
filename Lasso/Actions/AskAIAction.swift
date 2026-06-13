@@ -69,6 +69,16 @@ private struct AskAIView: View {
                 }
                 .frame(maxHeight: 240)
             }
+            if !answer.isEmpty, !isStreaming {
+                Button {
+                    ChatPanelController.shared.continueInChat(
+                        question: question, answer: answer, context: ocrText, image: image)
+                    FloatingPanelController.shared.close()
+                } label: {
+                    Label("Continue in chat", systemImage: "bubble.left.and.text.bubble.right")
+                }
+                .controlSize(.small)
+            }
             if intelligence.lastProviderName.isEmpty {
                 Text(intelligence.privacyNote)
                     .font(.caption2)

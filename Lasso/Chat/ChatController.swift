@@ -126,6 +126,20 @@ final class ChatController {
         !messages.isEmpty || !input.isEmpty || pendingImage != nil || seededContext != nil
     }
 
+    /// Open a fresh chat seeded with a prior one-shot exchange (e.g. from Ask AI), so the user can
+    /// keep going with the same on-screen context. The selection text rides on the user turn's
+    /// promptText so follow-ups stay grounded.
+    func continueWith(question: String, answer: String, context: String?, image: CGImage?) {
+        newChat()
+        let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        var user = ChatMessage(role: .user, text: q.isEmpty ? "About this" : q, image: image)
+        if let context, !context.isEmpty {
+            user.promptText = "Context — from my screen:\n\(context)\n\n\(q.isEmpty ? "About this" : q)"
+        }
+        messages.append(user)
+        messages.append(ChatMessage(role: .assistant, text: answer))
+    }
+
     /// Seed a fresh chat from a capture: pre-fill the selection's text and/or image as context.
     func seed(text: String?, image: CGImage?) {
         newChat()
