@@ -1,8 +1,10 @@
+import CoreImage
 import Foundation
 import HuggingFace
 import MLXLLM
-import MLXHuggingFace
 import MLXLMCommon
+import MLXHuggingFace
+import MLXVLM   // links the VLM model factory so the shared loader can handle vision models
 import Tokenizers
 
 /// Experimental native MLX text provider.
@@ -154,6 +156,36 @@ struct MLXProvider: IntelligenceProvider {
                 + "Mac). Turn Local-only off to download it once; inference stays on-device after that.")
         }
         _ = try await MLXModelCache.shared.container(for: modelID)
+    }
+}
+
+/// Native MLX vision provider (Identify / image questions) via a local VLM, e.g. Qwen2.5-VL. Uses the
+/// same downloader + cache as the text provider — the shared loader resolves the VLM factory because
+/// MLXVLM is linked. BYOM: never downloads on the hot path (the user downloads it in Settings first).
+struct MLXVisionProvider: VisionProvider {
+    static let defaultModelID = "mlx-community/Qwen2.5-VL-3B-Instruct-4bit"
+
+    let modelID: String
+
+    init(modelID: String = Self.defaultModelID) {
+        let trimmed = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.modelID = trimmed.isEmpty ? Self.defaultModelID : trimmed
+    }
+
+    func isAvailable() async -> Bool { MLXProvider.isDownloaded(modelID) }
+
+    func describe(_ image: CGImage, prompt: String) async throws -> String {
+        guard MLXProvider.isDownloaded(modelID) else {
+            throw IntelligenceError.unavailable(
+                "Download the MLX vision model first in Settings ▸ Intelligence ▸ Image.")
+        }
+        let container = try await MLXModelCache.shared.container(for: modelID)
+        let session = ChatSession(
+            container,
+            instructions: "You are a precise vision assistant. Describe or answer about the image "
+                + "accurately and concisely.",
+            generateParameters: .init(maxTokens: 800, temperature: 0.2))
+        return try await session.respond(to: prompt, image: .ciImage(CIImage(cgImage: image)))
     }
 }
 

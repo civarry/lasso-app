@@ -81,6 +81,7 @@ enum ProviderKind: String, CaseIterable, Identifiable, Sendable {
 enum VisionEngine: String, CaseIterable, Identifiable, Sendable {
     case matchText          // use the Text engine's model (only works if it's multimodal)
     case ollama             // a local Ollama vision model
+    case mlx                // a local MLX vision-language model (Apple Silicon)
     case openAICompatible
     case anthropic
 
@@ -89,6 +90,7 @@ enum VisionEngine: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .matchText: "Same as text engine"
         case .ollama: "Ollama (local)"
+        case .mlx: "MLX (local)"
         case .openAICompatible: "OpenAI-compatible"
         case .anthropic: "Anthropic"
         }
@@ -115,6 +117,11 @@ final class IntelligenceCoordinator {
     /// Ollama vision model for Identify. Empty string means "Auto" (best installed vision model).
     var visionModel: String {
         didSet { UserDefaults.standard.set(visionModel, forKey: Self.visionModelKey) }
+    }
+
+    /// Local MLX vision (VLM) model id for the Image role.
+    var visionMLXModel: String {
+        didSet { UserDefaults.standard.set(visionMLXModel, forKey: "intelligence.vision.mlxModel") }
     }
 
     /// Image (vision) provider, independent of the text engine. Its cloud config + keys are separate
@@ -176,6 +183,7 @@ final class IntelligenceCoordinator {
         // Default to "Auto" (empty) — resolved to an installed model at use time, never hardcoded.
         self.ollamaModel = defaults.string(forKey: Self.modelKey) ?? ""
         self.visionModel = defaults.string(forKey: Self.visionModelKey) ?? ""
+        self.visionMLXModel = defaults.string(forKey: "intelligence.vision.mlxModel") ?? MLXVisionProvider.defaultModelID
         self.openAIBaseURL = defaults.string(forKey: "intelligence.openai.baseURL") ?? "https://api.openai.com/v1"
         self.openAIModel = defaults.string(forKey: "intelligence.openai.model") ?? "gpt-4o-mini"
         self.anthropicBaseURL = defaults.string(forKey: "intelligence.anthropic.baseURL") ?? "https://api.anthropic.com"
@@ -263,6 +271,7 @@ final class IntelligenceCoordinator {
         switch effectiveVisionEngine {
         case .matchText: return textEngineLabel   // images go through the text model
         case .ollama: return visionModel.isEmpty ? "Ollama vision (auto)" : "Ollama · \(visionModel)"
+        case .mlx: return "MLX · \(visionMLXModel)"
         case .openAICompatible: return "\(cloudName(visionOpenAIBaseURL)) · \(visionOpenAIModel)"
         case .anthropic: return "Anthropic · \(visionAnthropicModel)"
         }
@@ -292,6 +301,7 @@ final class IntelligenceCoordinator {
         guard PrivacyMode.localOnly else { return visionEngine }
         switch visionEngine {
         case .ollama: return .ollama
+        case .mlx: return .mlx   // local — fine in local-only mode
         case .matchText: return effectivePreferred.isLocalKind ? .matchText : .ollama
         case .openAICompatible, .anthropic: return .ollama
         }
@@ -342,6 +352,9 @@ final class IntelligenceCoordinator {
             return await visionFromTextEngine()
         case .ollama:
             return await localOllamaVision()
+        case .mlx:
+            let provider = MLXVisionProvider(modelID: visionMLXModel)
+            return await provider.isAvailable() ? provider : nil
         case .openAICompatible:
             let url = URL(string: visionOpenAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
             let cloud = OpenAICompatibleVisionProvider(
@@ -424,6 +437,7 @@ final class IntelligenceCoordinator {
         case .openAICompatible: return cloudReady("vision.openai.apiKey", visionOpenAIModel)
         case .anthropic:        return cloudReady("vision.anthropic.apiKey", visionAnthropicModel)
         case .ollama:           return await hasInstalledVisionModel()
+        case .mlx:              return MLXProvider.isDownloaded(visionMLXModel)
         // "Same as text": only counts as vision if the *text* model can actually see (a text-only
         // cloud model like Groq gpt-oss must not masquerade as a vision backend).
         case .matchText:

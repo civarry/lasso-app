@@ -52,6 +52,8 @@ targets:
       - package: MLXSwiftLM
         product: MLXLLM
       - package: MLXSwiftLM
+        product: MLXVLM
+      - package: MLXSwiftLM
         product: MLXLMCommon
       - package: MLXSwiftLM
         product: MLXHuggingFace

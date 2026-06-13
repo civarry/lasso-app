@@ -13,6 +13,7 @@ struct SettingsView: View {
         var ollamaAutoStart = false     // start Ollama when Lasso launches (only if installed)
         var mlxModel = MLXProvider.defaultModelID
         var visionModel = ""
+        var visionMLXModel = MLXVisionProvider.defaultModelID
         // OpenAI-compatible. The API *key* is shared per service (it's the account key, not per role),
         // so Text and Image reuse it for the same service. The *model* is per role + service. Each
         // service (OpenAI/Groq/OpenRouter/Custom) keeps its own key + model; switching Service swaps.
@@ -194,7 +195,7 @@ struct SettingsView: View {
     /// Image providers offered — cloud hidden in local-only mode (keyed to the saved setting, like the
     /// text engine list, so it only changes after Save & Apply).
     private var availableVisionEngines: [VisionEngine] {
-        saved.localOnly ? [.matchText, .ollama] : VisionEngine.allCases
+        saved.localOnly ? [.matchText, .ollama, .mlx] : VisionEngine.allCases
     }
 
     /// Whether the Ollama config block is relevant: either role uses Ollama, or Apple text falls back
@@ -334,6 +335,9 @@ struct SettingsView: View {
             EmptyView()
         case .ollama:
             modelPicker("Vision model", selection: $draft.visionModel)
+        case .mlx:
+            MLXModelManager(modelID: $draft.visionMLXModel, suggestions: Self.mlxVisionSuggestions,
+                            defaultID: MLXVisionProvider.defaultModelID, localOnly: draft.localOnly)
         case .openAICompatible:
             Picker("Service", selection: visionOpenAIServiceBinding) {
                 Text("OpenAI").tag("openai")
@@ -581,6 +585,8 @@ struct SettingsView: View {
             }
         case .ollama:
             return "Images are identified locally by Ollama — nothing leaves your Mac."
+        case .mlx:
+            return "Images are identified locally by a native MLX vision model — nothing leaves your Mac."
         case .openAICompatible:
             return "Images are sent to \(serviceName(draft.visionOpenAIBaseURL)) — use a multimodal "
                 + "model (e.g. gpt-4o)."
@@ -771,6 +777,13 @@ struct SettingsView: View {
         ("Mistral 7B v0.3 · 4-bit", "mlx-community/Mistral-7B-Instruct-v0.3-4bit"),
     ]
 
+    /// Curated mlx-community vision-language (VLM) models for the Image role.
+    static let mlxVisionSuggestions: [(name: String, id: String)] = [
+        ("Qwen2-VL 2B · 4-bit — small", "mlx-community/Qwen2-VL-2B-Instruct-4bit"),
+        ("Qwen2.5-VL 3B · 4-bit", "mlx-community/Qwen2.5-VL-3B-Instruct-4bit"),
+        ("Qwen2.5-VL 7B · 4-bit", "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"),
+    ]
+
     nonisolated static func openAIServiceURL(_ service: String, custom: String) -> String {
         switch service {
         case "openai": "https://api.openai.com/v1"
@@ -923,6 +936,7 @@ struct SettingsView: View {
         d.ollamaAutoStart = UserDefaults.standard.bool(forKey: "ollama.autoStart")
         d.mlxModel = intelligence.mlxModel
         d.visionModel = intelligence.visionModel
+        d.visionMLXModel = intelligence.visionMLXModel
         d.anthropicBaseURL = intelligence.anthropicBaseURL
         d.anthropicModel = intelligence.anthropicModel
         d.anthropicKey = Keychain.getMigrating("anthropic.apiKey", legacyDefaultsKey: "anthropic.apiKey") ?? ""
@@ -992,6 +1006,7 @@ struct SettingsView: View {
         UserDefaults.standard.set(draft.ollamaAutoStart, forKey: "ollama.autoStart")
         Task { await OllamaEndpoint.autodetect() }   // re-resolve the effective server after a change
         intelligence.visionModel = draft.visionModel
+        intelligence.visionMLXModel = draft.visionMLXModel.trimmingCharacters(in: .whitespacesAndNewlines)
         intelligence.anthropicBaseURL = draft.anthropicBaseURL
         intelligence.anthropicModel = draft.anthropicModel
         Keychain.set(draft.anthropicKey, for: "anthropic.apiKey")
