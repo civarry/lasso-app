@@ -73,6 +73,8 @@ struct SettingsView: View {
     @State private var mlxSizeTask: Task<Void, Never>?
     @State private var mlxProgress: Double = 0          // 0–1, when the total size is known
     @State private var mlxDownloadedBytes: Int64 = 0
+    @State private var mlxDownloadTask: Task<Void, Never>?
+    @State private var mlxPollTask: Task<Void, Never>?
 
     enum MLXDownloadState: Equatable { case idle, downloading, ready, failed(String) }
     @AppStorage("ui.actionBarStyle") private var actionBarStyle = ActionBarStyle.compact.rawValue
@@ -287,19 +289,22 @@ struct SettingsView: View {
                 }
             }
             .onAppear { refreshMLXInstalled(); refreshMLXRemoteSize() }
+            .onChange(of: draft.mlxModel) { mlxDownload = .idle; refreshMLXRemoteSize() }
             if mlxIsCustom {
                 TextField("Model id", text: $draft.mlxModel, prompt: Text(MLXProvider.defaultModelID))
-                    .onChange(of: draft.mlxModel) { mlxDownload = .idle; refreshMLXRemoteSize() }
             }
 
             // Other downloaded models (manage/cleanup) — only when there are extras.
-            ForEach(otherDownloadedMLX) { entry in
-                HStack(spacing: 8) {
-                    Text(entry.repoID).font(.caption).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle)
-                    Text(byteString(entry.sizeBytes)).font(.caption2).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Remove", role: .destructive) { removeMLXModel(entry) }.controlSize(.small)
+            if !otherDownloadedMLX.isEmpty {
+                Text("Downloaded models").font(.caption).foregroundStyle(.secondary)
+                ForEach(otherDownloadedMLX) { entry in
+                    HStack(spacing: 8) {
+                        Text(entry.repoID).font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                        Text(byteString(entry.sizeBytes)).font(.caption2).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Remove", role: .destructive) { removeMLXModel(entry) }.controlSize(.small)
+                    }
                 }
             }
         case .openAICompatible:
@@ -585,6 +590,8 @@ struct SettingsView: View {
             } else {
                 ProgressView().controlSize(.small)
             }
+            Button { cancelMLXDownload() } label: { Image(systemName: "xmark.circle.fill") }
+                .buttonStyle(.borderless).foregroundStyle(.secondary).help("Cancel download")
         } else if case .failed(let message) = mlxDownload {
             Button { downloadMLXModel() } label: { Image(systemName: "arrow.clockwise.circle") }
                 .buttonStyle(.borderless).foregroundStyle(.orange).help(message)
@@ -592,10 +599,19 @@ struct SettingsView: View {
             Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 .help("Downloaded — on this Mac")
         } else {
-            Button { downloadMLXModel() } label: { Image(systemName: "arrow.down.circle") }
-                .buttonStyle(.borderless)
-                .disabled(draft.localOnly)
-                .help(mlxDownloadHelp)
+            Button { downloadMLXModel() } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.down.circle")
+                    if let size = mlxRemoteSize {
+                        Text(byteString(size)).font(.caption2).foregroundStyle(.secondary)
+                    } else if mlxSizeLoading {
+                        Text("…").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .buttonStyle(.borderless)
+            .disabled(draft.localOnly)
+            .help(mlxDownloadHelp)
         }
     }
 
@@ -617,7 +633,8 @@ struct SettingsView: View {
 
         // The loader doesn't surface progress, so derive a real % by watching the cache dir grow
         // against the known total size.
-        let poll = Task {
+        mlxPollTask?.cancel()
+        mlxPollTask = Task {
             while !Task.isCancelled {
                 let onDisk = await Task.detached { MLXCache.size(of: dir) }.value
                 mlxDownloadedBytes = onDisk
@@ -626,18 +643,31 @@ struct SettingsView: View {
             }
         }
 
-        Task {
+        mlxDownloadTask?.cancel()
+        mlxDownloadTask = Task {
             do {
                 try await MLXProvider.ensureDownloaded(id)
-                poll.cancel()
+                if Task.isCancelled { return }
                 mlxProgress = 1
                 mlxDownload = .ready
             } catch {
-                poll.cancel()
-                mlxDownload = .failed(error.localizedDescription)
+                // A cancel leaves us in .idle already; only surface genuine failures.
+                if !Task.isCancelled, !(error is CancellationError) {
+                    mlxDownload = .failed(error.localizedDescription)
+                }
             }
+            mlxPollTask?.cancel()
             refreshMLXInstalled()
         }
+    }
+
+    private func cancelMLXDownload() {
+        mlxDownloadTask?.cancel()
+        mlxPollTask?.cancel()
+        mlxDownload = .idle
+        mlxProgress = 0
+        mlxDownloadedBytes = 0
+        refreshMLXInstalled()
     }
 
     private var currentModelEntry: MLXCache.Entry? {
