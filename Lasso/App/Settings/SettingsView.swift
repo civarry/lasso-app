@@ -277,7 +277,8 @@ struct SettingsView: View {
         case .mlx:
             LabeledContent("Model") {
                 HStack(spacing: 6) {
-                    TextField("Model", text: $draft.mlxModel, prompt: Text(MLXProvider.defaultModelID))
+                    TextField("", text: $draft.mlxModel, prompt: Text(MLXProvider.defaultModelID))
+                        .labelsHidden()
                         .frame(minWidth: 150)
                     Menu("Suggested") {
                         ForEach(Self.mlxSuggestions, id: \.id) { suggestion in
@@ -286,31 +287,11 @@ struct SettingsView: View {
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
+                    mlxDownloadControl
                 }
             }
             .onChange(of: draft.mlxModel) { mlxDownload = .idle; refreshMLXRemoteSize() }
             .onAppear { refreshMLXInstalled(); refreshMLXRemoteSize() }
-
-            // One compact status/action row for the selected model.
-            HStack(spacing: 8) {
-                if mlxDownload == .downloading {
-                    mlxProgressView
-                } else if MLXProvider.isDownloaded(draft.mlxModel) {
-                    Label("On this Mac", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green).font(.caption)
-                    if let size = currentModelEntry?.sizeBytes {
-                        Text(byteString(size)).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Remove", role: .destructive) { removeCurrentMLXModel() }.controlSize(.small)
-                } else {
-                    Button(mlxDownloadButtonTitle) { downloadMLXModel() }
-                        .disabled(draft.localOnly)
-                    Text(draft.localOnly ? "Local-only blocks downloads" : "Downloads once, then runs on-device")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                }
-            }
 
             // Other downloaded models (manage/cleanup) — only when there are extras.
             ForEach(otherDownloadedMLX) { entry in
@@ -516,9 +497,14 @@ struct SettingsView: View {
     @ViewBuilder
     private var connectionRow: some View {
         HStack {
-            Button("Test connection") { runTest() }
+            Button("Test") { runTest() }
                 .buttonStyle(.bordered)
                 .disabled(testState == .testing)
+            // The downloaded MLX model is what "Test" exercises, so Remove sits with it.
+            if draft.provider == .mlx, currentModelEntry != nil {
+                Button("Remove", role: .destructive) { removeCurrentMLXModel() }
+                    .buttonStyle(.bordered)
+            }
             Spacer()
             testResultView
         }
@@ -590,37 +576,34 @@ struct SettingsView: View {
     /// Base URL for a known service preset, or the user's custom URL.
     // MARK: - MLX download
 
-    private var mlxStatusText: String {
-        switch mlxDownload {
-        case .downloading: "Downloading… first time can take a few minutes"
-        case .ready: "Ready — model is on this Mac"
-        case .failed(let message): message
-        case .idle:
-            draft.localOnly ? "Local-only mode blocks downloads"
-                : (MLXProvider.isDownloaded(draft.mlxModel) ? "Ready — model is on this Mac" : "Not downloaded")
-        }
-    }
-
-    private var mlxStatusColor: Color {
-        switch mlxDownload {
-        case .failed: .orange
-        case .ready: .green
-        default: .secondary
-        }
-    }
-
+    /// Inline download state in the Model row: download icon (+ size) → progress % → green check.
     @ViewBuilder
-    private var mlxProgressView: some View {
-        if let total = mlxRemoteSize, total > 0 {
-            ProgressView(value: mlxProgress).frame(width: 90)
-            Text("\(Int(mlxProgress * 100))% · \(byteString(mlxDownloadedBytes)) / \(byteString(total))")
-                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+    private var mlxDownloadControl: some View {
+        if mlxDownload == .downloading {
+            if let total = mlxRemoteSize, total > 0 {
+                ProgressView(value: mlxProgress).frame(width: 56)
+                Text("\(Int(mlxProgress * 100))%").font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+        } else if case .failed(let message) = mlxDownload {
+            Button { downloadMLXModel() } label: { Image(systemName: "arrow.clockwise.circle") }
+                .buttonStyle(.borderless).foregroundStyle(.orange).help(message)
+        } else if MLXProvider.isDownloaded(draft.mlxModel) {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                .help("Downloaded — on this Mac")
         } else {
-            ProgressView().controlSize(.small)
-            Text(mlxDownloadedBytes > 0
-                 ? "Downloading… \(byteString(mlxDownloadedBytes))"
-                 : "Downloading… first time can take a few minutes")
-                .font(.caption).foregroundStyle(.secondary)
+            Button { downloadMLXModel() } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "arrow.down.circle")
+                    if let size = mlxRemoteSize { Text(byteString(size)).font(.caption2) }
+                    else if mlxSizeLoading { Text("…").font(.caption2) }
+                }
+            }
+            .buttonStyle(.borderless)
+            .disabled(draft.localOnly)
+            .help(draft.localOnly ? "Local-only mode blocks downloads (the fetch leaves your Mac)"
+                  : "Download this model")
         }
     }
 
@@ -655,13 +638,6 @@ struct SettingsView: View {
             }
             refreshMLXInstalled()
         }
-    }
-
-    private var mlxDownloadButtonTitle: String {
-        let base = MLXProvider.isDownloaded(draft.mlxModel) ? "Re-download" : "Download model"
-        if mlxSizeLoading { return base + " · checking size…" }
-        if let size = mlxRemoteSize { return base + " · ≈ \(byteString(size))" }
-        return base
     }
 
     private var currentModelEntry: MLXCache.Entry? {
