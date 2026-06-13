@@ -599,19 +599,10 @@ struct SettingsView: View {
             Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 .help("Downloaded — on this Mac")
         } else {
-            Button { downloadMLXModel() } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.down.circle")
-                    if let size = mlxRemoteSize {
-                        Text(byteString(size)).font(.caption2).foregroundStyle(.secondary)
-                    } else if mlxSizeLoading {
-                        Text("…").font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .buttonStyle(.borderless)
-            .disabled(draft.localOnly)
-            .help(mlxDownloadHelp)
+            Button { downloadMLXModel() } label: { Image(systemName: "arrow.down.circle") }
+                .buttonStyle(.borderless)
+                .disabled(draft.localOnly)
+                .help(mlxDownloadHelp)   // size now loads reliably (onChange), so hover shows it
         }
     }
 
