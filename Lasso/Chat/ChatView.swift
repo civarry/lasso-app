@@ -151,6 +151,15 @@ struct ChatView: View {
                           ? "Attach an image — or paste (⌘V) or drag one onto the panel"
                           : "Attach an image — needs a multimodal or Image model (Settings ▸ Intelligence)")
 
+                if chat.webConnectorsAvailable {
+                    Button { chat.webSearchOn.toggle() } label: { Image(systemName: "globe") }
+                        .buttonStyle(IconButtonStyle())
+                        .foregroundStyle(chat.webSearchOn ? Color.accentColor : Color.secondary)
+                        .help(chat.webSearchOn
+                              ? "Web grounding ON — answers use your connectors (Wikipedia, search, reverse-image)"
+                              : "Web grounding OFF — tap to ground answers with your connectors")
+                }
+
                 TextField("Message…", text: $chat.input)
                     .textFieldStyle(.plain)
                     .lineLimit(1)
@@ -276,11 +285,30 @@ private struct MessageBubble: View {
                         .foregroundStyle(message.isError ? Color.orange : Color.primary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                if !message.sources.isEmpty, !message.text.isEmpty {
+                    sources
+                }
             }
             .padding(.horizontal, 11).padding(.vertical, 8)
             .background(bubbleBackground, in: RoundedRectangle(cornerRadius: 12))
             if message.role == .assistant { Spacer(minLength: 36) }
         }
+    }
+
+    private var sources: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Sources").font(.caption2).fontWeight(.semibold).foregroundStyle(.secondary)
+            ForEach(message.sources) { hit in
+                if let url = hit.url {
+                    Link(destination: url) {
+                        Label(hit.title, systemImage: "link")
+                            .font(.caption2).lineLimit(1).truncationMode(.middle)
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.top, 2)
     }
 
     private var bubbleBackground: some ShapeStyle {

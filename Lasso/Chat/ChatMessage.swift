@@ -27,4 +27,6 @@ struct ChatMessage: Identifiable, @unchecked Sendable {
     /// Base64 JPEG sent natively for this turn (multimodal models), re-sent in history so the image
     /// stays in context for follow-ups. Nil for the describe-then-text path.
     var imageBase64: String?
+    /// Web/connector sources used to ground this assistant turn, shown as tappable links.
+    var sources: [WebSourcesProvider.Hit] = []
 }

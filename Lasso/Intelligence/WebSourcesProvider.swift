@@ -310,6 +310,11 @@ struct Evidence {
         hits += other.hits
         if error == nil { error = other.error }
     }
+
+    var isEmpty: Bool {
+        (bestGuess?.isEmpty ?? true) && entities.isEmpty
+            && (abstract?.isEmpty ?? true) && hits.isEmpty
+    }
 }
 
 /// Whether a source runs before the text query is finalized (image-based, can refine the query) or

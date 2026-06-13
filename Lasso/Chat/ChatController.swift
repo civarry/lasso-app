@@ -31,6 +31,10 @@ final class ChatController {
     private(set) var trimmedNotice = false
     /// Whether attaching an image can do anything useful right now (native vision or a vision provider).
     private(set) var imageInputAvailable = false
+    /// Whether any web / reverse-image connector is configured (drives the globe toggle's visibility).
+    private(set) var webConnectorsAvailable = false
+    /// User-facing toggle: ground answers with web/connector evidence. Defaults on when available.
+    var webSearchOn = true
 
     private var streamTask: Task<Void, Never>?
 
@@ -136,6 +140,13 @@ final class ChatController {
         await intelligence.refreshVisionAvailability()
         let nativeVision = await intelligence.textModelSupportsVision()
         imageInputAvailable = intelligence.visionAvailable || nativeVision
+        webConnectorsAvailable = Self.computeWebAvailable()
+    }
+
+    /// Any web or reverse-image connector active (respecting local-only mode).
+    static func computeWebAvailable() -> Bool {
+        Connectors.webSearch.isActive() || Connectors.tavily.isActive()
+            || Connectors.serpApi.isActive() || Connectors.googleVision.isActive()
     }
 
     // MARK: - Sending
@@ -182,6 +193,7 @@ final class ChatController {
             Log.chat.notice("runTurn · folded seeded context (\(context.count, privacy: .public) chars)")
         }
         var imageBase64: String?
+        var visionDescription: String?   // captured for web-search query when describing an image
 
         if let image {
             Log.chat.notice("runTurn · image present — checking native vision (+\(ms(), privacy: .public)ms)")
@@ -214,6 +226,7 @@ final class ChatController {
                     }
                 }
                 if let described, !described.isEmpty {
+                    visionDescription = described
                     userText = """
                     [I attached an image. A separate vision model produced this description of it — \
                     it may be incomplete or wrong, so treat it cautiously and don't attribute it to me:]
@@ -239,6 +252,21 @@ final class ChatController {
                         + "models in Settings ▸ Intelligence ▸ Image.")
                     return
                 }
+            }
+        }
+
+        // Web / connector grounding (opt-in via the globe toggle): reverse-image + web evidence,
+        // injected as context so the model answers with real sources instead of guessing.
+        if webSearchOn, webConnectorsAvailable {
+            update(assistantID) { $0.statusText = image != nil ? "Looking it up…" : "Searching the web…" }
+            Log.chat.notice("runTurn · gathering web evidence (+\(ms(), privacy: .public)ms)")
+            if let evidence = await gatherEvidence(typed: typed, image: image, description: visionDescription) {
+                userText = appendEvidence(userText, evidence)
+                let hits = Array(evidence.hits.prefix(6))
+                update(assistantID) { $0.sources = hits }
+                Log.chat.notice("runTurn · evidence: guess=\(evidence.bestGuess ?? "-", privacy: .public) hits=\(hits.count, privacy: .public) (+\(ms(), privacy: .public)ms)")
+            } else {
+                Log.chat.notice("runTurn · no web evidence (+\(ms(), privacy: .public)ms)")
             }
         }
 
@@ -269,6 +297,70 @@ final class ChatController {
         }
         Log.chat.notice("runTurn ✓ stream DONE deltas=\(deltas, privacy: .public) chars=\(chars, privacy: .public) (+\(ms(), privacy: .public)ms)")
         finishStreaming(assistantID)
+    }
+
+    // MARK: - Web / connector grounding
+
+    /// Gather evidence from the active connectors: reverse-image (Google Vision) for image turns to
+    /// get a best-guess identity, then a text web lookup (Wikipedia / DuckDuckGo / Tavily / SerpApi)
+    /// on the strongest query. Returns nil when nothing usable was found.
+    private func gatherEvidence(typed: String, image: CGImage?, description: String?) async -> Evidence? {
+        guard !PrivacyMode.localOnly else { return nil }
+        let webActive = Connectors.webSearch.isActive() || Connectors.tavily.isActive()
+            || Connectors.serpApi.isActive()
+        let reverseActive = image != nil && Connectors.googleVision.isActive()
+        guard webActive || reverseActive else { return nil }
+
+        var evidence = Evidence()
+        if reverseActive, let image {
+            evidence.merge(await GoogleVisionSource().gather(image: image, query: typed, ocrText: description))
+        }
+        if webActive {
+            let query = Self.searchQuery(bestGuess: evidence.bestGuess, entity: evidence.entities.first,
+                                         typed: typed, description: description)
+            if !query.isEmpty {
+                let result = await WebSourcesProvider().lookup(query)
+                evidence.merge(Evidence(abstract: result.abstract, hits: result.hits))
+            }
+        }
+        return evidence.isEmpty ? nil : evidence
+    }
+
+    /// Best query for text web search: a specific reverse-image guess wins, else the user's words,
+    /// else a recognized entity, else key terms from the image description.
+    private static func searchQuery(bestGuess: String?, entity: String?,
+                                    typed: String, description: String?) -> String {
+        if let g = bestGuess, !g.isEmpty { return typed.isEmpty ? g : "\(g) \(typed)" }
+        if !typed.isEmpty { return typed }
+        if let e = entity, !e.isEmpty { return e }
+        if let d = description, !d.isEmpty { return String(d.prefix(120)) }
+        return ""
+    }
+
+    /// Fold gathered evidence into the turn as grounding context for the model.
+    private func appendEvidence(_ text: String, _ evidence: Evidence) -> String {
+        var lines: [String] = []
+        if let g = evidence.bestGuess, !g.isEmpty {
+            lines.append("Likely identification (reverse-image search): \(g)")
+        }
+        if !evidence.entities.isEmpty {
+            lines.append("Related entities: \(evidence.entities.prefix(6).joined(separator: ", "))")
+        }
+        if let a = evidence.abstract, !a.isEmpty { lines.append("Reference summary: \(a)") }
+        if !evidence.hits.isEmpty {
+            let src = evidence.hits.prefix(6)
+                .map { "- \($0.title)\($0.url.map { u in " (\(u.absoluteString))" } ?? "")" }
+                .joined(separator: "\n")
+            lines.append("Sources:\n\(src)")
+        }
+        guard !lines.isEmpty else { return text }
+        return """
+        \(text)
+
+        [Web evidence gathered for this question — ground your answer in it and mention sources where \
+        relevant; do not invent facts it doesn't support:]
+        \(lines.joined(separator: "\n"))
+        """
     }
 
     /// Build the trimmed `[ChatTurn]` to send: system + prior history + the new (folded) user turn.
