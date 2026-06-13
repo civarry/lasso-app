@@ -75,7 +75,6 @@ struct SettingsView: View {
     @State private var mlxDownloadedBytes: Int64 = 0
     @State private var mlxDownloadTask: Task<Void, Never>?
     @State private var mlxPollTask: Task<Void, Never>?
-    @State private var mlxManageExpanded = false
 
     enum MLXDownloadState: Equatable { case idle, downloading, ready, failed(String) }
     @AppStorage("ui.actionBarStyle") private var actionBarStyle = ActionBarStyle.compact.rawValue
@@ -281,9 +280,11 @@ struct SettingsView: View {
             // Clean Picker row — flush right, identical to the other selection rows.
             Picker("Model", selection: mlxModelBinding) {
                 ForEach(Self.mlxSuggestions, id: \.id) { suggestion in
+                    // Filled = downloaded, outline = available to download (no check — the menu's own
+                    // selection check would otherwise double up).
                     Label(suggestion.name,
                           systemImage: MLXProvider.isDownloaded(suggestion.id)
-                              ? "checkmark.circle.fill" : "arrow.down.circle")
+                              ? "arrow.down.circle.fill" : "arrow.down.circle")
                         .tag(suggestion.id)
                 }
                 Divider()
@@ -295,26 +296,8 @@ struct SettingsView: View {
                 TextField("Model id", text: $draft.mlxModel, prompt: Text(MLXProvider.defaultModelID))
             }
 
-            // Download / progress on its own left-aligned row (doesn't disturb the Picker layout).
+            // Download / state / Remove for the selected model — one contextual row.
             mlxDownloadRow
-
-            // Manage downloads — collapsed to one summary line by default to stay minimal.
-            if !mlxInstalled.isEmpty {
-                DisclosureGroup(isExpanded: $mlxManageExpanded) {
-                    ForEach(mlxInstalled) { entry in
-                        HStack(spacing: 8) {
-                            Text(entry.repoID).font(.caption).foregroundStyle(.secondary)
-                                .lineLimit(1).truncationMode(.middle)
-                            Text(byteString(entry.sizeBytes)).font(.caption2).foregroundStyle(.secondary)
-                            Spacer()
-                            Button("Remove", role: .destructive) { removeMLXModel(entry) }.controlSize(.small)
-                        }
-                    }
-                } label: {
-                    Text("Downloaded models · \(mlxInstalled.count) · \(byteString(mlxTotalDownloaded))")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
         case .openAICompatible:
             Picker("Service", selection: openAIServiceBinding) {
                 Text("OpenAI").tag("openai")
@@ -617,7 +600,21 @@ struct SettingsView: View {
                 }
                 Spacer()
             }
+        } else {
+            // Selected model is on disk: show its state + a Remove for it (manage by selecting it).
+            HStack(spacing: 8) {
+                Label("On this Mac", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green).font(.caption)
+                Spacer()
+                if let entry = currentModelEntry {
+                    Button("Remove", role: .destructive) { removeMLXModel(entry) }.controlSize(.small)
+                }
+            }
         }
+    }
+
+    private var currentModelEntry: MLXCache.Entry? {
+        mlxInstalled.first { MLXProvider.normalizedID($0.repoID) == MLXProvider.normalizedID(draft.mlxModel) }
     }
 
     /// Download button label with the size shown directly (no hover needed).
@@ -672,10 +669,6 @@ struct SettingsView: View {
         mlxProgress = 0
         mlxDownloadedBytes = 0
         refreshMLXInstalled()
-    }
-
-    private var mlxTotalDownloaded: Int64 {
-        mlxInstalled.reduce(0) { $0 + $1.sizeBytes }
     }
 
     private func refreshMLXInstalled() {
