@@ -477,7 +477,14 @@ struct IdentifyView: View {
 
     private func synthesisPrompt() -> String {
         let related = webHits.prefix(6)
-            .map { "- [\($0.source)] \($0.title)" }
+            .map { hit -> String in
+                var line = "- [\(hit.source)] \(hit.title)"
+                if let snippet = hit.snippet?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !snippet.isEmpty {
+                    line += "\n  \(snippet.prefix(280))"
+                }
+                return line
+            }
             .joined(separator: "\n")
         let entityList = entities.isEmpty ? "(none)" : entities.prefix(6).joined(separator: ", ")
 
