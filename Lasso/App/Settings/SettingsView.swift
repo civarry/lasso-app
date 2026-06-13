@@ -277,18 +277,26 @@ struct SettingsView: View {
         case .ollama:
             modelPicker("Model", selection: $draft.ollamaModel)
         case .mlx:
-            // Clean Picker row — flush right, identical to the other selection rows.
-            Picker("Model", selection: mlxModelBinding) {
-                ForEach(Self.mlxSuggestions, id: \.id) { suggestion in
-                    // Filled = downloaded, outline = available to download (no check — the menu's own
-                    // selection check would otherwise double up).
-                    Label(suggestion.name,
-                          systemImage: MLXProvider.isDownloaded(suggestion.id)
-                              ? "arrow.down.circle.fill" : "arrow.down.circle")
-                        .tag(suggestion.id)
+            // A Menu (not Picker) so there's no leading selection check; each item shows a filled
+            // (downloaded) / outline (available) download icon, and the row label is the current model.
+            LabeledContent("Model") {
+                Menu {
+                    ForEach(Self.mlxSuggestions, id: \.id) { suggestion in
+                        Button { draft.mlxModel = suggestion.id } label: {
+                            Label(suggestion.name,
+                                  systemImage: MLXProvider.isDownloaded(suggestion.id)
+                                      ? "arrow.down.circle.fill" : "arrow.down.circle")
+                        }
+                    }
+                    Divider()
+                    Button("Custom…") {
+                        if Self.mlxSuggestionIDs.contains(draft.mlxModel) { draft.mlxModel = "" }
+                    }
+                } label: {
+                    Text(mlxMenuLabel)
                 }
-                Divider()
-                Text("Custom…").tag(Self.mlxCustomTag)
+                .menuStyle(.borderlessButton)
+                .fixedSize()
             }
             .onAppear { refreshMLXInstalled(); refreshMLXRemoteSize() }
             .onChange(of: draft.mlxModel) { mlxDownload = .idle; refreshMLXRemoteSize() }
@@ -710,25 +718,17 @@ struct SettingsView: View {
 
     /// Curated mlx-community text models (4-bit, small→larger) for the Suggested menu. You can still
     /// paste any MLX text model id from huggingface.co/models?library=mlx into the field.
-    private static let mlxCustomTag = "__mlx_custom__"
     private static var mlxSuggestionIDs: Set<String> { Set(mlxSuggestions.map(\.id)) }
 
-    /// Picker selection: a suggestion id, or the Custom sentinel when the model isn't a suggestion.
-    private var mlxModelBinding: Binding<String> {
-        Binding(
-            get: { Self.mlxSuggestionIDs.contains(draft.mlxModel) ? draft.mlxModel : Self.mlxCustomTag },
-            set: { newValue in
-                if newValue == Self.mlxCustomTag {
-                    if Self.mlxSuggestionIDs.contains(draft.mlxModel) { draft.mlxModel = "" }
-                } else {
-                    draft.mlxModel = newValue
-                }
-                mlxDownload = .idle
-                refreshMLXRemoteSize()
-            })
-    }
-
     private var mlxIsCustom: Bool { !Self.mlxSuggestionIDs.contains(draft.mlxModel) }
+
+    /// The menu's label: the selected suggestion's name, or the custom id (or "Custom…" when empty).
+    private var mlxMenuLabel: String {
+        if let suggestion = Self.mlxSuggestions.first(where: { $0.id == draft.mlxModel }) {
+            return suggestion.name
+        }
+        return draft.mlxModel.isEmpty ? "Custom…" : draft.mlxModel
+    }
 
     private static let mlxSuggestions: [(name: String, id: String)] = [
         ("Qwen3 0.6B · 4-bit — tiny & fast", "mlx-community/Qwen3-0.6B-4bit"),
