@@ -505,6 +505,10 @@ struct SettingsView: View {
             Button("Test") { runTest() }
                 .buttonStyle(.bordered)
                 .disabled(testState == .testing)
+            if draft.provider == .mlx, let entry = currentModelEntry {
+                Button("Remove", role: .destructive) { removeMLXModel(entry) }
+                    .buttonStyle(.bordered)
+            }
             Spacer()
             testResultView
         }
@@ -611,15 +615,9 @@ struct SettingsView: View {
                 Spacer()
             }
         } else {
-            // Selected model is on disk: show its state + a Remove for it (manage by selecting it).
-            HStack(spacing: 8) {
-                Label("On this Mac", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green).font(.caption)
-                Spacer()
-                if let entry = currentModelEntry {
-                    Button("Remove", role: .destructive) { removeMLXModel(entry) }.controlSize(.small)
-                }
-            }
+            // Selected model is on disk. (Remove lives on the Test row below.)
+            Label("On this Mac", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green).font(.caption)
         }
     }
 
