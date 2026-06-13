@@ -1,6 +1,7 @@
 import CoreImage
 import Foundation
 import HuggingFace
+import MLX   // GPU.clearCache to release unified memory on eviction
 import MLXLLM
 import MLXLMCommon
 import MLXHuggingFace
@@ -194,13 +195,23 @@ struct MLXVisionProvider: VisionProvider {
     }
 }
 
+/// Caches loaded MLX model containers for the session, but frees them when idle or under memory
+/// pressure — MLX weights live in unified memory, so an idle 7B/VLM would otherwise park multiple GB.
+/// In-flight inference holds its own reference, so eviction never interrupts an active generation.
 private actor MLXModelCache {
     static let shared = MLXModelCache()
 
     private var containers: [String: ModelContainer] = [:]
+    private var idleEviction: Task<Void, Never>?
+    private var pressureSource: DispatchSourceMemoryPressure?
+    private static let idleSeconds: UInt64 = 180   // free loaded models after 3 min of no use
+
+    private init() {}
 
     func container(for modelID: String,
                    progress: (@Sendable (Progress) -> Void)? = nil) async throws -> ModelContainer {
+        startMemoryPressureMonitorIfNeeded()
+        scheduleIdleEviction()
         if let container = containers[modelID] { return container }
         let container: ModelContainer
         if let progress {
@@ -212,10 +223,37 @@ private actor MLXModelCache {
         }
         containers[modelID] = container
         MLXProvider.markDownloaded(modelID)   // a successful load means it's cached on disk
+        scheduleIdleEviction()
         return container
     }
 
     func evict(_ key: String) { containers[key] = nil }
+
+    /// Drop all cached models and release MLX's GPU buffer cache to free unified memory.
+    func evictAll() {
+        guard !containers.isEmpty else { return }
+        containers.removeAll()
+        MLX.GPU.clearCache()
+        Log.intelligence.notice("MLX: freed cached models to reclaim memory")
+    }
+
+    private func scheduleIdleEviction() {
+        idleEviction?.cancel()
+        idleEviction = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.idleSeconds * 1_000_000_000)
+            if Task.isCancelled { return }
+            await self?.evictAll()
+        }
+    }
+
+    private func startMemoryPressureMonitorIfNeeded() {
+        guard pressureSource == nil else { return }
+        let source = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical], queue: .global(qos: .utility))
+        source.setEventHandler { Task { await MLXModelCache.shared.evictAll() } }
+        source.resume()
+        pressureSource = source
+    }
 }
 
 /// Read-only view of the on-disk Hugging Face model cache used by MLX, for "what's downloaded" +
