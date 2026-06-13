@@ -39,6 +39,15 @@ struct MLXProvider: IntelligenceProvider {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
+                    // BYOM: never silently download on the hot path. The user downloads the model
+                    // explicitly in Settings first (Hugging Face fetch leaves the Mac); here we only
+                    // run it once it's local.
+                    guard Self.isDownloaded(modelID) else {
+                        throw IntelligenceError.unavailable(
+                            PrivacyMode.localOnly
+                            ? "This MLX model isn't downloaded, and Local-only mode blocks the download (it would leave your Mac). Download it once with Local-only off in Settings ▸ Intelligence."
+                            : "This MLX model isn't downloaded yet. Download it in Settings ▸ Intelligence (MLX), then try again.")
+                    }
                     let model = try await MLXModelCache.shared.container(for: modelID)
                     let history = Self.history(from: messages)
                     let session = ChatSession(
@@ -89,6 +98,41 @@ struct MLXProvider: IntelligenceProvider {
         case .assistant: .assistant
         }
     }
+
+    // MARK: - Download / availability (BYOM: explicit, consented, tracked)
+
+    private static let downloadedKey = "mlx.downloadedModels"
+
+    static func downloadedModels() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: downloadedKey) ?? [])
+    }
+
+    static func isDownloaded(_ id: String) -> Bool {
+        downloadedModels().contains(normalizedID(id))
+    }
+
+    static func markDownloaded(_ id: String) {
+        var set = downloadedModels()
+        set.insert(normalizedID(id))
+        UserDefaults.standard.set(Array(set), forKey: downloadedKey)
+    }
+
+    static func normalizedID(_ id: String) -> String {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? defaultModelID : trimmed
+    }
+
+    /// Fetch the model into the local Hugging Face cache (explicit user action from Settings). The
+    /// fetch leaves the Mac, so it's blocked in Local-only mode. Once cached, inference is fully local.
+    static func ensureDownloaded(_ id: String) async throws {
+        let modelID = normalizedID(id)
+        if PrivacyMode.localOnly, !isDownloaded(modelID) {
+            throw IntelligenceError.unavailable(
+                "Local-only mode is on, so the MLX model can't be downloaded (the fetch leaves your "
+                + "Mac). Turn Local-only off to download it once; inference stays on-device after that.")
+        }
+        _ = try await MLXModelCache.shared.container(for: modelID)
+    }
 }
 
 private actor MLXModelCache {
@@ -101,6 +145,7 @@ private actor MLXModelCache {
         let container = try await #huggingFaceLoadModelContainer(
             configuration: ModelConfiguration(id: modelID))
         containers[modelID] = container
+        MLXProvider.markDownloaded(modelID)   // a successful load means it's cached on disk
         return container
     }
 }

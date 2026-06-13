@@ -66,6 +66,9 @@ struct SettingsView: View {
     @State private var loadingModels = false
     @State private var modelLoadNote: String?
     @State private var ollamaStatus: OllamaEndpoint.Status?
+    @State private var mlxDownload: MLXDownloadState = .idle
+
+    enum MLXDownloadState: Equatable { case idle, downloading, ready, failed(String) }
     @AppStorage("ui.actionBarStyle") private var actionBarStyle = ActionBarStyle.compact.rawValue
     @AppStorage("ui.actionBarHideUnavailable") private var hideUnavailable = false
 
@@ -267,7 +270,18 @@ struct SettingsView: View {
             modelPicker("Model", selection: $draft.ollamaModel)
         case .mlx:
             TextField("Model", text: $draft.mlxModel, prompt: Text(MLXProvider.defaultModelID))
-            caption("Experimental native MLX path. Uses MLX Swift LM in-process; model download UX is still rough.")
+                .onChange(of: draft.mlxModel) { mlxDownload = .idle }
+            HStack(spacing: 8) {
+                Button(MLXProvider.isDownloaded(draft.mlxModel) ? "Re-download" : "Download model") {
+                    downloadMLXModel()
+                }
+                .disabled(mlxDownload == .downloading || draft.localOnly)
+                if mlxDownload == .downloading { ProgressView().controlSize(.small) }
+                Text(mlxStatusText).font(.caption).foregroundStyle(mlxStatusColor)
+            }
+            caption("Native MLX runs fully on-device. The model downloads once from Hugging Face "
+                + "(that fetch leaves your Mac); after that, inference is local. Paste any MLX text "
+                + "model id, e.g. \(MLXProvider.defaultModelID).")
         case .openAICompatible:
             Picker("Service", selection: openAIServiceBinding) {
                 Text("OpenAI").tag("openai")
@@ -534,6 +548,40 @@ struct SettingsView: View {
     static let openAIServices = ["openai", "groq", "openrouter", "custom"]
 
     /// Base URL for a known service preset, or the user's custom URL.
+    // MARK: - MLX download
+
+    private var mlxStatusText: String {
+        switch mlxDownload {
+        case .downloading: "Downloading… first time can take a few minutes"
+        case .ready: "Ready — model is on this Mac"
+        case .failed(let message): message
+        case .idle:
+            draft.localOnly ? "Local-only mode blocks downloads"
+                : (MLXProvider.isDownloaded(draft.mlxModel) ? "Ready — model is on this Mac" : "Not downloaded")
+        }
+    }
+
+    private var mlxStatusColor: Color {
+        switch mlxDownload {
+        case .failed: .orange
+        case .ready: .green
+        default: .secondary
+        }
+    }
+
+    private func downloadMLXModel() {
+        let id = draft.mlxModel
+        mlxDownload = .downloading
+        Task {
+            do {
+                try await MLXProvider.ensureDownloaded(id)
+                mlxDownload = .ready
+            } catch {
+                mlxDownload = .failed(error.localizedDescription)
+            }
+        }
+    }
+
     nonisolated static func openAIServiceURL(_ service: String, custom: String) -> String {
         switch service {
         case "openai": "https://api.openai.com/v1"
