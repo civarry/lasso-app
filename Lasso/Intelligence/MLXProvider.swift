@@ -262,7 +262,12 @@ private actor MLXModelCache {
     private var pressureSource: DispatchSourceMemoryPressure?
     private static let idleSeconds: UInt64 = 180   // free loaded models after 3 min of no use
 
-    private init() {}
+    private init() {
+        // Cap MLX's GPU buffer cache so freed buffers return to the OS instead of accumulating across
+        // a long session (flattens the in-session memory creep). Tunable; lower = less RAM, slightly
+        // slower generation. Active weights + KV cache are unaffected.
+        MLX.Memory.cacheLimit = 512 * 1024 * 1024
+    }
 
     func container(for modelID: String,
                    progress: (@Sendable (Progress) -> Void)? = nil) async throws -> ModelContainer {

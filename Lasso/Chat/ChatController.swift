@@ -360,6 +360,14 @@ final class ChatController {
         Log.chat.notice("runTurn · built \(turns.count, privacy: .public) turns, \(totalChars, privacy: .public) chars — stream START (+\(ms(), privacy: .public)ms)")
         if Task.isCancelled { Log.chat.notice("runTurn · cancelled before stream"); return }
 
+        // If no token arrives within a few seconds, the provider is likely cold-loading the model —
+        // say so instead of a silent "Answering…".
+        let loadingHint = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if Task.isCancelled { return }
+            self?.setStepText(assistantID, answerStepID, "Loading \(textLabel)… (first use can take a while)")
+        }
+
         var deltas = 0
         var chars = 0
         var firstTokenMs = -1
@@ -367,8 +375,12 @@ final class ChatController {
         var thinkStart: Date?
         do {
             for try await delta in intelligence.respond(messages: turns) {
-                if Task.isCancelled { Log.chat.notice("runTurn · cancelled mid-stream after \(chars, privacy: .public) chars"); return }
-                if firstTokenMs < 0 { firstTokenMs = ms(); Log.chat.notice("runTurn · first token (+\(firstTokenMs, privacy: .public)ms)") }
+                if Task.isCancelled { loadingHint.cancel(); Log.chat.notice("runTurn · cancelled mid-stream after \(chars, privacy: .public) chars"); return }
+                if firstTokenMs < 0 {
+                    firstTokenMs = ms(); loadingHint.cancel()
+                    setStepText(assistantID, answerStepID, "Answering · \(textLabel)")
+                    Log.chat.notice("runTurn · first token (+\(firstTokenMs, privacy: .public)ms)")
+                }
                 deltas += 1; chars += delta.count
                 raw += delta
                 let split = Self.splitReasoning(raw)
@@ -381,8 +393,10 @@ final class ChatController {
                     if let secs, $0.reasoningSeconds == nil { $0.reasoningSeconds = secs }
                 }
             }
+            loadingHint.cancel()
             completeStep(assistantID, answerStepID, text: "Answered · \(textLabel)")
         } catch {
+            loadingHint.cancel()
             Log.chat.error("runTurn · stream ERROR after \(chars, privacy: .public) chars: \(error.localizedDescription, privacy: .public) (+\(ms(), privacy: .public)ms)")
             finishError(assistantID, error.localizedDescription)
             return
@@ -540,6 +554,13 @@ final class ChatController {
         let step = ActivityStep(icon: icon, text: text)
         update(id) { $0.steps.append(step) }
         return step.id
+    }
+
+    /// Update an in-progress step's text (without marking it done).
+    private func setStepText(_ id: UUID, _ stepID: UUID, _ text: String) {
+        update(id) { msg in
+            if let i = msg.steps.firstIndex(where: { $0.id == stepID }) { msg.steps[i].text = text }
+        }
     }
 
     private func completeStep(_ id: UUID, _ stepID: UUID, text: String? = nil,
