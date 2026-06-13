@@ -68,6 +68,11 @@ struct SettingsView: View {
     @State private var ollamaStatus: OllamaEndpoint.Status?
     @State private var mlxDownload: MLXDownloadState = .idle
     @State private var mlxInstalled: [MLXCache.Entry] = []
+    @State private var mlxRemoteSize: Int64?
+    @State private var mlxSizeLoading = false
+    @State private var mlxSizeTask: Task<Void, Never>?
+    @State private var mlxProgress: Double = 0          // 0–1, when the total size is known
+    @State private var mlxDownloadedBytes: Int64 = 0
 
     enum MLXDownloadState: Equatable { case idle, downloading, ready, failed(String) }
     @AppStorage("ui.actionBarStyle") private var actionBarStyle = ActionBarStyle.compact.rawValue
@@ -270,16 +275,28 @@ struct SettingsView: View {
         case .ollama:
             modelPicker("Model", selection: $draft.ollamaModel)
         case .mlx:
-            TextField("Model", text: $draft.mlxModel, prompt: Text(MLXProvider.defaultModelID))
-                .onChange(of: draft.mlxModel) { mlxDownload = .idle }
-                .onAppear { refreshMLXInstalled() }
             HStack(spacing: 8) {
-                Button(MLXProvider.isDownloaded(draft.mlxModel) ? "Re-download" : "Download model") {
+                TextField("Model", text: $draft.mlxModel, prompt: Text(MLXProvider.defaultModelID))
+                Menu("Suggested") {
+                    ForEach(Self.mlxSuggestions, id: \.id) { suggestion in
+                        Button(suggestion.name) { draft.mlxModel = suggestion.id; mlxDownload = .idle }
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
+            .onChange(of: draft.mlxModel) { mlxDownload = .idle; refreshMLXRemoteSize() }
+            .onAppear { refreshMLXInstalled(); refreshMLXRemoteSize() }
+            HStack(spacing: 8) {
+                Button(mlxDownloadButtonTitle) {
                     downloadMLXModel()
                 }
                 .disabled(mlxDownload == .downloading || draft.localOnly)
-                if mlxDownload == .downloading { ProgressView().controlSize(.small) }
-                Text(mlxStatusText).font(.caption).foregroundStyle(mlxStatusColor)
+                if mlxDownload == .downloading {
+                    mlxProgressView
+                } else {
+                    Text(mlxStatusText).font(.caption).foregroundStyle(mlxStatusColor)
+                }
             }
             caption("Native MLX runs fully on-device. The model downloads once from Hugging Face "
                 + "(that fetch leaves your Mac); after that, inference is local. Paste any MLX text "
@@ -585,22 +602,82 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private var mlxProgressView: some View {
+        if let total = mlxRemoteSize, total > 0 {
+            ProgressView(value: mlxProgress).frame(width: 90)
+            Text("\(Int(mlxProgress * 100))% · \(byteString(mlxDownloadedBytes)) / \(byteString(total))")
+                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+        } else {
+            ProgressView().controlSize(.small)
+            Text(mlxDownloadedBytes > 0
+                 ? "Downloading… \(byteString(mlxDownloadedBytes))"
+                 : "Downloading… first time can take a few minutes")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
     private func downloadMLXModel() {
         let id = draft.mlxModel
         mlxDownload = .downloading
+        mlxProgress = 0
+        mlxDownloadedBytes = 0
+        let total = mlxRemoteSize
+        let dir = MLXCache.directory(for: id)
+
+        // The loader doesn't surface progress, so derive a real % by watching the cache dir grow
+        // against the known total size.
+        let poll = Task {
+            while !Task.isCancelled {
+                let onDisk = await Task.detached { MLXCache.size(of: dir) }.value
+                mlxDownloadedBytes = onDisk
+                if let total, total > 0 { mlxProgress = min(1, Double(onDisk) / Double(total)) }
+                try? await Task.sleep(nanoseconds: 600_000_000)
+            }
+        }
+
         Task {
             do {
                 try await MLXProvider.ensureDownloaded(id)
+                poll.cancel()
+                mlxProgress = 1
                 mlxDownload = .ready
             } catch {
+                poll.cancel()
                 mlxDownload = .failed(error.localizedDescription)
             }
             refreshMLXInstalled()
         }
     }
 
+    private var mlxDownloadButtonTitle: String {
+        let base = MLXProvider.isDownloaded(draft.mlxModel) ? "Re-download" : "Download model"
+        if mlxSizeLoading { return base + " · checking size…" }
+        if let size = mlxRemoteSize { return base + " · ≈ \(byteString(size))" }
+        return base
+    }
+
     private func refreshMLXInstalled() {
         mlxInstalled = MLXCache.installed()
+    }
+
+    /// Look up the model's download size from Hugging Face (debounced; skipped in Local-only mode or
+    /// when it's already downloaded) so the user sees the size before committing.
+    private func refreshMLXRemoteSize() {
+        mlxSizeTask?.cancel()
+        mlxRemoteSize = nil
+        mlxSizeLoading = false
+        let id = draft.mlxModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !draft.localOnly, !id.isEmpty, !MLXProvider.isDownloaded(id) else { return }
+        mlxSizeLoading = true
+        mlxSizeTask = Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            if Task.isCancelled { return }
+            let size = await MLXCache.remoteSizeBytes(for: id)
+            if Task.isCancelled { return }
+            mlxRemoteSize = size
+            mlxSizeLoading = false
+        }
     }
 
     private func removeMLXModel(_ entry: MLXCache.Entry) {
@@ -616,6 +693,19 @@ struct SettingsView: View {
     private func byteString(_ bytes: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
+
+    /// Curated mlx-community text models (4-bit, small→larger) for the Suggested menu. You can still
+    /// paste any MLX text model id from huggingface.co/models?library=mlx into the field.
+    private static let mlxSuggestions: [(name: String, id: String)] = [
+        ("Qwen3 0.6B · 4-bit — tiny & fast", "mlx-community/Qwen3-0.6B-4bit"),
+        ("Llama 3.2 1B · 4-bit", "mlx-community/Llama-3.2-1B-Instruct-4bit"),
+        ("Llama 3.2 3B · 4-bit", "mlx-community/Llama-3.2-3B-Instruct-4bit"),
+        ("Qwen2.5 3B · 4-bit", "mlx-community/Qwen2.5-3B-Instruct-4bit"),
+        ("Phi-3.5 mini · 4-bit", "mlx-community/Phi-3.5-mini-instruct-4bit"),
+        ("Gemma 2 2B · 4-bit", "mlx-community/gemma-2-2b-it-4bit"),
+        ("Qwen2.5 7B · 4-bit", "mlx-community/Qwen2.5-7B-Instruct-4bit"),
+        ("Mistral 7B v0.3 · 4-bit", "mlx-community/Mistral-7B-Instruct-v0.3-4bit"),
+    ]
 
     nonisolated static func openAIServiceURL(_ service: String, custom: String) -> String {
         switch service {

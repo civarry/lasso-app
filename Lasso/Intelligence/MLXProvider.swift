@@ -194,6 +194,10 @@ enum MLXCache {
         "models--" + MLXProvider.normalizedID(repoID).replacingOccurrences(of: "/", with: "--")
     }
 
+    static func directory(for repoID: String) -> URL {
+        root().appendingPathComponent(directoryName(for: repoID), isDirectory: true)
+    }
+
     /// Downloaded models found on disk, with their size.
     static func installed() -> [Entry] {
         let fm = FileManager.default
@@ -232,5 +236,25 @@ enum MLXCache {
         let locks = root().appendingPathComponent(".locks", isDirectory: true)
             .appendingPathComponent(entry.url.lastPathComponent, isDirectory: true)
         try? FileManager.default.removeItem(at: locks)
+    }
+
+    /// Total download size of a Hugging Face repo, from its file tree API (a small metadata request
+    /// that leaves the Mac). nil if the repo can't be reached / doesn't exist.
+    static func remoteSizeBytes(for id: String) async -> Int64? {
+        let repo = MLXProvider.normalizedID(id)
+        guard let url = URL(string: "https://huggingface.co/api/models/\(repo)/tree/main?recursive=true")
+        else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let items = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return nil }
+        let total = items.reduce(Int64(0)) { sum, item in
+            guard (item["type"] as? String) == "file" else { return sum }
+            let size = (item["size"] as? NSNumber)?.int64Value ?? Int64(item["size"] as? Int ?? 0)
+            return sum + size
+        }
+        return total > 0 ? total : nil
     }
 }
