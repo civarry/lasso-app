@@ -142,7 +142,7 @@ struct AnthropicVisionProvider: VisionProvider {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.vision.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
             throw IntelligenceError.server("Vision request returned HTTP \(code). Is \(model) vision-capable?")

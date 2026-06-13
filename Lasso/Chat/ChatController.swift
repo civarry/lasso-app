@@ -195,10 +195,11 @@ final class ChatController {
                 // Text-only model: describe the image via the vision provider and fold it in.
                 Log.chat.notice("runTurn · resolving vision provider for describe (+\(ms(), privacy: .public)ms)")
                 let vision = await intelligence.activeVisionProvider()
+                let label = intelligence.imageEngineLabel
                 Log.chat.notice("runTurn · vision provider=\(vision == nil ? "nil" : "\(type(of: vision!))", privacy: .public) (+\(ms(), privacy: .public)ms)")
                 var described: String?
+                var describeError: Error?
                 if let vision {
-                    let label = intelligence.imageEngineLabel
                     update(assistantID) { $0.statusText = "Looking at the image… · \(label)" }
                     let prompt = typed.isEmpty
                         ? "Describe this image in detail."
@@ -208,6 +209,7 @@ final class ChatController {
                         described = try await vision.describe(image, prompt: prompt)
                         Log.chat.notice("runTurn · describe DONE len=\(described?.count ?? 0, privacy: .public) (+\(ms(), privacy: .public)ms)")
                     } catch {
+                        describeError = error
                         Log.chat.error("runTurn · describe FAILED: \(error.localizedDescription, privacy: .public) (+\(ms(), privacy: .public)ms)")
                     }
                 }
@@ -219,13 +221,22 @@ final class ChatController {
 
                     \(typed.isEmpty ? "What is this?" : typed)
                     """
-                } else {
-                    // No backend could read the image — don't send a blank/garbage turn.
-                    Log.chat.error("runTurn · no usable image description — surfacing error (+\(ms(), privacy: .public)ms)")
+                } else if vision == nil {
                     finishError(assistantID,
-                        "I couldn't read that image — your current model can't see images. Set an "
-                        + "Image provider under Settings ▸ Intelligence ▸ Image (a local Ollama vision "
-                        + "model, or a multimodal cloud model) to chat about images.")
+                        "No image model is set. Choose one under Settings ▸ Intelligence ▸ Image "
+                        + "(a local Ollama vision model, or a multimodal cloud model) to chat about images.")
+                    return
+                } else if let describeError {
+                    // The image model exists but the request failed (timeout / rate-limit / offline).
+                    finishError(assistantID,
+                        "The image model (\(label)) couldn't read this image: "
+                        + "\(describeError.localizedDescription) It may be slow, rate-limited, or "
+                        + "offline — try again, or switch image models in Settings ▸ Intelligence ▸ Image.")
+                    return
+                } else {
+                    finishError(assistantID,
+                        "The image model (\(label)) returned no description. Try again, or switch "
+                        + "models in Settings ▸ Intelligence ▸ Image.")
                     return
                 }
             }
