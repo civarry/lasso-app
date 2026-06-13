@@ -89,7 +89,7 @@ struct ChatView: View {
     private var modelInfoPopover: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Models").font(.headline)
-            Label { Text("Text · \(intelligence.textEngineLabel)") } icon: {
+            Label { Text("Language · \(intelligence.textEngineLabel)") } icon: {
                 Image(systemName: textIcon)
             }
             if chat.imageInputAvailable {

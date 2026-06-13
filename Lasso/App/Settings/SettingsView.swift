@@ -158,7 +158,7 @@ struct SettingsView: View {
 
     private var intelligenceTab: some View {
         Form {
-            Section("Text") {
+            Section("Language model") {
                 Picker("Engine", selection: $draft.provider) {
                     ForEach(availableProviders) { Text($0.label).tag($0) }
                 }
