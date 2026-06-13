@@ -519,6 +519,10 @@ struct SettingsView: View {
             Spacer()
             testResultView
             if draft.provider == .mlx, let entry = currentModelEntry {
+                Button { NSWorkspace.shared.activateFileViewerSelecting([entry.url]) } label: {
+                    Image(systemName: "folder")
+                }
+                .buttonStyle(.borderless).help("Show in Finder")
                 Button { mlxRemoveConfirm = true } label: { Image(systemName: "trash") }
                     .buttonStyle(.borderless).foregroundStyle(.red)
                     .help("Remove this model")

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Reusable MLX model selector + downloader/manager: a Menu of suggested models (downloaded first,
@@ -113,6 +114,10 @@ struct MLXModelManager: View {
                     .foregroundStyle(.green).font(.caption)
                 Spacer()
                 if let entry = currentEntry {
+                    Button { NSWorkspace.shared.activateFileViewerSelecting([entry.url]) } label: {
+                        Image(systemName: "folder")
+                    }
+                    .buttonStyle(.borderless).help("Show in Finder")
                     Button { removeConfirm = true } label: { Image(systemName: "trash") }
                         .buttonStyle(.borderless).foregroundStyle(.red)
                         .help("Remove this model")
