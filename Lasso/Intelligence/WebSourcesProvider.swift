@@ -20,8 +20,9 @@ struct WebSourcesProvider {
         let url: URL?
         let source: String   // "DuckDuckGo" / subreddit name
         var score: Double?   // semantic relevance (0–1), set by the ranker
+        var snippet: String? // short extract of the page text, for grounding (when available)
 
-        private enum CodingKeys: String, CodingKey { case title, url, source, score }
+        private enum CodingKeys: String, CodingKey { case title, url, source, score, snippet }
     }
 
     struct Result {
@@ -171,7 +172,8 @@ struct WebSourcesProvider {
         SearchQuota.record("tavily")
         return decoded.results.prefix(6).compactMap { result in
             guard !result.title.isEmpty else { return nil }
-            return Hit(title: result.title, url: URL(string: result.url), source: "Tavily")
+            return Hit(title: result.title, url: URL(string: result.url), source: "Tavily",
+                       snippet: result.content)
         }
     }
 

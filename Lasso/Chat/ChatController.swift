@@ -16,6 +16,7 @@ import SwiftUI
 final class ChatController {
     static let shared = ChatController()
     private let intelligence = IntelligenceCoordinator.shared
+    private let ocr = OCREngine()
 
     /// Visible conversation (user + assistant bubbles).
     private(set) var messages: [ChatMessage] = []
@@ -162,6 +163,13 @@ final class ChatController {
         webConnectorsAvailable = Self.computeWebAvailable()
     }
 
+    /// OCR the attached image locally; nil if there's no readable text.
+    private func recognizeText(_ image: CGImage) async -> String? {
+        guard let result = try? await ocr.recognize(image), !result.isEmpty else { return nil }
+        let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
     /// Any web or reverse-image connector active (respecting local-only mode).
     static func computeWebAvailable() -> Bool {
         Connectors.webSearch.isActive() || Connectors.tavily.isActive()
@@ -230,7 +238,17 @@ final class ChatController {
         // (the web query uses the reverse-image guess / the user's text, not the description). The
         // box lets the CGImage cross the async-let task boundary (it's immutable, safe to read).
         let boxed = image.map { UncheckedImage(cg: $0) }
-        async let evidenceResult = gatherEvidence(typed: typed, boxed: boxed, enabled: ground)
+
+        // OCR any text in the attached image (fast, local) — sharpens both the answer and the web
+        // query (brand/model/signage). Skip when we already have seeded capture text.
+        var ocrText: String?
+        if let image, (context?.isEmpty ?? true) {
+            ocrText = await recognizeText(image)
+            if let ocrText { Log.chat.notice("runTurn · OCR \(ocrText.count, privacy: .public) chars (+\(ms(), privacy: .public)ms)") }
+        }
+
+        async let evidenceResult = gatherEvidence(typed: typed, boxed: boxed,
+                                                  ocrText: ocrText, enabled: ground)
 
         if let image {
             Log.chat.notice("runTurn · image present — checking native vision (+\(ms(), privacy: .public)ms)")
@@ -291,6 +309,11 @@ final class ChatController {
                     return
                 }
             }
+        }
+
+        // Fold any OCR'd text into the turn so the model can use it directly.
+        if let ocrText, !ocrText.isEmpty {
+            userText += "\n\nText visible in the image:\n\(ocrText)"
         }
 
         // Fold in the connector evidence started above (waits only if it's still running).
@@ -359,7 +382,8 @@ final class ChatController {
     /// Gather evidence from the active connectors: reverse-image (Google Vision) for image turns to
     /// get a best-guess identity, then a text web lookup (Wikipedia / DuckDuckGo / Tavily / SerpApi)
     /// on the strongest query. Returns nil when nothing usable was found.
-    private func gatherEvidence(typed: String, boxed: UncheckedImage?, enabled: Bool) async -> Evidence? {
+    private func gatherEvidence(typed: String, boxed: UncheckedImage?, ocrText: String?,
+                                enabled: Bool) async -> Evidence? {
         guard enabled, !PrivacyMode.localOnly else { return nil }
         let image = boxed?.cg
         let webActive = Connectors.webSearch.isActive() || Connectors.tavily.isActive()
@@ -369,11 +393,11 @@ final class ChatController {
 
         var evidence = Evidence()
         if reverseActive, let image {
-            evidence.merge(await GoogleVisionSource().gather(image: image, query: typed, ocrText: nil))
+            evidence.merge(await GoogleVisionSource().gather(image: image, query: typed, ocrText: ocrText))
         }
         if webActive {
             let query = Self.searchQuery(bestGuess: evidence.bestGuess, entity: evidence.entities.first,
-                                         typed: typed, description: nil)
+                                         typed: typed, ocrText: ocrText)
             if !query.isEmpty {
                 let result = await WebSourcesProvider().lookup(query)
                 evidence.merge(Evidence(abstract: result.abstract, hits: result.hits))
@@ -382,15 +406,31 @@ final class ChatController {
         return evidence.isEmpty ? nil : evidence
     }
 
-    /// Best query for text web search: a specific reverse-image guess wins, else the user's words,
-    /// else a recognized entity, else key terms from the image description.
+    /// Build the strongest web query by fusing signals: reverse-image identity, any text seen in the
+    /// image (brand/model/signage), and the user's question — far more specific than a single label.
     private static func searchQuery(bestGuess: String?, entity: String?,
-                                    typed: String, description: String?) -> String {
-        if let g = bestGuess, !g.isEmpty { return typed.isEmpty ? g : "\(g) \(typed)" }
-        if !typed.isEmpty { return typed }
-        if let e = entity, !e.isEmpty { return e }
-        if let d = description, !d.isEmpty { return String(d.prefix(120)) }
-        return ""
+                                    typed: String, ocrText: String?) -> String {
+        var parts: [String] = []
+        if let g = bestGuess, !g.isEmpty { parts.append(g) }
+        if let o = ocrText, !o.isEmpty { parts.append(keyTerms(o)) }
+        if !typed.isEmpty, !isGenericQuestion(typed) { parts.append(typed) }
+        if parts.isEmpty, let e = entity, !e.isEmpty { parts.append(e) }
+        if parts.isEmpty, !typed.isEmpty { parts.append(typed) }
+        return parts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// First ~10 words of OCR text — enough for a brand/model without dumping a whole sign.
+    private static func keyTerms(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+            .prefix(10).joined(separator: " ")
+    }
+
+    /// Generic "what is this"-style questions add no search signal, so they're dropped from the query.
+    private static func isGenericQuestion(_ text: String) -> Bool {
+        let t = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let generics = ["what is this", "what's this", "whats this", "what is it", "identify this",
+                        "what am i looking at", "describe this", "what do you see"]
+        return generics.contains { t == $0 || t == $0 + "?" }
     }
 
     /// Fold gathered evidence into the turn as grounding context for the model.
@@ -404,9 +444,17 @@ final class ChatController {
         }
         if let a = evidence.abstract, !a.isEmpty { lines.append("Reference summary: \(a)") }
         if !evidence.hits.isEmpty {
-            let src = evidence.hits.prefix(6)
-                .map { "- \($0.title)\($0.url.map { u in " (\(u.absoluteString))" } ?? "")" }
-                .joined(separator: "\n")
+            // Include short page extracts (snippets) where available, not just titles, so the model
+            // grounds on facts.
+            let src = evidence.hits.prefix(6).map { hit -> String in
+                var line = "- \(hit.title)"
+                if let url = hit.url { line += " (\(url.absoluteString))" }
+                if let snippet = hit.snippet?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !snippet.isEmpty {
+                    line += "\n  \(snippet.prefix(280))"
+                }
+                return line
+            }.joined(separator: "\n")
             lines.append("Sources:\n\(src)")
         }
         guard !lines.isEmpty else { return text }
