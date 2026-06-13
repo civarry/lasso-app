@@ -193,7 +193,12 @@ final class ChatController {
             Log.chat.notice("runTurn · folded seeded context (\(context.count, privacy: .public) chars)")
         }
         var imageBase64: String?
-        var visionDescription: String?   // captured for web-search query when describing an image
+
+        // Kick off connector grounding now so it overlaps the image describe — they're independent
+        // (the web query uses the reverse-image guess / the user's text, not the description). The
+        // box lets the CGImage cross the async-let task boundary (it's immutable, safe to read).
+        let boxed = image.map { UncheckedImage(cg: $0) }
+        async let evidenceResult = gatherEvidence(typed: typed, boxed: boxed)
 
         if let image {
             Log.chat.notice("runTurn · image present — checking native vision (+\(ms(), privacy: .public)ms)")
@@ -226,7 +231,6 @@ final class ChatController {
                     }
                 }
                 if let described, !described.isEmpty {
-                    visionDescription = described
                     userText = """
                     [I attached an image. A separate vision model produced this description of it — \
                     it may be incomplete or wrong, so treat it cautiously and don't attribute it to me:]
@@ -255,19 +259,16 @@ final class ChatController {
             }
         }
 
-        // Web / connector grounding (opt-in via the globe toggle): reverse-image + web evidence,
-        // injected as context so the model answers with real sources instead of guessing.
+        // Fold in the connector evidence started above (waits only if it's still running).
         if webSearchOn, webConnectorsAvailable {
-            update(assistantID) { $0.statusText = image != nil ? "Looking it up…" : "Searching the web…" }
-            Log.chat.notice("runTurn · gathering web evidence (+\(ms(), privacy: .public)ms)")
-            if let evidence = await gatherEvidence(typed: typed, image: image, description: visionDescription) {
-                userText = appendEvidence(userText, evidence)
-                let hits = Array(evidence.hits.prefix(6))
-                update(assistantID) { $0.sources = hits }
-                Log.chat.notice("runTurn · evidence: guess=\(evidence.bestGuess ?? "-", privacy: .public) hits=\(hits.count, privacy: .public) (+\(ms(), privacy: .public)ms)")
-            } else {
-                Log.chat.notice("runTurn · no web evidence (+\(ms(), privacy: .public)ms)")
-            }
+            update(assistantID) { $0.statusText = "Searching the web…" }
+            Log.chat.notice("runTurn · awaiting web evidence (+\(ms(), privacy: .public)ms)")
+        }
+        if let evidence = await evidenceResult {
+            userText = appendEvidence(userText, evidence)
+            let hits = Array(evidence.hits.prefix(6))
+            update(assistantID) { $0.sources = hits }
+            Log.chat.notice("runTurn · evidence: guess=\(evidence.bestGuess ?? "-", privacy: .public) hits=\(hits.count, privacy: .public) (+\(ms(), privacy: .public)ms)")
         }
 
         // Persist what was actually sent so the description / image carries into follow-up turns.
@@ -304,8 +305,9 @@ final class ChatController {
     /// Gather evidence from the active connectors: reverse-image (Google Vision) for image turns to
     /// get a best-guess identity, then a text web lookup (Wikipedia / DuckDuckGo / Tavily / SerpApi)
     /// on the strongest query. Returns nil when nothing usable was found.
-    private func gatherEvidence(typed: String, image: CGImage?, description: String?) async -> Evidence? {
-        guard !PrivacyMode.localOnly else { return nil }
+    private func gatherEvidence(typed: String, boxed: UncheckedImage?) async -> Evidence? {
+        guard webSearchOn, webConnectorsAvailable, !PrivacyMode.localOnly else { return nil }
+        let image = boxed?.cg
         let webActive = Connectors.webSearch.isActive() || Connectors.tavily.isActive()
             || Connectors.serpApi.isActive()
         let reverseActive = image != nil && Connectors.googleVision.isActive()
@@ -313,11 +315,11 @@ final class ChatController {
 
         var evidence = Evidence()
         if reverseActive, let image {
-            evidence.merge(await GoogleVisionSource().gather(image: image, query: typed, ocrText: description))
+            evidence.merge(await GoogleVisionSource().gather(image: image, query: typed, ocrText: nil))
         }
         if webActive {
             let query = Self.searchQuery(bestGuess: evidence.bestGuess, entity: evidence.entities.first,
-                                         typed: typed, description: description)
+                                         typed: typed, description: nil)
             if !query.isEmpty {
                 let result = await WebSourcesProvider().lookup(query)
                 evidence.merge(Evidence(abstract: result.abstract, hits: result.hits))
@@ -407,4 +409,10 @@ final class ChatController {
         update(id) { $0.text = message; $0.isError = true; $0.isStreaming = false }
         isStreaming = false
     }
+}
+
+/// Lets an immutable `CGImage` cross an `async let` task boundary. The pixels are never mutated after
+/// capture, so concurrent reads are safe (same rationale as `CaptureContext`'s `@unchecked Sendable`).
+private struct UncheckedImage: @unchecked Sendable {
+    let cg: CGImage
 }
