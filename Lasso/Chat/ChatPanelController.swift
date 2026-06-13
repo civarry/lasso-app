@@ -54,7 +54,9 @@ final class ChatPanelController: NSObject, NSWindowDelegate {
         panel.backgroundColor = .clear
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
-        panel.isMovableByWindowBackground = true
+        // Off: movable-by-background swallows clicks on SwiftUI controls (turns them into window
+        // drags). The header provides an explicit drag region instead (see ChatView.WindowDragArea).
+        panel.isMovableByWindowBackground = false
         panel.minSize = NSSize(width: 340, height: 360)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 

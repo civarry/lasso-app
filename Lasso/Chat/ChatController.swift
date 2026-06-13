@@ -60,6 +60,25 @@ final class ChatController {
     /// often small, context windows — keep recent turns and drop the oldest beyond this.
     private static let maxContextChars = 12_000
 
+    /// Factual description of Lasso, injected only when the user asks "What can you do?" (the starter
+    /// chip) so the model explains the *real* app instead of guessing. Not a standing system prompt.
+    static let lassoCapabilities = """
+    Context about Lasso — the macOS menu-bar app you are the assistant inside (answer questions about \
+    what Lasso can do using only this):
+    • Capture: press ⌥⌘Space to select any region of the screen. On a selection you can Copy text \
+    (OCR), Translate it (including in-place overlay), Summarize, Ask AI about it, Identify what it is, \
+    open detected QR/barcodes, pick a color, copy or save the image, or “Continue in chat”. Detected \
+    links, phone numbers, emails and dates appear as quick action chips.
+    • Chat (this panel): press ⌥⌘A. Multi-turn conversation, attach images (button, ⌘V paste, or \
+    drag-and-drop), and optional web grounding.
+    • Models: choose a Text engine and a separate Image (vision) engine independently — Apple \
+    Intelligence, local Ollama, local MLX, or a cloud model (OpenAI-compatible / Anthropic). \
+    On-device and private by default; cloud is opt-in; a Local-only mode blocks all non-local calls.
+    • Connectors (optional): Web search (Wikipedia / DuckDuckGo / Reddit), Tavily, SerpApi, and \
+    Google Vision reverse-image — these ground answers with real sources.
+    Be concise and accurate; don’t invent features not listed here.
+    """
+
     // MARK: - Composer state
 
     func attach(_ image: CGImage) { pendingImage = image }
@@ -151,7 +170,11 @@ final class ChatController {
 
     // MARK: - Sending
 
-    func send() {
+    /// Send a message. `text` overrides the composer (used by the suggestion chips); `extraContext`
+    /// is a one-shot context folded into *only this* turn (e.g. Lasso's feature list for the
+    /// "What can you do?" chip) — it never becomes a standing system prompt, so normal chats stay clean.
+    func send(text: String? = nil, extraContext: String? = nil, webSearch: Bool? = nil) {
+        if let text { input = text }
         let typed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !typed.isEmpty || pendingImage != nil else { return }
         guard !isStreaming else { return }
@@ -172,16 +195,20 @@ final class ChatController {
         seededContext = nil
         isStreaming = true
 
-        Log.chat.notice("send: typedChars=\(typed.count, privacy: .public) hasImage=\(image != nil, privacy: .public) history=\(self.messages.count, privacy: .public)")
+        // Whether to ground this turn with connectors. A chip can force it off (e.g. "What can you
+        // do?", already grounded by the injected Lasso context — a web search there is just noise).
+        let ground = (webSearch ?? webSearchOn) && webConnectorsAvailable
+
+        Log.chat.notice("send: typedChars=\(typed.count, privacy: .public) hasImage=\(image != nil, privacy: .public) ground=\(ground, privacy: .public) history=\(self.messages.count, privacy: .public)")
         streamTask?.cancel()
         streamTask = Task { [weak self] in
-            await self?.runTurn(typed: typed, image: image, context: context,
-                                userID: userID, assistantID: assistantID)
+            await self?.runTurn(typed: typed, image: image, context: context, appContext: extraContext,
+                                ground: ground, userID: userID, assistantID: assistantID)
         }
     }
 
-    private func runTurn(typed: String, image: CGImage?, context: String?,
-                         userID: UUID, assistantID: UUID) async {
+    private func runTurn(typed: String, image: CGImage?, context: String?, appContext: String?,
+                         ground: Bool, userID: UUID, assistantID: UUID) async {
         let t0 = Date()
         func ms() -> Int { Int(Date().timeIntervalSince(t0) * 1000) }
         Log.chat.notice("runTurn ▶ begin")
@@ -192,13 +219,18 @@ final class ChatController {
                 + (typed.isEmpty ? "What does this say / mean?" : typed)
             Log.chat.notice("runTurn · folded seeded context (\(context.count, privacy: .public) chars)")
         }
+        // One-shot app context (e.g. Lasso capabilities) — prepended for this turn only.
+        if let appContext, !appContext.isEmpty {
+            userText = "\(appContext)\n\n\(userText)"
+            Log.chat.notice("runTurn · folded app context (\(appContext.count, privacy: .public) chars)")
+        }
         var imageBase64: String?
 
         // Kick off connector grounding now so it overlaps the image describe — they're independent
         // (the web query uses the reverse-image guess / the user's text, not the description). The
         // box lets the CGImage cross the async-let task boundary (it's immutable, safe to read).
         let boxed = image.map { UncheckedImage(cg: $0) }
-        async let evidenceResult = gatherEvidence(typed: typed, boxed: boxed)
+        async let evidenceResult = gatherEvidence(typed: typed, boxed: boxed, enabled: ground)
 
         if let image {
             Log.chat.notice("runTurn · image present — checking native vision (+\(ms(), privacy: .public)ms)")
@@ -262,9 +294,9 @@ final class ChatController {
         }
 
         // Fold in the connector evidence started above (waits only if it's still running).
-        let searchStepID: UUID? = (webSearchOn && webConnectorsAvailable)
+        let searchStepID: UUID? = ground
             ? addStep(assistantID, icon: "globe", text: "Searching the web…") : nil
-        if webSearchOn, webConnectorsAvailable {
+        if ground {
             Log.chat.notice("runTurn · awaiting web evidence (+\(ms(), privacy: .public)ms)")
         }
         if let evidence = await evidenceResult {
@@ -327,8 +359,8 @@ final class ChatController {
     /// Gather evidence from the active connectors: reverse-image (Google Vision) for image turns to
     /// get a best-guess identity, then a text web lookup (Wikipedia / DuckDuckGo / Tavily / SerpApi)
     /// on the strongest query. Returns nil when nothing usable was found.
-    private func gatherEvidence(typed: String, boxed: UncheckedImage?) async -> Evidence? {
-        guard webSearchOn, webConnectorsAvailable, !PrivacyMode.localOnly else { return nil }
+    private func gatherEvidence(typed: String, boxed: UncheckedImage?, enabled: Bool) async -> Evidence? {
+        guard enabled, !PrivacyMode.localOnly else { return nil }
         let image = boxed?.cg
         let webActive = Connectors.webSearch.isActive() || Connectors.tavily.isActive()
             || Connectors.serpApi.isActive()

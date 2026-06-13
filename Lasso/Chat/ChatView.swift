@@ -62,6 +62,9 @@ struct ChatView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+        // Drag the window by its header (the panel is no longer movable-by-background, so body
+        // controls stay clickable). Sits behind the buttons, which capture their own clicks.
+        .background(WindowDragArea())
     }
 
     /// Compact model indicator in the header; opens a popover with full Text/Image/privacy details.
@@ -117,25 +120,33 @@ struct ChatView: View {
 
     // MARK: - Conversation
 
+    @ViewBuilder
     private var conversation: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                if chat.messages.isEmpty { emptyState }
-                ForEach(chat.messages) { message in
-                    MessageBubble(message: message, fontSize: resultTextBaseSize * textScale)
+        if chat.messages.isEmpty {
+            // Empty state lives outside the ScrollView — both for a cleaner layout and because
+            // controls inside the scroll view weren't reliably receiving clicks.
+            emptyState
+                .padding(16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(chat.messages) { message in
+                        MessageBubble(message: message, fontSize: resultTextBaseSize * textScale)
+                    }
+                    if chat.trimmedNotice {
+                        Label("Earlier messages were trimmed to fit the model's context.",
+                              systemImage: "scissors")
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                    }
                 }
-                if chat.trimmedNotice {
-                    Label("Earlier messages were trimmed to fit the model's context.",
-                          systemImage: "scissors")
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // Auto-pins to the bottom as content grows — no manual scrollTo (which caused a loop).
+            .defaultScrollAnchor(.bottom)
         }
-        // Auto-pins to the bottom as content grows — no manual scrollTo (which caused a layout loop).
-        .defaultScrollAnchor(.bottom)
     }
 
     private var emptyState: some View {
@@ -145,13 +156,17 @@ struct ChatView: View {
             Text("Chat with \(engineName) — private, on your Mac unless you pick a cloud model.")
                 .font(.callout).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(Self.suggestions, id: \.self) { suggestion in
-                    Button { chat.input = suggestion; chat.send() } label: {
-                        Text(suggestion)
+                ForEach(Self.suggestions) { suggestion in
+                    Button {
+                        chat.send(text: suggestion.title, extraContext: suggestion.context,
+                                  webSearch: suggestion.webSearch)
+                    } label: {
+                        Text(suggestion.title)
                             .font(.callout)
                             .padding(.horizontal, 12).padding(.vertical, 8)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
+                            .contentShape(RoundedRectangle(cornerRadius: 9))   // make the whole chip tappable
                     }
                     .buttonStyle(.plain)
                 }
@@ -162,10 +177,21 @@ struct ChatView: View {
         .padding(.vertical, 8)
     }
 
-    private static let suggestions = [
-        "What can you do?",
-        "Help me write a short, friendly email",
-        "Explain a tricky concept in simple terms",
+    /// A starter chip. `context` is one-shot context folded into that question only — e.g. the
+    /// "What can you do?" chip injects Lasso's real feature list so the answer is grounded.
+    private struct Suggestion: Identifiable {
+        let id = UUID()
+        let title: String
+        var context: String?
+        /// Per-chip web-grounding override (nil = follow the user's globe toggle).
+        var webSearch: Bool?
+    }
+
+    private static let suggestions: [Suggestion] = [
+        // Already grounded by the injected Lasso context — no web search (it just adds noise).
+        Suggestion(title: "What can you do?", context: ChatController.lassoCapabilities, webSearch: false),
+        Suggestion(title: "Help me write a short, friendly email"),
+        Suggestion(title: "Explain a tricky concept in simple terms"),
     ]
 
     // MARK: - Composer
@@ -367,39 +393,51 @@ private struct TraceView: View {
             .buttonStyle(.plain)
 
             if expanded {
-                VStack(alignment: .leading, spacing: 8) {
+                // Vertical rail with a checkpoint dot per item (reasoning first, then steps).
+                VStack(alignment: .leading, spacing: 10) {
                     if !message.reasoning.isEmpty {
-                        Text(message.reasoning)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
+                        timelineItem(done: !message.isStreaming) {
+                            Text(message.reasoning)
+                                .font(.caption).foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     ForEach(message.steps) { step in
-                        stepRow(step)
+                        timelineItem(done: step.done) { stepContent(step) }
                     }
                 }
-                .padding(.leading, 4)
+                .padding(.top, 2)
+                .background(alignment: .leading) {
+                    Rectangle().fill(.secondary.opacity(0.25))
+                        .frame(width: 1)
+                        .padding(.leading, 2)      // centered under the 5px dots
+                        .padding(.vertical, 6)
+                }
+                .padding(.leading, 2)
             }
         }
-        .padding(8)
-        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.08)))
         .onChange(of: message.isStreaming) { _, streaming in
             if !streaming { withAnimation(.easeOut(duration: 0.2)) { expanded = false } }
         }
     }
 
     @ViewBuilder
-    private func stepRow(_ step: ActivityStep) -> some View {
+    private func timelineItem<Content: View>(done: Bool, @ViewBuilder _ content: () -> Content) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Circle()
+                .fill(done ? Color.green.opacity(0.8) : Color.secondary.opacity(0.6))
+                .frame(width: 5, height: 5)
+                .padding(.top, 5)   // align the dot with the first text line
+            content()
+        }
+    }
+
+    @ViewBuilder
+    private func stepContent(_ step: ActivityStep) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Image(systemName: step.done ? "checkmark.circle.fill" : step.icon)
-                    .font(.caption2)
-                    .foregroundStyle(step.done ? Color.green.opacity(0.8) : .secondary)
-                Text(step.text).font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Text(step.text).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             ForEach(step.links) { hit in
                 if let url = hit.url {
                     Link(destination: url) {
@@ -407,9 +445,22 @@ private struct TraceView: View {
                             .font(.caption2).lineLimit(1).truncationMode(.middle)
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
-                    .padding(.leading, 18)
                 }
             }
         }
+    }
+}
+
+// MARK: - Window drag region
+
+/// A transparent AppKit view that drags its window on mouse-down. Used as the header background so
+/// the panel can be moved without making the whole window movable-by-background (which would intercept
+/// clicks meant for SwiftUI controls).
+private struct WindowDragArea: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { DragView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    final class DragView: NSView {
+        override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
     }
 }
