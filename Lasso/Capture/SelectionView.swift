@@ -47,7 +47,8 @@ struct CaptureSessionView: View {
                 if coordinator.activeDisplayID == shot.id, let r = coordinator.committedRect {
                     if coordinator.translating, let ctx = coordinator.context {
                         InlineTranslationView(lines: ctx.ocrLines, selectionRect: r)
-                    } else {
+                    } else if coordinator.pendingDirectActionID == nil {
+                        // Direct shortcut: no bar, no pre-translate — the action fires on its own.
                         anchoredUI(rect: r, in: geo.size)
                         if let ctx = coordinator.context, !ctx.ocrLines.isEmpty {
                             TranslationPrewarmer(lines: ctx.ocrLines)

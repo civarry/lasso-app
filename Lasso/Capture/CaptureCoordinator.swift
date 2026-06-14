@@ -46,6 +46,10 @@ final class CaptureCoordinator {
     private var keyMonitor: Any?
     private var runTask: Task<Void, Never>?
 
+    /// When set, the session skips the action bar and auto-runs this action's `id` once the selection
+    /// (or full-screen grab) and pre-pass are ready — the "direct shortcut" path (e.g. ⇧⌘ → Lens).
+    private(set) var pendingDirectActionID: String?
+
     private init() {}
 
     func configure(registry: ActionRegistry, intelligence: IntelligenceCoordinator) {
@@ -67,6 +71,57 @@ final class CaptureCoordinator {
         } else {
             begin()
         }
+    }
+
+    /// Direct shortcut: drag a selection, then auto-run `actionID` (no action bar). Mirrors the normal
+    /// selection flow but pre-binds the action.
+    func beginDirect(actionID: String) {
+        guard !isActive else { return }
+        pendingDirectActionID = actionID
+        begin()
+    }
+
+    /// Direct full-screen shortcut: grab the display under the pointer (no drag, no overlay) and
+    /// auto-run `actionID` — Findit's "Full Screen Search".
+    func beginFullScreen(actionID: String) {
+        guard !isActive else { return }
+        Task { await startFullScreen(actionID: actionID) }
+    }
+
+    private func startFullScreen(actionID: String) async {
+        FloatingPanelController.shared.close()
+        guard permissions.hasScreenRecording else {
+            let alreadyAsked = permissions.hasRequestedOnce
+            permissions.requestScreenRecording()
+            if alreadyAsked { presentPermissionAlert() }
+            return
+        }
+        let grabbed: [DisplayShot]
+        do {
+            grabbed = try await ScreenCaptureService.captureAllDisplays()
+        } catch {
+            Log.capture.error("Full-screen capture failed: \(error.localizedDescription, privacy: .public)")
+            presentPermissionAlert()
+            return
+        }
+        // The display under the pointer (fall back to the first), captured whole — no selection step.
+        let mouse = NSEvent.mouseLocation
+        guard let shot = grabbed.first(where: { $0.frame.contains(mouse) }) ?? grabbed.first else { return }
+
+        shots = grabbed
+        isActive = true
+        activeDisplayID = shot.id
+        let rectInPoints = CGRect(x: 0, y: 0,
+                                  width: CGFloat(shot.image.width) / shot.scale,
+                                  height: CGFloat(shot.image.height) / shot.scale)
+        committedRect = rectInPoints
+        let base = CaptureContext(image: shot.image, fullFrame: shot.image,
+                                  selectionRect: rectInPoints, displayID: shot.id)
+        context = base
+        if let intelligence { Task { await intelligence.refreshVisionAvailability() } }
+        if actionID == "identify" { intelligence?.prewarmVision() }
+        pendingDirectActionID = actionID
+        await runPrePass(crop: shot.image, base: base)
     }
 
     private func start() async {
@@ -125,6 +180,7 @@ final class CaptureCoordinator {
         committedRect = nil
         context = nil
         actions = []
+        pendingDirectActionID = nil
         translating = false
         panelDragOffset = .zero
         pretranslated = [:]
@@ -152,9 +208,12 @@ final class CaptureCoordinator {
         let base = CaptureContext(image: crop, fullFrame: shot.image,
                                   selectionRect: rect, displayID: displayID)
         context = base
-        actions = registry?.relevantActions(for: base) ?? []   // show immediately
+        // Direct shortcut: keep the bar hidden — the pending action fires when the pre-pass finishes.
+        actions = pendingDirectActionID == nil ? (registry?.relevantActions(for: base) ?? []) : []
         // Warm the local vision model now (while the user reads the toolbar) so Identify is snappy.
-        if actions.contains(where: { $0 is IdentifyAction }) { intelligence?.prewarmVision() }
+        if pendingDirectActionID == "identify" || actions.contains(where: { $0 is IdentifyAction }) {
+            intelligence?.prewarmVision()
+        }
         Task { await runPrePass(crop: crop, base: base) }
     }
 
@@ -168,6 +227,16 @@ final class CaptureCoordinator {
         ctx.ocrLines = ocrResult.lines
         ctx.detectedData = detected + bars
         context = ctx
+
+        // Direct shortcut: the context is now complete — run the pre-bound action and skip the bar.
+        // Leave `pendingDirectActionID` set until teardown so the overlay bar stays hidden for the
+        // whole run; clearing it here would flash the bar in the gap before the action tears down.
+        if let id = pendingDirectActionID {
+            if let action = registry?.actions.first(where: { $0.id == id }) { run(action) }
+            else { teardown() }
+            return
+        }
+
         actions = registry?.relevantActions(for: ctx) ?? []
         Log.capture.debug("Pre-pass: \(ocrResult.lines.count) OCR lines, \(ctx.detectedData.count) items")
     }

@@ -25,10 +25,13 @@ extension URLSession {
 enum ImageEncoder {
     // Default 768px: vision models describe a 768px crop nearly as well as 1024 but noticeably
     // faster. Reverse-image connectors pass their own (larger) maxEdge for match fidelity.
-    static func jpegBase64(_ image: CGImage, maxEdge: Int = 768, quality: CGFloat = 0.82) -> String? {
+    static func jpegData(_ image: CGImage, maxEdge: Int = 768, quality: CGFloat = 0.82) -> Data? {
         let scaled = image.downscaled(maxEdge: maxEdge)
         let rep = NSBitmapImageRep(cgImage: scaled)
-        return rep.representation(using: .jpeg, properties: [.compressionFactor: quality])?
-            .base64EncodedString()
+        return rep.representation(using: .jpeg, properties: [.compressionFactor: quality])
+    }
+
+    static func jpegBase64(_ image: CGImage, maxEdge: Int = 768, quality: CGFloat = 0.82) -> String? {
+        jpegData(image, maxEdge: maxEdge, quality: quality)?.base64EncodedString()
     }
 }

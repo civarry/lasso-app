@@ -46,6 +46,7 @@ struct SettingsView: View {
         var connectorEnabled: [String: Bool] = [:]
         var connectorKeys: [String: String] = [:]
         var localOnly = false
+        var lensSearch = false
         var pretranslate = true
         var launchAtLogin = false
     }
@@ -133,6 +134,17 @@ struct SettingsView: View {
                 KeyboardShortcuts.Recorder("Chat", name: .chat)
                 Toggle("Launch at login", isOn: $draft.launchAtLogin)
             }
+            Section("Direct shortcuts") {
+                KeyboardShortcuts.Recorder("Identify — selection", name: .identifySelection)
+                KeyboardShortcuts.Recorder("Identify — full screen", name: .identifyFullScreen)
+                if draft.lensSearch {
+                    KeyboardShortcuts.Recorder("Google Lens — selection", name: .lensSelection)
+                    KeyboardShortcuts.Recorder("Google Lens — full screen", name: .lensFullScreen)
+                }
+                caption("Run an action straight from a hotkey, skipping the toolbar. Selection lets you "
+                    + "drag a box first; full screen grabs the whole display. Turn on Google Lens in "
+                    + "Privacy to assign its shortcuts.")
+            }
             Section("Appearance") {
                 Picker("Action bar", selection: $actionBarStyle) {
                     ForEach(ActionBarStyle.allCases) { Text($0.label).tag($0.rawValue) }
@@ -145,6 +157,11 @@ struct SettingsView: View {
             Section("Privacy") {
                 Toggle("Local-only mode", isOn: $draft.localOnly)
                 caption("Blocks all network calls except your chosen model. Best for work Macs.")
+                Toggle("Search with Google Lens", isOn: $draft.lensSearch)
+                    .disabled(draft.localOnly)
+                caption("Adds a Google Lens action that uploads the selection to Google and shows the "
+                    + "visual matches in a Lens window (with an Open-in-Browser button). Off by "
+                    + "default — it leaves your Mac, and is paused in local-only mode.")
             }
             Section("Translation") {
                 Toggle("Pre-translate selections", isOn: $draft.pretranslate)
@@ -1003,6 +1020,7 @@ struct SettingsView: View {
             if connector.keyAccount != nil { d.connectorKeys[connector.id] = connector.key() }
         }
         d.localOnly = UserDefaults.standard.bool(forKey: "privacy.localOnly")
+        d.lensSearch = UserDefaults.standard.bool(forKey: LensSearchAction.enabledKey)
         d.pretranslate = UserDefaults.standard.object(forKey: "translation.pretranslate") as? Bool ?? true
         d.launchAtLogin = LoginItem.isEnabled
         // Heal an inconsistent saved state (local-only + a cloud engine / cloud image provider).
@@ -1067,6 +1085,7 @@ struct SettingsView: View {
             }
         }
         UserDefaults.standard.set(draft.localOnly, forKey: "privacy.localOnly")
+        UserDefaults.standard.set(draft.lensSearch, forKey: LensSearchAction.enabledKey)
         UserDefaults.standard.set(draft.pretranslate, forKey: "translation.pretranslate")
         if draft.launchAtLogin != saved.launchAtLogin { LoginItem.set(draft.launchAtLogin) }
         Task { await intelligence.refreshVisionAvailability() }   // re-grey vision features as needed

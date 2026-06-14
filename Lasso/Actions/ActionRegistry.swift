@@ -19,6 +19,7 @@ final class ActionRegistry {
         registry.register(QRAction())
         registry.register(ColorPickerAction())
         registry.register(IdentifyAction(intelligence: intelligence))
+        registry.register(LensSearchAction())
         return registry
     }
 
