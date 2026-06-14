@@ -33,19 +33,21 @@ final class TriggerService {
         KeyboardShortcuts.onKeyUp(for: .identifyFullScreen) {
             CaptureCoordinator.shared.beginFullScreen(actionID: "identify")
         }
-        // Lens shortcuts honour the opt-in toggle, so a stray hotkey can't upload without consent.
+        // Lens shortcuts honour the opt-in toggle AND local-only mode — the direct path skips the
+        // action bar's `isRelevant` check, so it must re-check here or a hotkey would upload to Google
+        // even with local-only on.
         KeyboardShortcuts.onKeyUp(for: .lensSelection) {
-            guard Self.lensEnabled else { return }
+            guard Self.lensAllowed else { return }
             CaptureCoordinator.shared.beginDirect(actionID: "lens.search")
         }
         KeyboardShortcuts.onKeyUp(for: .lensFullScreen) {
-            guard Self.lensEnabled else { return }
+            guard Self.lensAllowed else { return }
             CaptureCoordinator.shared.beginFullScreen(actionID: "lens.search")
         }
     }
 
-    private static var lensEnabled: Bool {
-        UserDefaults.standard.bool(forKey: LensSearchAction.enabledKey)
+    private static var lensAllowed: Bool {
+        UserDefaults.standard.bool(forKey: LensSearchAction.enabledKey) && !PrivacyMode.localOnly
     }
 }
 

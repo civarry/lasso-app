@@ -19,6 +19,9 @@ struct LensSearchAction: CaptureAction {
     }
 
     func perform(_ ctx: CaptureContext) async throws -> ActionResult {
+        // Defence-in-depth: never upload to Google in local-only mode, no matter how this was invoked
+        // (the direct-shortcut path skips `isRelevant`).
+        guard UserDefaults.standard.bool(forKey: Self.enabledKey), !PrivacyMode.localOnly else { return .none }
         let anchor = CaptureCoordinator.shared.activeSelectionScreenRect()
         LensPanelController.shared.present(image: ctx.image, anchor: anchor)
         return .none   // CaptureCoordinator.run drops the freeze on .none; the card persists.
