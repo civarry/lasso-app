@@ -85,6 +85,17 @@ struct SettingsView: View {
     @AppStorage("ui.actionBarStyle") private var actionBarStyle = ActionBarStyle.compact.rawValue
     @AppStorage("ui.actionBarHideUnavailable") private var hideUnavailable = false
 
+    /// Fixed width + gap for the direct-shortcut recorders so the Selection / Full screen columns line
+    /// up with their headers (the recorders are flexible-width otherwise).
+    private let directRecorderWidth: CGFloat = 128
+    private let directRecorderGap: CGFloat = 10
+
+    private func directHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.caption).foregroundStyle(.secondary)
+            .frame(width: directRecorderWidth, alignment: .center)
+    }
+
     private var isDirty: Bool { draft != saved }
 
     var body: some View {
@@ -132,18 +143,33 @@ struct SettingsView: View {
             Section("Shortcuts") {
                 KeyboardShortcuts.Recorder("Capture", name: .capture)
                 KeyboardShortcuts.Recorder("Chat", name: .chat)
-                Toggle("Launch at login", isOn: $draft.launchAtLogin)
-            }
-            Section("Direct shortcuts") {
-                KeyboardShortcuts.Recorder("Identify — selection", name: .identifySelection)
-                KeyboardShortcuts.Recorder("Identify — full screen", name: .identifyFullScreen)
-                if draft.lensSearch {
-                    KeyboardShortcuts.Recorder("Google Lens — selection", name: .lensSelection)
-                    KeyboardShortcuts.Recorder("Google Lens — full screen", name: .lensFullScreen)
+
+                LabeledContent("") {
+                    HStack(spacing: directRecorderGap) {
+                        directHeader("Selection")
+                        directHeader("Full screen")
+                    }
                 }
-                caption("Run an action straight from a hotkey, skipping the toolbar. Selection lets you "
-                    + "drag a box first; full screen grabs the whole display. Turn on Google Lens in "
-                    + "Privacy to assign its shortcuts.")
+                LabeledContent("Identify") {
+                    HStack(spacing: directRecorderGap) {
+                        KeyboardShortcuts.Recorder("", name: .identifySelection).frame(width: directRecorderWidth)
+                        KeyboardShortcuts.Recorder("", name: .identifyFullScreen).frame(width: directRecorderWidth)
+                    }
+                }
+                if draft.lensSearch {
+                    LabeledContent("Google Lens") {
+                        HStack(spacing: directRecorderGap) {
+                            KeyboardShortcuts.Recorder("", name: .lensSelection).frame(width: directRecorderWidth)
+                            KeyboardShortcuts.Recorder("", name: .lensFullScreen).frame(width: directRecorderWidth)
+                        }
+                    }
+                }
+                caption("Identify and Google Lens can also run straight from a hotkey, skipping the "
+                    + "toolbar — Selection lets you drag a box first; Full screen grabs the whole display. "
+                    + "Turn on Google Lens in Privacy to assign its shortcuts.")
+            }
+            Section("Startup") {
+                Toggle("Launch at login", isOn: $draft.launchAtLogin)
             }
             Section("Appearance") {
                 Picker("Action bar", selection: $actionBarStyle) {
@@ -160,8 +186,8 @@ struct SettingsView: View {
                 Toggle("Search with Google Lens", isOn: $draft.lensSearch)
                     .disabled(draft.localOnly)
                 caption("Adds a Google Lens action that uploads the selection to Google and shows the "
-                    + "visual matches in a Lens window (with an Open-in-Browser button). Off by "
-                    + "default — it leaves your Mac, and is paused in local-only mode.")
+                    + "visual matches in a panel next to it. Off by default — it leaves your Mac, and "
+                    + "is paused in local-only mode.")
             }
             Section("Translation") {
                 Toggle("Pre-translate selections", isOn: $draft.pretranslate)
@@ -247,14 +273,15 @@ struct SettingsView: View {
             } header: {
                 Text("Adds web context (text search)")
             } footer: {
-                caption("These search the web by text — built from what the vision model reads in the "
-                        + "image. They don't see the picture, so they only help once there's a clear "
-                        + "subject to search for.")
+                caption("These search the web by text — from the subject Identify reads in the image, "
+                        + "or your question in Chat. They don't see the picture itself, so they help "
+                        + "once there's a clear thing to search for.")
             }
 
             Section {
-                Label("Connectors power Identify, so they need a vision model. Set one up under "
-                      + "Intelligence ▸ Image (install Ollama or add a cloud image model).",
+                Label("Connectors power both Identify and Chat. Identify reads the image with a vision "
+                      + "model first, so it needs one set up under Intelligence ▸ Image (install Ollama "
+                      + "or add a cloud image model); Chat grounds answers from your question.",
                       systemImage: "eye")
                     .font(.caption).foregroundStyle(.secondary)
                 caption("Each connector is optional and independent — Lasso works with none connected: "

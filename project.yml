@@ -24,8 +24,11 @@ settings:
     CODE_SIGN_IDENTITY: "610C5228B8987C393A78C76D0F4F82E7E73062E8"
     PROVISIONING_PROFILE_SPECIFIER: ""
     ENABLE_HARDENED_RUNTIME: YES
-    MARKETING_VERSION: "0.3.0"
-    CURRENT_PROJECT_VERSION: "4"
+    # Xcode "recommended settings" — set here (not via the .xcodeproj, which XcodeGen regenerates).
+    DEAD_CODE_STRIPPING: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    MARKETING_VERSION: "0.3.1"
+    CURRENT_PROJECT_VERSION: "5"
 
 packages:
   KeyboardShortcuts:

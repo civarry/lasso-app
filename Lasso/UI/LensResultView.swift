@@ -6,9 +6,11 @@ import WebKit
 ///
 /// The image is uploaded *from inside the web view* (a form POST on the `lens.google.com` origin), so
 /// the redirect and the JS-rendered matches run in one continuous session — the only way the results
-/// actually populate. See `LensWebView`.
+/// actually populate. See `LensWebView`. A loading overlay hides the upload page (and any language
+/// redirect) until the results are ready, so the user only ever sees a spinner → the results.
 struct LensResultView: View {
     let image: CGImage
+    @State private var loaded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -20,9 +22,25 @@ struct LensResultView: View {
                     .buttonStyle(IconButtonStyle()).help("Close")
             }
 
-            LensWebView(image: image)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+            ZStack {
+                LensWebView(image: image, loaded: $loaded)
+                if !loaded {
+                    ZStack {
+                        Color(red: 32 / 255, green: 33 / 255, blue: 36 / 255)   // Google's #202124
+                        VStack(spacing: 12) {
+                            ProgressView().controlSize(.large)
+                            Text("Searching Google Lens…")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                    }
+                    .transition(.opacity)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .animation(.easeOut(duration: 0.25), value: loaded)
+            // Safety net: reveal anyway if the page never signals ready (e.g. an unexpected layout).
+            .task { try? await Task.sleep(for: .seconds(6)); loaded = true }
         }
         .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -35,19 +53,27 @@ struct LensResultView: View {
 /// Embeds a `WKWebView` that uploads the selection to Google Lens and shows the results.
 private struct LensWebView: NSViewRepresentable {
     let image: CGImage
+    @Binding var loaded: Bool
 
     private static let userAgent =
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 "
         + "(KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+
+    func makeCoordinator() -> Coordinator { Coordinator { loaded = true } }
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         // Non-persistent: a clean, logged-out session per upload — leaves nothing on disk.
         config.websiteDataStore = .nonPersistent()
         // A user script runs *inside* the results page (so there's no navigation-delegate timing to
-        // miss). It nudges the scroll down to the matches and, best-effort, switches to English.
-        config.userContentController.addUserScript(
+        // miss). It nudges the scroll to the matches, best-effort switches to English, and posts
+        // `lensReady` once the final page is settled so the overlay can lift.
+        let cc = WKUserContentController()
+        cc.addUserScript(
             WKUserScript(source: Self.resultsPageJS, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        cc.add(context.coordinator, name: "lensReady")
+        config.userContentController = cc
+
         let web = WKWebView(frame: .zero, configuration: config)
         web.customUserAgent = Self.userAgent
         web.setValue(false, forKey: "drawsBackground")   // no white flash before the page paints
@@ -60,63 +86,81 @@ private struct LensWebView: NSViewRepresentable {
 
     func updateNSView(_ nsView: WKWebView, context: Context) {}
 
-    /// Runs only on the Lens results page. Does two best-effort things, each failing silently:
-    ///   1. If Google is showing another language and offers an English *results* link, follow it
-    ///      in-session (the page navigating itself — no 403). We only follow a link that keeps us on
-    ///      the visual search (href has both "/search" and the "vsrid" token), so it can never jump to
-    ///      the homepage, and we skip it once already on an `hl=en` URL so it can't loop.
-    ///   2. Nudge the scroll down past the search box / image preview to the matches, re-asserting
-    ///      against Google's scroll resets as it streams in the AI Overview.
+    /// Receives the `lensReady` message from the in-page script and lifts the loading overlay.
+    @MainActor
+    final class Coordinator: NSObject, WKScriptMessageHandler {
+        private let onReady: () -> Void
+        init(onReady: @escaping () -> Void) { self.onReady = onReady }
+        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            if message.name == "lensReady" { onReady() }
+        }
+    }
+
+    /// Runs only on the Lens results page. Best-effort, each step failing silently:
+    ///   1. If Google shows another language and offers an English *results* link, follow it in-session
+    ///      (no 403). We match the link's parsed host/path (not raw substrings) so the "Sign in" link
+    ///      — accounts.google.com/ServiceLogin?continue=…/search?vsrid=… — can't hijack us to login, and
+    ///      we skip it once already on `hl=en` so it can't loop.
+    ///   2. Nudge the scroll down to the matches, re-asserting against Google's scroll resets.
+    ///   3. Post `lensReady` once we're settled on the final page so Swift lifts the loading overlay —
+    ///      held back while a language switch is still pending so the redirect stays hidden.
     private static let resultsPageJS = """
     if (location.pathname.indexOf("/search") === 0) {
       (function () {
+        function ready() { try { window.webkit.messageHandlers.lensReady.postMessage(1); } catch (e) {} }
         var alreadyEnglish = /[?&]hl=en(&|$)/.test(location.search);
+        var canReveal = alreadyEnglish;   // already English: nothing to switch, free to reveal
         var langTries = 0;
+
         function trySwitchLanguage() {
-          if (alreadyEnglish) return;
           var links = document.querySelectorAll('a[href*="hl=en"]');
           for (var i = 0; i < links.length; i++) {
             var a = links[i];
-            // Check the link's *parsed* host/path, not raw substrings — otherwise the "Sign in" link
-            // (accounts.google.com/ServiceLogin?continue=…/search?vsrid=…) matches and hijacks us to
-            // the login page. The real "switch to English" link is itself a google.com/search result.
             if (a.hostname.indexOf("google.com") !== -1 &&
                 a.hostname.indexOf("accounts.") === -1 &&
                 a.pathname.indexOf("/search") === 0 &&
                 /[?&]hl=en(&|$)/.test(a.search) &&
                 a.search.indexOf("vsrid") !== -1) {
-              location.href = a.href; return;
+              location.href = a.href; return;   // navigate; the English page reveals itself
             }
           }
-          if (langTries++ < 20) setTimeout(trySwitchLanguage, 200);
+          if (langTries++ < 5) { setTimeout(trySwitchLanguage, 150); }
+          else { canReveal = true; }            // no English link — reveal current language
         }
-        setTimeout(trySwitchLanguage, 400);
+        if (!alreadyEnglish) setTimeout(trySwitchLanguage, 150);
 
-        var target = 90, settles = 0, waits = 0;
+        var target = 90, revealed = false, ticks = 0;
         function el() { return document.scrollingElement || document.documentElement; }
-        function go() {
-          var e = el();
-          if (e && e.scrollHeight - e.clientHeight > 120) {
-            e.scrollTop = target;
-            if (settles < 8) { settles++; setTimeout(go, 350); }
-          } else if (waits < 40) { waits++; setTimeout(go, 150); }
+        function contentReady() {
+          var txt = (document.body && document.body.innerText) ? document.body.innerText.trim().length : 0;
+          return txt > 250 || (el().scrollHeight - el().clientHeight) > 120;
         }
-        setTimeout(go, 300);
+        function tick() {
+          if (!revealed && canReveal && contentReady()) {
+            revealed = true;
+            el().scrollTop = target;
+            ready();   // lift the overlay the moment real results are on screen
+            var n = 0;  // keep re-asserting the scroll against Google's resets
+            (function reassert() { el().scrollTop = target; if (n++ < 6) setTimeout(reassert, 300); })();
+            return;
+          }
+          if (ticks++ < 50) setTimeout(tick, 100);
+        }
+        setTimeout(tick, 120);
       })();
     }
     """
 
     /// A tiny page on the `lens.google.com` origin that rebuilds the image as a file and submits it to
     /// the upload endpoint. A real form submit (not `fetch`) lets the browser follow the cross-origin
-    /// redirect natively and render the results — no CORS wall, no session loss.
+    /// redirect natively and render the results — no CORS wall, no session loss. The form is hidden;
+    /// the loading overlay covers this page anyway.
     private static func uploadHTML(base64: String) -> String {
         let stcs = Int(Date().timeIntervalSince1970)
         return """
         <!doctype html><html><head><meta charset="utf-8"></head>
-        <body style="margin:0;background:#202124;color:#9aa0a6;\
-        font:15px -apple-system,system-ui;display:flex;align-items:center;justify-content:center;height:100vh">
-        Searching Google Lens…
-        <form id="f" method="POST" enctype="multipart/form-data"
+        <body style="margin:0;background:#202124">
+        <form id="f" method="POST" enctype="multipart/form-data" style="display:none"
               action="https://lens.google.com/v3/upload?stcs=\(stcs)"></form>
         <script>
         (function () {
