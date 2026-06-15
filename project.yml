@@ -27,8 +27,8 @@ settings:
     # Xcode "recommended settings" — set here (not via the .xcodeproj, which XcodeGen regenerates).
     DEAD_CODE_STRIPPING: YES
     ENABLE_USER_SCRIPT_SANDBOXING: YES
-    MARKETING_VERSION: "0.3.2"
-    CURRENT_PROJECT_VERSION: "6"
+    MARKETING_VERSION: "0.3.3"
+    CURRENT_PROJECT_VERSION: "7"
 
 packages:
   KeyboardShortcuts:

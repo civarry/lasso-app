@@ -25,15 +25,7 @@ struct LensResultView: View {
             ZStack {
                 LensWebView(image: image, loaded: $loaded)
                 if !loaded {
-                    ZStack {
-                        Color(red: 32 / 255, green: 33 / 255, blue: 36 / 255)   // Google's #202124
-                        VStack(spacing: 12) {
-                            ProgressView().controlSize(.large)
-                            Text("Searching Google Lens…")
-                                .font(.callout).foregroundStyle(.secondary)
-                        }
-                    }
-                    .transition(.opacity)
+                    LensSkeleton().transition(.opacity)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -47,6 +39,51 @@ struct LensResultView: View {
         .background(RoundedRectangle(cornerRadius: 16).fill(Color(nsColor: .windowBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.10)))
         .shadow(color: .black.opacity(0.4), radius: 20, y: 8)
+    }
+}
+
+/// Skeleton placeholder shown over the web view until the real Lens results are ready. Mirrors the
+/// rough layout (search bar, tabs, AI Overview, result cards) and pulses, so loading reads as "the
+/// page is coming" rather than a bare spinner.
+private struct LensSkeleton: View {
+    @State private var pulse = false
+
+    private func block(_ width: CGFloat? = nil, height: CGFloat, corner: CGFloat = 7) -> some View {
+        RoundedRectangle(cornerRadius: corner)
+            .fill(Color.white.opacity(0.09))
+            .frame(width: width, height: height)
+            .frame(maxWidth: width == nil ? .infinity : nil, alignment: .leading)
+    }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Color(red: 32 / 255, green: 33 / 255, blue: 36 / 255)   // Google's #202124
+            VStack(alignment: .leading, spacing: 20) {
+                block(height: 44, corner: 22)                       // search bar
+                HStack(spacing: 16) {                               // tabs
+                    ForEach(0..<5, id: \.self) { _ in block(54, height: 13) }
+                }
+                VStack(alignment: .leading, spacing: 11) {          // AI Overview
+                    block(120, height: 16)
+                    block(height: 12); block(height: 12)
+                    block(240, height: 12)
+                }
+                ForEach(0..<2, id: \.self) { _ in                   // result cards
+                    HStack(spacing: 12) {
+                        block(64, height: 64, corner: 10)
+                        VStack(alignment: .leading, spacing: 9) {
+                            block(height: 12)
+                            block(170, height: 12)
+                        }
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(18)
+            .opacity(pulse ? 0.55 : 1)
+            .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulse)
+        }
+        .onAppear { pulse = true }
     }
 }
 

@@ -400,6 +400,8 @@ enum MLXCache {
     /// Total download size of a Hugging Face repo, from its file tree API (a small metadata request
     /// that leaves the Mac). nil if the repo can't be reached / doesn't exist.
     static func remoteSizeBytes(for id: String) async -> Int64? {
+        // Local-only mode promises zero incidental egress — don't probe Hugging Face for the size.
+        guard !PrivacyMode.localOnly else { return nil }
         let repo = MLXProvider.normalizedID(id)
         guard let url = URL(string: "https://huggingface.co/api/models/\(repo)/tree/main?recursive=true")
         else { return nil }

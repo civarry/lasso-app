@@ -1267,7 +1267,8 @@ private struct ConnectorCard: View {
         HStack(spacing: 8) {
             Button("Test") { runTest() }
                 .buttonStyle(.bordered)
-                .disabled(test == .testing || (connector.requiresKey && key.isEmpty))
+                // No network in local-only mode — connectors are paused, so don't let Test reach out.
+                .disabled(test == .testing || localOnly || (connector.requiresKey && key.isEmpty))
             Spacer()
             switch test {
             case .idle:
