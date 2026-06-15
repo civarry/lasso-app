@@ -1163,20 +1163,74 @@ private struct SecureKeyField: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
-            Group {
-                if revealed {
-                    TextField(title, text: $text)
-                } else {
-                    SecureField(title, text: $text)
-                }
-            }
-            .textFieldStyle(.plain)
+        HStack(spacing: 8) {
+            // SwiftUI's SecureField (NSSecureTextField under the hood) ignores alignment and scrolls
+            // to the caret, so a long key showed its clipped tail floating to the right. We back the
+            // field with AppKit instead (`KeyTextField`) for guaranteed left-aligned, fill-width
+            // behaviour, and draw our own rounded box so secure/plain look pixel-identical. The
+            // `.id(revealed)` forces the NSView to be rebuilt as the secure vs. plain class on toggle.
+            KeyTextField(text: $text, placeholder: title, isSecure: !revealed)
+                .id(revealed)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color(nsColor: .textBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
+                )
             Button { revealed.toggle() } label: {
                 Image(systemName: revealed ? "eye.slash" : "eye").foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
             .help(revealed ? "Hide key" : "Show key")
+        }
+    }
+}
+
+/// AppKit-backed single-line key field. SwiftUI's `SecureField` won't reliably left-align or fill
+/// width on macOS, so we wrap `NSTextField`/`NSSecureTextField` directly: borderless and transparent
+/// (the SwiftUI parent draws the box), left-aligned, and low hugging priority so it fills the slot.
+private struct KeyTextField: NSViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+    let isSecure: Bool
+
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = isSecure ? NSSecureTextField() : NSTextField()
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.alignment = .left
+        field.lineBreakMode = .byClipping
+        field.usesSingleLineMode = true
+        field.cell?.usesSingleLineMode = true
+        field.cell?.wraps = false
+        field.cell?.isScrollable = true
+        field.font = .systemFont(ofSize: NSFont.systemFontSize)
+        field.delegate = context.coordinator
+        // Fill the available width instead of hugging the typed content.
+        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return field
+    }
+
+    func updateNSView(_ field: NSTextField, context: Context) {
+        if field.stringValue != text { field.stringValue = text }
+        field.placeholderString = placeholder
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        private let text: Binding<String>
+        init(text: Binding<String>) { self.text = text }
+        func controlTextDidChange(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            text.wrappedValue = field.stringValue
         }
     }
 }
@@ -1200,7 +1254,10 @@ private struct ConnectorCard: View {
                 Text(connector.summary).font(.caption).foregroundStyle(.secondary)
                 guide
                 if connector.requiresKey {
-                    SecureKeyField("\(connector.name) API key", text: $key)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("API key").font(.caption).foregroundStyle(.secondary)
+                        SecureKeyField("Paste your key", text: $key)
+                    }
                 }
                 if let usage { Text(usage).font(.caption2).foregroundStyle(.tertiary) }
                 testRow
