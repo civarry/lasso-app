@@ -1,4 +1,5 @@
 import Foundation
+import FoundationModels
 import Observation
 import SwiftUI
 
@@ -18,6 +19,17 @@ protocol IntelligenceProvider: Sendable {
     func respond(prompt: String, context: String?) -> AsyncThrowingStream<String, Error>
     /// Stream a response to a **multi-turn** conversation (for the Chat panel). Deltas, same as above.
     func respond(messages: [ChatTurn]) -> AsyncThrowingStream<String, Error>
+
+    /// Whether this backend supports native tool/function calling. Drives whether the Chat panel
+    /// offers the model a `web_search` tool (industry-standard, model-decides grounding) or falls
+    /// back to the rule-based heuristic. Default: false.
+    var supportsTools: Bool { get }
+
+    /// Stream a response with tools the model may call. The provider runs the call loop — when the
+    /// model requests a tool, `execute` is awaited and its result fed back — then streams the final
+    /// answer as deltas. Default impl ignores tools (so non-tool backends transparently fall back).
+    func respond(messages: [ChatTurn], tools: [ChatTool],
+                 execute: @escaping ToolExecutor) -> AsyncThrowingStream<String, Error>
 }
 
 /// One message in a chat conversation, sent to a provider. A user turn may carry an image — encoded
@@ -37,6 +49,16 @@ struct ChatTurn: Sendable {
 }
 
 extension IntelligenceProvider {
+    /// Most backends don't (yet) do native tool calling — the Chat panel handles those via the
+    /// heuristic grounding path instead.
+    var supportsTools: Bool { false }
+
+    /// Default: ignore tools and answer normally. Providers that set `supportsTools = true` override.
+    func respond(messages: [ChatTurn], tools: [ChatTool],
+                 execute: @escaping ToolExecutor) -> AsyncThrowingStream<String, Error> {
+        respond(messages: messages)
+    }
+
     /// Default multi-turn bridge for providers without a native implementation: flatten the history
     /// into a single prompt + context so the single-turn `respond` still carries the conversation.
     func respond(messages: [ChatTurn]) -> AsyncThrowingStream<String, Error> {
@@ -490,6 +512,51 @@ final class IntelligenceCoordinator {
                     for try await delta in provider.respond(prompt: prompt, context: context) {
                         continuation.yield(delta)
                     }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Whether the active **text** provider supports native tool calling — so the Chat panel knows to
+    /// offer the model a `web_search` tool (model-decides grounding) instead of the rule-based
+    /// heuristic. Resolves the Ollama model (which gates on family); cloud always supports it; Apple
+    /// on-device supports it when available; MLX does not.
+    func activeTextProviderSupportsTools() async -> Bool {
+        switch effectivePreferred {
+        case .openAICompatible, .anthropic:
+            return true
+        case .ollama:
+            return OllamaModels.supportsTools(await resolvedTextModel())
+        case .onDevice, .mlx:
+            // Apple's on-device model is too small to tool-call reliably — attaching tools overflows
+            // its context and throws GenerationError even on trivial prompts (verified). MLX has no
+            // tool-calling path. Both use the heuristic grounding route instead.
+            return false
+        }
+    }
+
+    /// Stream a multi-turn response with tools the model may call (the Chat panel's grounded path).
+    /// The resolved provider runs the tool loop; if it turns out not to support tools, it transparently
+    /// answers without them.
+    func respond(messages: [ChatTurn], tools: [ChatTool],
+                 execute: @escaping ToolExecutor) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task { [weak self] in
+                guard let self else { continuation.finish(); return }
+                let provider = await self.activeProvider()
+                self.lastProviderName = provider.name
+                self.lastProviderIsAppleOnDevice = provider.isAppleOnDevice
+                self.lastProviderIsLocal = provider.isLocal
+                if !provider.isLocal { self.usedOffDeviceThisSession = true }
+                let stream = provider.supportsTools
+                    ? provider.respond(messages: messages, tools: tools, execute: execute)
+                    : provider.respond(messages: messages)
+                do {
+                    for try await delta in stream { continuation.yield(delta) }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)

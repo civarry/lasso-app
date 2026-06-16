@@ -68,6 +68,151 @@ struct AnthropicProvider: IntelligenceProvider {
         return stream(messages: wire)
     }
 
+    // MARK: - Tool calling (industry-standard function calling)
+
+    var supportsTools: Bool { true }
+
+    /// Wire `messages` array (system is sent top-level, so it's excluded here).
+    private func wireMessages(_ messages: [ChatTurn]) -> [[String: Any]] {
+        messages.filter { $0.role != .system }.map { turn in
+            if let base64 = turn.imageBase64 {
+                return ["role": turn.role.rawValue, "content": [
+                    ["type": "image",
+                     "source": ["type": "base64", "media_type": "image/jpeg", "data": base64]],
+                    ["type": "text", "text": turn.text],
+                ]]
+            }
+            return ["role": turn.role.rawValue, "content": turn.text]
+        }
+    }
+
+    func respond(messages: [ChatTurn], tools: [ChatTool],
+                 execute: @escaping ToolExecutor) -> AsyncThrowingStream<String, Error> {
+        let system = messages.first(where: { $0.role == .system })?.text ?? Self.systemPrompt
+        // Build the (non-Sendable) wire dictionaries *inside* the Task from the Sendable inputs, so
+        // nothing non-Sendable crosses the task boundary.
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    var wire = self.wireMessages(messages)
+                    let toolsWire: [[String: Any]] = tools.map {
+                        ["name": $0.name, "description": $0.description, "input_schema": $0.jsonSchema]
+                    }
+                    for round in 0..<maxToolRounds {
+                        let offerTools = round < maxToolRounds - 1
+                        let result = try await self.streamMessage(
+                            system: system, messages: wire, tools: offerTools ? toolsWire : [],
+                            continuation: continuation)
+                        guard !result.calls.isEmpty else { continuation.finish(); return }
+
+                        // Assistant turn must echo its text + tool_use blocks; then user turn returns
+                        // a tool_result block per call.
+                        var assistantContent: [[String: Any]] = []
+                        if !result.text.isEmpty {
+                            assistantContent.append(["type": "text", "text": result.text])
+                        }
+                        for call in result.calls {
+                            assistantContent.append([
+                                "type": "tool_use", "id": call.id, "name": call.name,
+                                "input": call.inputObject,
+                            ])
+                        }
+                        wire.append(["role": "assistant", "content": assistantContent])
+
+                        var toolResults: [[String: Any]] = []
+                        for call in result.calls {
+                            let output = await execute(
+                                ToolCall(id: call.id, name: call.name, argumentsJSON: call.argumentsJSON))
+                            toolResults.append([
+                                "type": "tool_result", "tool_use_id": call.id, "content": output,
+                            ])
+                        }
+                        wire.append(["role": "user", "content": toolResults])
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Stream one Messages call: yield text deltas live, assemble `tool_use` blocks (id/name from
+    /// `content_block_start`, arguments from `input_json_delta`). Returns the text + assembled calls.
+    private func streamMessage(system: String, messages: [[String: Any]], tools: [[String: Any]],
+                               continuation: AsyncThrowingStream<String, Error>.Continuation)
+        async throws -> (text: String, calls: [AssembledToolUse]) {
+        var bodyDict: [String: Any] = [
+            "model": model, "max_tokens": 1024, "stream": true, "system": system, "messages": messages,
+        ]
+        if !tools.isEmpty { bodyDict["tools"] = tools }
+        guard let body = try? JSONSerialization.data(withJSONObject: bodyDict) else {
+            throw IntelligenceError.server("Couldn't encode the request.")
+        }
+        var request = URLRequest(url: Self.messagesURL(base: baseURL))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        request.httpBody = body
+
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw IntelligenceError.server("Anthropic returned HTTP \(code). Check the API key and model.")
+        }
+
+        var text = ""
+        var blocks: [Int: AssembledToolUse] = [:]
+        for try await line in bytes.lines {
+            guard line.hasPrefix("data:") else { continue }
+            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            guard let data = payload.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let type = json["type"] as? String else { continue }
+            switch type {
+            case "content_block_start":
+                let index = json["index"] as? Int ?? 0
+                if let block = json["content_block"] as? [String: Any],
+                   block["type"] as? String == "tool_use" {
+                    blocks[index] = AssembledToolUse(id: block["id"] as? String ?? "",
+                                                     name: block["name"] as? String ?? "")
+                }
+            case "content_block_delta":
+                let index = json["index"] as? Int ?? 0
+                guard let delta = json["delta"] as? [String: Any] else { continue }
+                if let t = delta["text"] as? String, !t.isEmpty {
+                    text += t; continuation.yield(t)
+                } else if let partial = delta["partial_json"] as? String {
+                    blocks[index]?.argumentsJSON += partial
+                }
+            case "message_stop":
+                break
+            default:
+                continue
+            }
+        }
+        let calls = blocks.sorted { $0.key < $1.key }.map(\.value).filter { !$0.name.isEmpty }
+        return (text, calls)
+    }
+
+    struct AssembledToolUse {
+        var id = ""
+        var name = ""
+        var argumentsJSON = ""
+
+        /// Parsed argument object for the fed-back `tool_use` block (Anthropic wants an object, not a
+        /// string). Empty object on malformed/partial JSON.
+        var inputObject: [String: Any] {
+            guard let data = argumentsJSON.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
+            return obj
+        }
+    }
+
     private func stream(messages: [[String: Any]]) -> AsyncThrowingStream<String, Error> {
         // Encode up front so the (non-Sendable) message dictionaries don't cross into the Task closure.
         let body = try? JSONSerialization.data(withJSONObject: [

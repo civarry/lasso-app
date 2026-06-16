@@ -34,6 +34,18 @@ enum OllamaModels {
         return chat.first
     }
 
+    /// Whether a model is known to support Ollama tool/function calling. Conservative allow-list by
+    /// family — passing `tools` to a model that doesn't support them makes Ollama error, so we only
+    /// claim support for families that reliably handle it.
+    static func supportsTools(_ name: String) -> Bool {
+        let n = name.lowercased()
+        if isEmbedding(n) || isVision(n) { return false }
+        let families = ["qwen3", "qwen2.5", "llama3.1", "llama3.2", "llama3.3", "llama-3.1",
+                        "llama-3.2", "llama-3.3", "mistral", "mixtral", "command-r", "gpt-oss",
+                        "firefunction", "hermes", "granite", "smollm2", "devstral"]
+        return families.contains { n.contains($0) }
+    }
+
     /// Best installed vision model, preferring known families.
     static func bestVisionModel(_ models: [String]) -> String? {
         let vision = models.filter { isVision($0) }

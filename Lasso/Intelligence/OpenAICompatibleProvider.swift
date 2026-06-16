@@ -103,6 +103,139 @@ struct OpenAICompatibleProvider: IntelligenceProvider {
         return stream(messages: wire)
     }
 
+    // MARK: - Tool calling (industry-standard function calling)
+
+    var supportsTools: Bool { true }
+
+    /// Build the wire `messages` array (system + turns, with multimodal content for image turns).
+    private func wireMessages(_ messages: [ChatTurn]) -> [[String: Any]] {
+        var wire: [[String: Any]] = []
+        if !messages.contains(where: { $0.role == .system }) {
+            wire.append(["role": "system", "content": Self.systemPrompt])
+        }
+        for turn in messages {
+            if let base64 = turn.imageBase64 {
+                wire.append([
+                    "role": turn.role.rawValue,
+                    "content": [
+                        ["type": "text", "text": turn.text],
+                        ["type": "image_url", "image_url": ["url": "data:image/jpeg;base64,\(base64)"]],
+                    ],
+                ])
+            } else {
+                wire.append(["role": turn.role.rawValue, "content": turn.text])
+            }
+        }
+        return wire
+    }
+
+    func respond(messages: [ChatTurn], tools: [ChatTool],
+                 execute: @escaping ToolExecutor) -> AsyncThrowingStream<String, Error> {
+        // Build the (non-Sendable) wire dictionaries *inside* the Task from the Sendable inputs, so
+        // nothing non-Sendable crosses the task boundary.
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    var wire = self.wireMessages(messages)
+                    let toolsWire: [[String: Any]] = tools.map {
+                        ["type": "function",
+                         "function": ["name": $0.name, "description": $0.description,
+                                      "parameters": $0.jsonSchema]]
+                    }
+                    // Loop: stream a completion; if the model called tools, run them, append the
+                    // results, and stream again. Final answer (no tool calls) streams to the user.
+                    for round in 0..<maxToolRounds {
+                        // On the last allowed round, drop tools so the model must answer.
+                        let offerTools = round < maxToolRounds - 1
+                        let calls = try await self.streamCompletion(
+                            messages: wire, tools: offerTools ? toolsWire : [],
+                            continuation: continuation)
+                        guard !calls.isEmpty else { continuation.finish(); return }
+
+                        // Append the assistant's tool-call message, then each tool result.
+                        wire.append([
+                            "role": "assistant", "content": NSNull(),
+                            "tool_calls": calls.map {
+                                ["id": $0.id, "type": "function",
+                                 "function": ["name": $0.name, "arguments": $0.argumentsJSON]]
+                            },
+                        ])
+                        for call in calls {
+                            let result = await execute(
+                                ToolCall(id: call.id, name: call.name, argumentsJSON: call.argumentsJSON))
+                            wire.append(["role": "tool", "tool_call_id": call.id, "content": result])
+                        }
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Stream one chat completion: yield text deltas live, and assemble any `tool_calls` deltas.
+    /// Returns the assembled tool calls (empty when the model answered directly).
+    private func streamCompletion(messages: [[String: Any]], tools: [[String: Any]],
+                                  continuation: AsyncThrowingStream<String, Error>.Continuation)
+        async throws -> [AssembledToolCall] {
+        var bodyDict: [String: Any] = ["model": model, "stream": true, "messages": messages]
+        if !tools.isEmpty { bodyDict["tools"] = tools; bodyDict["tool_choice"] = "auto" }
+        guard let body = try? JSONSerialization.data(withJSONObject: bodyDict) else {
+            throw IntelligenceError.server("Couldn't encode the request.")
+        }
+        var request = URLRequest(url: Self.chatCompletionsURL(base: baseURL))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !apiKey.isEmpty { request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
+        request.httpBody = body
+
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw IntelligenceError.server(
+                "\(displayName) HTTP \(code) at \(request.url?.absoluteString ?? "?"). " + Self.hint(for: code))
+        }
+
+        var partials: [Int: AssembledToolCall] = [:]
+        for try await line in bytes.lines {
+            guard line.hasPrefix("data:") else { continue }
+            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            if payload == "[DONE]" { break }
+            guard let data = payload.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choice = (json["choices"] as? [[String: Any]])?.first,
+                  let delta = choice["delta"] as? [String: Any] else { continue }
+
+            if let content = delta["content"] as? String, !content.isEmpty {
+                continuation.yield(content)
+            }
+            // Assemble streamed tool_calls by index (id/name arrive once; arguments stream in pieces).
+            if let toolCalls = delta["tool_calls"] as? [[String: Any]] {
+                for tc in toolCalls {
+                    let index = tc["index"] as? Int ?? 0
+                    var entry = partials[index] ?? AssembledToolCall()
+                    if let id = tc["id"] as? String { entry.id = id }
+                    if let fn = tc["function"] as? [String: Any] {
+                        if let name = fn["name"] as? String { entry.name = name }
+                        if let args = fn["arguments"] as? String { entry.argumentsJSON += args }
+                    }
+                    partials[index] = entry
+                }
+            }
+        }
+        return partials.sorted { $0.key < $1.key }.map(\.value).filter { !$0.name.isEmpty }
+    }
+
+    struct AssembledToolCall {
+        var id = ""
+        var name = ""
+        var argumentsJSON = ""
+    }
+
     private func stream(messages: [[String: Any]]) -> AsyncThrowingStream<String, Error> {
         // Encode the body up front so the (non-Sendable) message dictionaries don't cross into the
         // stream's Task closure.

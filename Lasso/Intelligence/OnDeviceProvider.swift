@@ -41,7 +41,46 @@ struct OnDeviceProvider: IntelligenceProvider {
         return stream(fullPrompt: full, instructions: instructions)
     }
 
-    private func stream(fullPrompt full: String, instructions: String = Self.instructions)
+    // MARK: - Tool calling
+
+    /// Disabled: the on-device model is too small to tool-call reliably — attaching tools overflows
+    /// its context window and throws `GenerationError` even on trivial prompts (verified in testing).
+    /// The Chat panel routes on-device turns through the heuristic grounding path instead. The
+    /// implementation below is kept (and reachable only if this is flipped back to `true`) so a future
+    /// OS/model that handles tools well can re-enable it with a one-line change.
+    var supportsTools: Bool { false }
+
+    /// Attach the bridged `web_search` tool and let FoundationModels run the call loop. Other tools
+    /// are ignored (only web search is wired). Falls back to a plain answer if no tool matches.
+    func respond(messages: [ChatTurn], tools: [ChatTool],
+                 execute: @escaping ToolExecutor) -> AsyncThrowingStream<String, Error> {
+        let fmTools: [any Tool] = tools.compactMap { tool in
+            guard tool.name == ChatTool.webSearch.name else { return nil }
+            return WebSearchTool { query in
+                let argsJSON = (try? JSONSerialization.data(withJSONObject: ["query": query]))
+                    .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                return await execute(ToolCall(id: tool.name, name: tool.name, argumentsJSON: argsJSON))
+            }
+        }
+        guard !fmTools.isEmpty else { return respond(messages: messages) }
+
+        let instructions = messages.first(where: { $0.role == .system })?.text ?? Self.instructions
+        let transcript = messages
+            .filter { $0.role != .system && !$0.text.isEmpty }
+            .map { turn -> String in
+                switch turn.role {
+                case .user: "User: \(turn.text)"
+                case .assistant: "Assistant: \(turn.text)"
+                case .system: turn.text
+                }
+            }
+            .joined(separator: "\n\n")
+        let full = transcript.isEmpty ? "" : "\(transcript)\n\nAssistant:"
+        return stream(fullPrompt: full, instructions: instructions, tools: fmTools)
+    }
+
+    private func stream(fullPrompt full: String, instructions: String = Self.instructions,
+                        tools: [any Tool] = [])
         -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -50,7 +89,9 @@ struct OnDeviceProvider: IntelligenceProvider {
                         throw IntelligenceError.unavailable(
                             "Apple Intelligence is off or unsupported on this Mac.")
                     }
-                    let session = LanguageModelSession(instructions: instructions)
+                    let session = tools.isEmpty
+                        ? LanguageModelSession(instructions: instructions)
+                        : LanguageModelSession(tools: tools, instructions: instructions)
 
                     // FoundationModels streams *cumulative* snapshots; convert to deltas so the
                     // ResultPane can simply append (matches the Ollama provider's contract).

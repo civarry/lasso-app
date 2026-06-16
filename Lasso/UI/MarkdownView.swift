@@ -7,6 +7,9 @@ import SwiftUI
 struct MarkdownView: View {
     let text: String
     var fontSize: CGFloat = 15
+    /// Whether text in this render is drag-selectable. Off in the Chat panel, where selectable text
+    /// intercepts clicks meant for nearby controls (the Activity disclosure) — chat uses a Copy button instead.
+    var selectable: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -53,7 +56,7 @@ struct MarkdownView: View {
             HScroll {
                 Text(s)
                     .font(.system(size: fontSize - 1, design: .monospaced))
-                    .textSelection(.enabled)
+                    .textSelectable(selectable)
                     .padding(8)
             }
             .background(RoundedRectangle(cornerRadius: 6).fill(.white.opacity(0.08)))
@@ -95,6 +98,14 @@ struct MarkdownView: View {
         Text(AttributedString.fromMarkdown(s))
             .font(.system(size: fontSize - 1, weight: weight))
             .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private extension View {
+    /// `.textSelection(.enabled/.disabled)` can't go in a ternary (different concrete types), so
+    /// branch via @ViewBuilder.
+    @ViewBuilder func textSelectable(_ on: Bool) -> some View {
+        if on { textSelection(.enabled) } else { textSelection(.disabled) }
     }
 }
 

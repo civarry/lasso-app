@@ -129,25 +129,40 @@ struct ChatView: View {
                 .padding(16)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         } else {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(chat.messages) { message in
-                        MessageBubble(message: message, fontSize: resultTextBaseSize * textScale)
+            // NOTE: `.defaultScrollAnchor(.bottom)` was removed — it offsets hit-testing from what's
+            // drawn (clicks on the Activity row landed on whatever element was at that point in the
+            // un-adjusted layout, e.g. a source link), which is why controls inside the scroll view
+            // "weren't reliably receiving clicks." Auto-scroll is done explicitly via ScrollViewReader,
+            // keyed to data changes (not geometry) so it doesn't loop.
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(chat.messages) { message in
+                            MessageBubble(message: message, fontSize: resultTextBaseSize * textScale)
+                        }
+                        if chat.trimmedNotice {
+                            Label("Earlier messages were trimmed to fit the model's context.",
+                                  systemImage: "scissors")
+                                .font(.caption2).foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity)
+                        }
+                        Color.clear.frame(height: 1).id(Self.scrollBottomID)
                     }
-                    if chat.trimmedNotice {
-                        Label("Earlier messages were trimmed to fit the model's context.",
-                              systemImage: "scissors")
-                            .font(.caption2).foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
-                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .onAppear { proxy.scrollTo(Self.scrollBottomID, anchor: .bottom) }
+                .onChange(of: chat.messages.count) { _, _ in
+                    proxy.scrollTo(Self.scrollBottomID, anchor: .bottom)
+                }
+                .onChange(of: chat.messages.last?.text) { _, _ in
+                    proxy.scrollTo(Self.scrollBottomID, anchor: .bottom)
+                }
             }
-            // Auto-pins to the bottom as content grows — no manual scrollTo (which caused a loop).
-            .defaultScrollAnchor(.bottom)
         }
     }
+
+    private static let scrollBottomID = "chat-bottom"
 
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -188,10 +203,10 @@ struct ChatView: View {
     }
 
     private static let suggestions: [Suggestion] = [
-        // Already grounded by the injected Lasso context — no web search (it just adds noise).
+        // Canned starter prompts — grounded by the model alone (web search just adds noise here).
         Suggestion(title: "What can you do?", context: ChatController.lassoCapabilities, webSearch: false),
-        Suggestion(title: "Help me write a short, friendly email"),
-        Suggestion(title: "Explain a tricky concept in simple terms"),
+        Suggestion(title: "Help me write a short, friendly email", webSearch: false),
+        Suggestion(title: "Explain a tricky concept in simple terms", webSearch: false),
     ]
 
     // MARK: - Composer
@@ -322,6 +337,23 @@ private struct MessageBubble: View {
 
     private var hasTrace: Bool { !message.steps.isEmpty || !message.reasoning.isEmpty }
 
+    @State private var copied = false
+
+    /// Replaces drag-to-select on assistant answers (which stole clicks from the Activity row).
+    private var copyButton: some View {
+        Button {
+            Pasteboard.copy(message.text)
+            copied = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+        } label: {
+            Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 2)
+        .help("Copy this answer")
+    }
+
     var body: some View {
         // User messages: a right-aligned tinted bubble (kept narrow). Assistant messages: full-width
         // with no bubble (ChatGPT/Claude style) so tables, code, and long text get the whole panel.
@@ -343,10 +375,14 @@ private struct MessageBubble: View {
                         Text("Thinking…").font(.caption).foregroundStyle(.secondary)
                     }
                 } else if !message.text.isEmpty {
-                    MarkdownView(text: message.text, fontSize: fontSize)
-                        .textSelection(.enabled)
+                    // Not drag-selectable: selectable text in the scroll view intercepts clicks meant for the
+                    // Activity disclosure. A Copy button replaces highlight-to-copy on assistant turns.
+                    MarkdownView(text: message.text, fontSize: fontSize, selectable: false)
                         .foregroundStyle(message.isError ? Color.orange : Color.primary)
                         .fixedSize(horizontal: false, vertical: true)
+                    if !isUser, !message.isStreaming, !message.isError {
+                        copyButton
+                    }
                 }
             }
             .padding(.horizontal, isUser ? 11 : 2).padding(.vertical, isUser ? 8 : 2)
@@ -378,45 +414,41 @@ private struct TraceView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Button { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } } label: {
-                HStack(spacing: 6) {
-                    if message.isStreaming { ProgressView().controlSize(.small) }
-                    else { Image(systemName: "sparkles").font(.caption2) }
-                    Text(summary).font(.caption).fontWeight(.medium)
-                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold))
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
-                }
-                .foregroundStyle(.secondary)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if expanded {
-                // Vertical rail with a checkpoint dot per item (reasoning first, then steps).
-                VStack(alignment: .leading, spacing: 10) {
-                    if !message.reasoning.isEmpty {
-                        timelineItem(done: !message.isStreaming) {
-                            Text(message.reasoning)
-                                .font(.caption).foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    ForEach(message.steps) { step in
-                        timelineItem(done: step.done) { stepContent(step) }
+        // Use a DisclosureGroup (not a custom Button toggling @State) — the same control the model's
+        // "Thought" section uses, which toggles reliably inside the chat ScrollView where a plain
+        // Button's click was being missed.
+        DisclosureGroup(isExpanded: $expanded) {
+            // Vertical rail with a checkpoint dot per item (reasoning first, then steps).
+            VStack(alignment: .leading, spacing: 10) {
+                if !message.reasoning.isEmpty {
+                    timelineItem(done: !message.isStreaming) {
+                        Text(message.reasoning)
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .padding(.top, 2)
-                .background(alignment: .leading) {
-                    Rectangle().fill(.secondary.opacity(0.25))
-                        .frame(width: 1)
-                        .padding(.leading, 2)      // centered under the 5px dots
-                        .padding(.vertical, 6)
+                ForEach(message.steps) { step in
+                    timelineItem(done: step.done) { stepContent(step) }
                 }
-                .padding(.leading, 2)
             }
+            .padding(.top, 2)
+            .background(alignment: .leading) {
+                Rectangle().fill(.secondary.opacity(0.25))
+                    .frame(width: 1)
+                    .padding(.leading, 2)      // centered under the 5px dots
+                    .padding(.vertical, 6)
+            }
+            .padding(.leading, 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } label: {
+            HStack(spacing: 6) {
+                if message.isStreaming { ProgressView().controlSize(.small) }
+                else { Image(systemName: "sparkles").font(.caption2) }
+                Text(summary).font(.caption).fontWeight(.medium)
+            }
+            .foregroundStyle(.secondary)
         }
+        .disclosureGroupStyle(.automatic)
         .onChange(of: message.isStreaming) { _, streaming in
             if !streaming { withAnimation(.easeOut(duration: 0.2)) { expanded = false } }
         }

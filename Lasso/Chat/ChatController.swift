@@ -45,6 +45,10 @@ final class ChatController {
     You are Lasso's assistant — a helpful, concise chat companion living in the user's menu bar. \
     Answer directly. Use Markdown for structure when it helps.
 
+    Do NOT paste raw URLs or add a "Sources"/"References" list to your reply — the app already shows \
+    the sources you used as separate links. Just answer naturally; weave in a source name only if it \
+    reads well in a sentence.
+
     Always make a genuine attempt to help. Do NOT refuse or tell the user to describe their own image \
     — they can see it, and you are given an automatic description to work from. Some turns include an \
     automatic description of an attached image, produced by a separate vision model (NOT written by \
@@ -190,6 +194,78 @@ final class ChatController {
             || Connectors.serpApi.isActive() || Connectors.googleVision.isActive()
     }
 
+    // MARK: - Slash commands
+
+    /// `/clear` (or `/reset`) — clears the conversation and starts fresh. Case-insensitive, tolerant
+    /// of a trailing slash so it fires the moment the whole command is typed.
+    static func isClearCommand(_ typed: String) -> Bool {
+        let t = typed.lowercased()
+        return t == "/clear" || t == "/reset"
+    }
+
+    // MARK: - Web grounding intent
+
+    /// Whether a turn plausibly benefits from web/connector grounding. The globe toggle means "ground
+    /// *when it helps*", not "search every message" — so even with it on we skip turns that gain
+    /// nothing from a lookup: greetings and small talk, and self-contained creative/transform asks
+    /// (write / rewrite / translate / summarize / fix-this-code). Image turns always benefit
+    /// (reverse-image identification), so they're never gated. Errs toward searching when unsure, so
+    /// real questions still get grounded.
+    static func turnBenefitsFromWeb(typed: String, hasImage: Bool) -> Bool {
+        if hasImage { return true }
+        let t = normalizeForIntent(typed)
+        guard !t.isEmpty else { return false }
+        if isSmallTalk(t) || isSelfContainedTask(t) { return false }
+        return true
+    }
+
+    /// Lowercased, trimmed, with surrounding whitespace/punctuation stripped — for whole-message matching.
+    private static func normalizeForIntent(_ s: String) -> String {
+        s.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: " \t\n.!?,…"))
+    }
+
+    /// Whole-message greetings, acknowledgements, and meta questions about the assistant. Token-based:
+    /// a short message made up *entirely* of pleasantry words is small talk — so "hello", "hello how
+    /// are you", and "thanks so much" all count, while "hello what is the capital of France" does not
+    /// (the moment a non-pleasantry word like "capital" appears, it's a real question). The exact set
+    /// covers a few multi-word meta phrases the token check would otherwise miss.
+    private static func isSmallTalk(_ t: String) -> Bool {
+        let exact: Set<String> = [
+            "who are you", "what are you", "what is your name", "what's your name", "whats your name",
+            "introduce yourself", "how does this work", "what can you do",
+        ]
+        if exact.contains(t) { return true }
+
+        let words = t.split(whereSeparator: { $0 == " " })
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ",.!?'\"")) }
+            .filter { !$0.isEmpty }
+        guard !words.isEmpty, words.count <= 6 else { return false }
+        let pleasantries: Set<String> = [
+            "hello", "helo", "hi", "hii", "hey", "heya", "hiya", "yo", "sup", "wassup", "greetings",
+            "good", "morning", "afternoon", "evening", "night", "how", "are", "you", "u", "r", "ya",
+            "is", "it", "going", "hows", "whats", "doing", "today", "there", "friend", "mate", "well",
+            "thanks", "thank", "thx", "ty", "cheers", "a", "lot", "so", "much", "appreciate", "please",
+            "ok", "okay", "k", "kk", "got", "cool", "nice", "great", "awesome", "perfect", "lovely",
+            "lol", "haha", "hmm", "yeah", "yep", "yes", "no", "nope", "bye", "goodbye", "see", "later",
+            "and", "to", "meet", "nice", "im", "i'm", "me", "my", "name",
+        ]
+        return words.allSatisfy { pleasantries.contains($0) }
+    }
+
+    /// Imperative creative / transform / coding asks — the material is supplied or generated, not
+    /// looked up — so web evidence is just latency and noise.
+    private static func isSelfContainedTask(_ t: String) -> Bool {
+        let prefixes = [
+            "write ", "write me ", "help me write", "draft ", "help me draft", "compose ",
+            "rewrite ", "reword ", "rephrase ", "paraphrase ", "summarize ", "summarise ",
+            "translate ", "fix ", "debug ", "refactor ", "proofread ", "polish ", "shorten ",
+            "expand ", "brainstorm ", "make me ", "give me ideas", "list some ideas",
+        ]
+        if prefixes.contains(where: { t.hasPrefix($0) }) { return true }
+        let phrases = ["tl;dr", "this code", "the following code", "fix this", "explain this code"]
+        return phrases.contains(where: { t.contains($0) })
+    }
+
     // MARK: - Sending
 
     /// Send a message. `text` overrides the composer (used by the suggestion chips); `extraContext`
@@ -198,6 +274,15 @@ final class ChatController {
     func send(text: String? = nil, extraContext: String? = nil, webSearch: Bool? = nil) {
         if let text { input = text }
         let typed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Slash commands typed in the composer act on the session, not the model. `/clear` resets to
+        // a fresh chat (history, attachment, seeded context) — intercepted before any turn is built.
+        if Self.isClearCommand(typed) {
+            Log.chat.notice("send: /clear — resetting session")
+            newChat()
+            return
+        }
+
         guard !typed.isEmpty || pendingImage != nil else { return }
         guard !isStreaming else { return }
 
@@ -217,20 +302,22 @@ final class ChatController {
         seededContext = nil
         isStreaming = true
 
-        // Whether to ground this turn with connectors. A chip can force it off (e.g. "What can you
-        // do?", already grounded by the injected Lasso context — a web search there is just noise).
-        let ground = (webSearch ?? webSearchOn) && webConnectorsAvailable
+        // Whether grounding is *allowed* this turn: the user's globe toggle (a chip can force it off,
+        // e.g. "What can you do?") and at least one active connector. Whether to *actually* search is
+        // decided downstream — by the model via a tool when the provider supports it, otherwise by the
+        // local heuristic — so simple chat (greetings, write/translate) stays fast and quiet.
+        let allowGround = (webSearch ?? webSearchOn) && webConnectorsAvailable
 
-        Log.chat.notice("send: typedChars=\(typed.count, privacy: .public) hasImage=\(image != nil, privacy: .public) ground=\(ground, privacy: .public) history=\(self.messages.count, privacy: .public)")
+        Log.chat.notice("send: typedChars=\(typed.count, privacy: .public) hasImage=\(image != nil, privacy: .public) allowGround=\(allowGround, privacy: .public) history=\(self.messages.count, privacy: .public)")
         streamTask?.cancel()
         streamTask = Task { [weak self] in
             await self?.runTurn(typed: typed, image: image, context: context, appContext: extraContext,
-                                ground: ground, userID: userID, assistantID: assistantID)
+                                allowGround: allowGround, userID: userID, assistantID: assistantID)
         }
     }
 
     private func runTurn(typed: String, image: CGImage?, context: String?, appContext: String?,
-                         ground: Bool, userID: UUID, assistantID: UUID) async {
+                         allowGround: Bool, userID: UUID, assistantID: UUID) async {
         let t0 = Date()
         func ms() -> Int { Int(Date().timeIntervalSince(t0) * 1000) }
         Log.chat.notice("runTurn ▶ begin")
@@ -261,8 +348,22 @@ final class ChatController {
             if let ocrText { Log.chat.notice("runTurn · OCR \(ocrText.count, privacy: .public) chars (+\(ms(), privacy: .public)ms)") }
         }
 
+        // Grounding routing. A cheap heuristic pre-filter runs on BOTH paths: obvious no-search turns
+        // (greetings/small talk, write/translate/summarize) never ground — so the model can't
+        // over-search a "hello how are you". For turns that pass, a tool-capable provider gets a
+        // `web_search` tool and the *model* makes the final call (industry standard); otherwise we
+        // fall back to the local heuristic and pre-gather evidence.
+        let benefits = Self.turnBenefitsFromWeb(typed: typed, hasImage: image != nil)
+        let providerTools = allowGround ? await intelligence.activeTextProviderSupportsTools() : false
+        let toolPath = allowGround && providerTools && benefits
+        let heuristicGround = allowGround && !providerTools && benefits
+        if allowGround && !benefits {
+            Log.chat.notice("runTurn · grounding skipped — turn doesn't benefit from web (pre-filter)")
+        }
+        Log.chat.notice("runTurn · grounding route: toolPath=\(toolPath, privacy: .public) heuristic=\(heuristicGround, privacy: .public) benefits=\(benefits, privacy: .public)")
+
         async let evidenceResult = gatherEvidence(typed: typed, boxed: boxed,
-                                                  ocrText: ocrText, enabled: ground)
+                                                  ocrText: ocrText, enabled: heuristicGround)
 
         if let image {
             Log.chat.notice("runTurn · image present — checking native vision (+\(ms(), privacy: .public)ms)")
@@ -330,10 +431,11 @@ final class ChatController {
             userText += "\n\nText visible in the image:\n\(ocrText)"
         }
 
-        // Fold in the connector evidence started above (waits only if it's still running).
-        let searchStepID: UUID? = ground
+        // Fold in the connector evidence started above (waits only if it's still running). Tool-path
+        // turns gather via the model's tool call instead, so this whole block is heuristic-only.
+        let searchStepID: UUID? = heuristicGround
             ? addStep(assistantID, icon: "globe", text: "Searching the web…") : nil
-        if ground {
+        if heuristicGround {
             Log.chat.notice("runTurn · awaiting web evidence (+\(ms(), privacy: .public)ms)")
         }
         if let evidence = await evidenceResult {
@@ -354,18 +456,34 @@ final class ChatController {
         update(userID) { $0.promptText = userText; $0.imageBase64 = imageBase64 }
 
         let textLabel = intelligence.textEngineLabel
-        let answerStepID = addStep(assistantID, icon: "sparkles", text: "Answering · \(textLabel)")
         let turns = buildTurns(newUserText: userText, imageBase64: imageBase64)
         let totalChars = turns.reduce(0) { $0 + $1.text.count }
-        Log.chat.notice("runTurn · built \(turns.count, privacy: .public) turns, \(totalChars, privacy: .public) chars — stream START (+\(ms(), privacy: .public)ms)")
+        Log.chat.notice("runTurn · built \(turns.count, privacy: .public) turns, \(totalChars, privacy: .public) chars, toolPath=\(toolPath, privacy: .public) — stream START (+\(ms(), privacy: .public)ms)")
         if Task.isCancelled { Log.chat.notice("runTurn · cancelled before stream"); return }
 
-        // If no token arrives within a few seconds, the provider is likely cold-loading the model —
-        // say so instead of a silent "Answering…".
-        let loadingHint = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            if Task.isCancelled { return }
-            self?.setStepText(assistantID, answerStepID, "Loading \(textLabel)… (first use can take a while)")
+        // On the tool path the model may search first, so the "Searching…" step is added by the
+        // executor — defer the answer step until the first answer token, so the trace reads
+        // Search → Answer. Otherwise add it up front (with the cold-load hint).
+        var answerStepID: UUID? = toolPath ? nil : addStep(assistantID, icon: "sparkles", text: "Answering · \(textLabel)")
+
+        // If no token arrives within a few seconds, the provider is likely cold-loading the model.
+        let loadingHint: Task<Void, Never>? = answerStepID.map { stepID in
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if Task.isCancelled { return }
+                self?.setStepText(assistantID, stepID, "Loading \(textLabel)… (first use can take a while)")
+            }
+        }
+
+        // The web_search tool executor (used only on the tool path): runs the user's connectors for
+        // the model's query, surfaces a "Searching…" step, and returns evidence text to ground on.
+        let toolBoxed = boxed
+        let toolOCR = ocrText
+        let executor: ToolExecutor = { [weak self] call in
+            guard let self else { return "Web search is unavailable." }
+            let query = call.string("query") ?? typed
+            return await self.runWebSearchTool(query: query, boxed: toolBoxed,
+                                               ocrText: toolOCR, assistantID: assistantID)
         }
 
         var deltas = 0
@@ -374,11 +492,15 @@ final class ChatController {
         var raw = ""              // full stream, so we can split <think> reasoning from the answer
         var thinkStart: Date?
         do {
-            for try await delta in intelligence.respond(messages: turns) {
-                if Task.isCancelled { loadingHint.cancel(); Log.chat.notice("runTurn · cancelled mid-stream after \(chars, privacy: .public) chars"); return }
+            let stream = toolPath
+                ? intelligence.respond(messages: turns, tools: [.webSearch], execute: executor)
+                : intelligence.respond(messages: turns)
+            for try await delta in stream {
+                if Task.isCancelled { loadingHint?.cancel(); Log.chat.notice("runTurn · cancelled mid-stream after \(chars, privacy: .public) chars"); return }
                 if firstTokenMs < 0 {
-                    firstTokenMs = ms(); loadingHint.cancel()
-                    setStepText(assistantID, answerStepID, "Answering · \(textLabel)")
+                    firstTokenMs = ms(); loadingHint?.cancel()
+                    if let answerStepID { setStepText(assistantID, answerStepID, "Answering · \(textLabel)") }
+                    else { answerStepID = addStep(assistantID, icon: "sparkles", text: "Answering · \(textLabel)") }
                     Log.chat.notice("runTurn · first token (+\(firstTokenMs, privacy: .public)ms)")
                 }
                 deltas += 1; chars += delta.count
@@ -393,10 +515,10 @@ final class ChatController {
                     if let secs, $0.reasoningSeconds == nil { $0.reasoningSeconds = secs }
                 }
             }
-            loadingHint.cancel()
-            completeStep(assistantID, answerStepID, text: "Answered · \(textLabel)")
+            loadingHint?.cancel()
+            if let answerStepID { completeStep(assistantID, answerStepID, text: "Answered · \(textLabel)") }
         } catch {
-            loadingHint.cancel()
+            loadingHint?.cancel()
             Log.chat.error("runTurn · stream ERROR after \(chars, privacy: .public) chars: \(error.localizedDescription, privacy: .public) (+\(ms(), privacy: .public)ms)")
             finishError(assistantID, error.localizedDescription)
             return
@@ -461,8 +583,44 @@ final class ChatController {
         return generics.contains { t == $0 || t == $0 + "?" }
     }
 
-    /// Fold gathered evidence into the turn as grounding context for the model.
+    /// Tool executor body (industry-standard path): run the user's connectors for the model's `query`
+    /// — plus reverse-image when an image is attached — surface the activity in the trace, and return
+    /// a text block for the model to ground its answer on. Mirrors the heuristic path's evidence, just
+    /// driven by the model's own decision to search.
+    private func runWebSearchTool(query: String, boxed: UncheckedImage?, ocrText: String?,
+                                  assistantID: UUID) async -> String {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        Log.chat.notice("web_search executor: query=\(q, privacy: .public)")
+        let stepID = addStep(assistantID, icon: "globe",
+                             text: q.isEmpty ? "Searching the web…" : "Searching: \(q)")
+        guard let evidence = await gatherEvidence(typed: q, boxed: boxed, ocrText: ocrText, enabled: true) else {
+            completeStep(assistantID, stepID, text: "No web results")
+            return "No results found for \"\(q)\"."
+        }
+        let hits = Array(evidence.hits.prefix(6))
+        update(assistantID) { $0.sources = hits }
+        var summary = "Found \(hits.count) source\(hits.count == 1 ? "" : "s")"
+        if let guess = evidence.bestGuess, !guess.isEmpty { summary = "Identified “\(guess)” · " + summary }
+        completeStep(assistantID, stepID, text: summary, links: hits)
+        let body = Self.formatEvidence(evidence)
+        return body.isEmpty ? "No useful results found." : body
+    }
+
+    /// Fold gathered evidence into the turn as grounding context for the model (heuristic path).
     private func appendEvidence(_ text: String, _ evidence: Evidence) -> String {
+        let body = Self.formatEvidence(evidence)
+        guard !body.isEmpty else { return text }
+        return """
+        \(text)
+
+        [Web evidence gathered for this question — ground your answer in it; do not invent facts it \
+        doesn't support. Do NOT paste these URLs or add a Sources list — the app shows them separately:]
+        \(body)
+        """
+    }
+
+    /// Render gathered evidence as plain text — shared by the heuristic fold-in and the tool result.
+    private static func formatEvidence(_ evidence: Evidence) -> String {
         var lines: [String] = []
         if let g = evidence.bestGuess, !g.isEmpty {
             lines.append("Likely identification (reverse-image search): \(g)")
@@ -485,14 +643,7 @@ final class ChatController {
             }.joined(separator: "\n")
             lines.append("Sources:\n\(src)")
         }
-        guard !lines.isEmpty else { return text }
-        return """
-        \(text)
-
-        [Web evidence gathered for this question — ground your answer in it and mention sources where \
-        relevant; do not invent facts it doesn't support:]
-        \(lines.joined(separator: "\n"))
-        """
+        return lines.joined(separator: "\n")
     }
 
     /// Build the trimmed `[ChatTurn]` to send: system + prior history + the new (folded) user turn.

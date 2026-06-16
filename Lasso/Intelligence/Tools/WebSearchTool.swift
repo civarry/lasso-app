@@ -1,25 +1,31 @@
 import Foundation
 import FoundationModels
 
-/// Stub for FoundationModels tool calling: lets the on-device session decide when a query needs
-/// external facts and route to a web/cloud provider (Spec §8). Disabled by default — wiring a real
-/// search backend is an explicit opt-in (M6) so the "no network unless asked" promise holds.
+/// FoundationModels tool that lets the on-device model decide when a turn needs web facts and route
+/// to the app's connectors (the industry-standard function-calling path for Apple Intelligence). The
+/// framework invokes `call` when the model emits a tool call, then continues the turn with the result.
 ///
-/// Conforms to FoundationModels' `Tool` protocol so it can be attached to a `LanguageModelSession`.
+/// The actual search runs in app land — this just bridges the model's `query` to the supplied
+/// executor, so privacy/connector gating stays in one place (`ChatController`). Only attached when a
+/// connector is active and local-only mode is off.
 struct WebSearchTool: Tool {
-    let name = "webSearch"
-    let description = "Search the web for current, real-world facts the on-device model may not know."
+    let name = "web_search"
+    let description = "Search the web for current, real-world, or factual information that may be "
+        + "outside your knowledge (recent events, prices, specs, people, places, products). Only call "
+        + "this when external facts would materially improve the answer — skip it for greetings, "
+        + "opinions, writing/editing tasks, or things you already know."
+
+    /// Bridges the model's query to the app's connector-backed search; returns text to ground on.
+    let run: @Sendable (String) async -> String
 
     @Generable
     struct Arguments {
-        @Guide(description: "The search query")
+        @Guide(description: "A focused search query capturing what to look up.")
         var query: String
     }
 
     func call(arguments: Arguments) async throws -> String {
-        // Intentionally not implemented: returns a clear signal instead of making a network call.
-        // Implement against a chosen search backend in M6, behind an explicit user toggle.
-        Log.intelligence.notice("webSearch tool invoked (disabled): \(arguments.query, privacy: .public)")
-        return "Web search is disabled. Enable a search backend in Settings to use this."
+        Log.intelligence.notice("web_search tool called: \(arguments.query, privacy: .public)")
+        return await run(arguments.query)
     }
 }

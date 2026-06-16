@@ -59,6 +59,125 @@ struct OllamaProvider: IntelligenceProvider {
         return stream(messages: wire)
     }
 
+    // MARK: - Tool calling (industry-standard function calling)
+
+    /// Only tool-capable model families — passing `tools` to others makes Ollama error.
+    var supportsTools: Bool { OllamaModels.supportsTools(model) }
+
+    /// Wire `messages` as dictionaries (the tool path needs dynamic `tool_calls`, so it bypasses the
+    /// Codable `ChatRequest`). Adds the default system turn when none is present.
+    private func wireMessages(_ messages: [ChatTurn]) -> [[String: Any]] {
+        var wire: [[String: Any]] = []
+        if !messages.contains(where: { $0.role == .system }) {
+            wire.append(["role": "system", "content": Self.systemPrompt])
+        }
+        for turn in messages {
+            var msg: [String: Any] = ["role": turn.role.rawValue, "content": turn.text]
+            if let base64 = turn.imageBase64 { msg["images"] = [base64] }
+            wire.append(msg)
+        }
+        return wire
+    }
+
+    func respond(messages: [ChatTurn], tools: [ChatTool],
+                 execute: @escaping ToolExecutor) -> AsyncThrowingStream<String, Error> {
+        // Build the (non-Sendable) wire dictionaries *inside* the Task from the Sendable inputs, so
+        // nothing non-Sendable crosses the task boundary.
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    var wire = self.wireMessages(messages)
+                    let toolsWire: [[String: Any]] = tools.map {
+                        ["type": "function",
+                         "function": ["name": $0.name, "description": $0.description,
+                                      "parameters": $0.jsonSchema]]
+                    }
+                    for round in 0..<maxToolRounds {
+                        let offerTools = round < maxToolRounds - 1
+                        let result = try await self.streamChat(
+                            messages: wire, tools: offerTools ? toolsWire : [],
+                            continuation: continuation)
+                        guard !result.calls.isEmpty else { continuation.finish(); return }
+
+                        // Echo the assistant's tool_calls, then return a `tool` message per call.
+                        wire.append([
+                            "role": "assistant", "content": result.text,
+                            "tool_calls": result.calls.map {
+                                ["function": ["name": $0.name, "arguments": $0.argumentsObject]]
+                            },
+                        ])
+                        for call in result.calls {
+                            let output = await execute(
+                                ToolCall(id: call.name, name: call.name, argumentsJSON: call.argumentsJSON))
+                            wire.append(["role": "tool", "content": output])
+                        }
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Stream one `/api/chat` call: yield content deltas live and collect any `tool_calls` (Ollama
+    /// emits these as whole objects, not split across chunks). Returns content + assembled calls.
+    private func streamChat(messages: [[String: Any]], tools: [[String: Any]],
+                            continuation: AsyncThrowingStream<String, Error>.Continuation)
+        async throws -> (text: String, calls: [AssembledToolCall]) {
+        var bodyDict: [String: Any] = ["model": model, "stream": true, "messages": messages]
+        if !tools.isEmpty { bodyDict["tools"] = tools }
+        guard let body = try? JSONSerialization.data(withJSONObject: bodyDict) else {
+            throw IntelligenceError.server("Couldn't encode the request.")
+        }
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/chat"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw IntelligenceError.server(
+                "Ollama returned HTTP \(code). Is `ollama serve` running and is \(model) pulled?")
+        }
+
+        var text = ""
+        var calls: [AssembledToolCall] = []
+        for try await line in bytes.lines {
+            guard !line.isEmpty, let data = line.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            if let err = json["error"] as? String { throw IntelligenceError.server(err) }
+            if let message = json["message"] as? [String: Any] {
+                if let content = message["content"] as? String, !content.isEmpty {
+                    text += content; continuation.yield(content)
+                }
+                if let toolCalls = message["tool_calls"] as? [[String: Any]] {
+                    for tc in toolCalls {
+                        guard let fn = tc["function"] as? [String: Any],
+                              let name = fn["name"] as? String else { continue }
+                        let argsObject = fn["arguments"] as? [String: Any] ?? [:]
+                        let argsJSON = (try? JSONSerialization.data(withJSONObject: argsObject))
+                            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                        calls.append(AssembledToolCall(name: name, argumentsJSON: argsJSON,
+                                                       argumentsObject: argsObject))
+                    }
+                }
+            }
+            if json["done"] as? Bool == true { break }
+        }
+        return (text, calls)
+    }
+
+    struct AssembledToolCall {
+        var name = ""
+        var argumentsJSON = "{}"
+        var argumentsObject: [String: Any] = [:]
+    }
+
     private func stream(messages: [ChatRequest.Message]) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
