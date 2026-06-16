@@ -146,11 +146,18 @@ final class StatusHUD {
     func show(icon: String, text: String, spinner: Bool = false, persist: Double? = nil) {
         hideTask?.cancel()
         let hosting = NSHostingController(rootView: StatusHUDView(icon: icon, text: text, spinner: spinner))
-        hosting.sizingOptions = .preferredContentSize
+        // sizingOptions MUST be [] — any non-empty value makes the hosting view drive the window size,
+        // which recurses into layout on scaled displays and overflows the stack (this was the
+        // grammar-hotkey crash). Size the window once from fittingSize instead.
+        hosting.sizingOptions = []
 
         let panel = self.panel ?? makePanel()
         panel.contentViewController = hosting
         panel.layoutIfNeeded()
+        var size = hosting.view.fittingSize
+        if size.width < 60 { size.width = 220 }
+        if size.height < 28 { size.height = 44 }
+        panel.setContentSize(size)
         positionNearBottom(panel)
         panel.orderFrontRegardless()
         self.panel = panel

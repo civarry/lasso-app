@@ -37,6 +37,10 @@ final class LensPanelController: NSObject, NSWindowDelegate {
         panel.minSize = NSSize(width: 360, height: 360)
 
         let hosting = NSHostingController(rootView: LensResultView(image: image))
+        // [] so the hosting view never drives the window size (it fills via autoresizingMask and the
+        // window is user-resizable) — non-empty options can recurse into layout and crash on scaled
+        // displays.
+        hosting.sizingOptions = []
         hosting.view.frame = NSRect(origin: .zero, size: size)
         hosting.view.autoresizingMask = [.width, .height]
         panel.contentViewController = hosting
