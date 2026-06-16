@@ -25,11 +25,13 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         close()
 
         let hosting = NSHostingController(rootView: content)
-        // Do NOT use `.preferredContentSize`: its animated window auto-resize recurses into layout on
-        // scaled displays and overflows the stack (EXC_BAD_ACCESS, excessive recursion — crashed on
-        // some Macs, not others, purely by display geometry). `.intrinsicContentSize` lets the view
-        // report its ideal size *without* driving window resizes; we size the window once below.
-        hosting.sizingOptions = [.intrinsicContentSize]
+        // sizingOptions MUST be empty. Any non-empty option (.preferredContentSize AND
+        // .intrinsicContentSize) makes NSHostingView push the content size onto the window, whose
+        // relayout pushes back onto the content — an infinite windowDidLayout ↔ updateAnimatedWindowSize
+        // recursion that overflows the stack on scaled displays (crashes on some Macs, not others, by
+        // display geometry). With [] the view never drives the window; we size it once, below, from
+        // `fittingSize` (which still reports the SwiftUI ideal). Same approach as the Chat panel.
+        hosting.sizingOptions = []
 
         let panel = FloatingPanel(
             contentRect: NSRect(x: 0, y: 0, width: 480, height: 200),
