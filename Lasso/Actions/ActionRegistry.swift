@@ -14,6 +14,7 @@ final class ActionRegistry {
         let registry = ActionRegistry()
         registry.register(OCRCopyAction())
         registry.register(TranslateAction())
+        registry.register(GrammarFixAction(intelligence: intelligence))
         registry.register(SummarizeAction(intelligence: intelligence))
         registry.register(AskAIAction(intelligence: intelligence))
         registry.register(QRAction())

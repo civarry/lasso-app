@@ -44,6 +44,12 @@ final class TriggerService {
             guard Self.lensAllowed else { return }
             CaptureCoordinator.shared.beginFullScreen(actionID: "lens.search")
         }
+
+        // Fix grammar on the highlighted text, in place (reads the selection via ⌘C, pastes the
+        // correction back) — no screenshot/OCR, no action bar.
+        KeyboardShortcuts.onKeyUp(for: .grammarSelection) {
+            GrammarFixService.shared.run()
+        }
     }
 
     private static var lensAllowed: Bool {
@@ -59,4 +65,5 @@ extension KeyboardShortcuts.Name {
     static let identifyFullScreen = Self("identifyFullScreen")
     static let lensSelection = Self("lensSelection")
     static let lensFullScreen = Self("lensFullScreen")
+    static let grammarSelection = Self("grammarSelection")
 }

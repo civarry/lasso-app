@@ -143,6 +143,9 @@ struct SettingsView: View {
             Section("Shortcuts") {
                 KeyboardShortcuts.Recorder("Capture", name: .capture)
                 KeyboardShortcuts.Recorder("Chat", name: .chat)
+                // Single-mode direct action (runs on a selection) — sits with the other single-key
+                // rows rather than the two-column grid below.
+                KeyboardShortcuts.Recorder("Fix grammar", name: .grammarSelection)
 
                 LabeledContent("") {
                     HStack(spacing: directRecorderGap) {
@@ -164,8 +167,9 @@ struct SettingsView: View {
                         }
                     }
                 }
-                caption("Identify and Google Lens can also run straight from a hotkey, skipping the "
-                    + "toolbar — Selection lets you drag a box first; Full screen grabs the whole display. "
+                caption("Fix grammar, Identify, and Google Lens run straight from a hotkey, skipping "
+                    + "the toolbar. For the two-column ones, Selection lets you drag a box first while "
+                    + "Full screen grabs the whole display; Fix grammar always runs on a selection. "
                     + "Turn on Google Lens in Privacy to assign its shortcuts.")
             }
             Section("Startup") {

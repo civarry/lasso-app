@@ -34,12 +34,19 @@ final class ChatController {
     private(set) var imageInputAvailable = false
     /// Whether any web / reverse-image connector is configured (drives the globe toggle's visibility).
     private(set) var webConnectorsAvailable = false
-    /// User-facing toggle: ground answers with web/connector evidence. Defaults on when available.
-    var webSearchOn = true
+    /// User-facing toggle: ground answers with web/connector evidence. Persisted across launches and
+    /// **defaults off** — the user opts in by tapping the globe, and that choice sticks until changed.
+    var webSearchOn: Bool {
+        didSet { UserDefaults.standard.set(webSearchOn, forKey: Self.webSearchKey) }
+    }
+    private static let webSearchKey = "chat.webSearchOn"
 
     private var streamTask: Task<Void, Never>?
 
-    private init() {}
+    private init() {
+        // Default off; restore the user's last choice if they ever set it.
+        webSearchOn = UserDefaults.standard.object(forKey: Self.webSearchKey) as? Bool ?? false
+    }
 
     private static let systemPrompt = """
     You are Lasso's assistant — a helpful, concise chat companion living in the user's menu bar. \
