@@ -25,7 +25,11 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         close()
 
         let hosting = NSHostingController(rootView: content)
-        hosting.sizingOptions = .preferredContentSize
+        // Do NOT use `.preferredContentSize`: its animated window auto-resize recurses into layout on
+        // scaled displays and overflows the stack (EXC_BAD_ACCESS, excessive recursion — crashed on
+        // some Macs, not others, purely by display geometry). `.intrinsicContentSize` lets the view
+        // report its ideal size *without* driving window resizes; we size the window once below.
+        hosting.sizingOptions = [.intrinsicContentSize]
 
         let panel = FloatingPanel(
             contentRect: NSRect(x: 0, y: 0, width: 480, height: 200),
@@ -43,10 +47,14 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         panel.layoutIfNeeded()
-        let size = panel.frame.size
+        // Measure the content's ideal size once and set the frame a single time — the window never
+        // resizes itself afterwards, so it can't enter the layout-resize recursion.
+        var size = hosting.view.fittingSize
+        if size.width < 100 { size.width = 480 }
+        size.height = min(max(size.height, 140), 760)
         let origin = origin(for: size, anchor: anchor)
         topLeft = NSPoint(x: origin.x, y: origin.y + size.height)
-        panel.setFrameOrigin(origin)
+        panel.setFrame(NSRect(origin: origin, size: size), display: false)
 
         // Activate so text fields (Ask AI) receive keystrokes; the panel still floats and persists.
         NSApp.activate(ignoringOtherApps: true)
