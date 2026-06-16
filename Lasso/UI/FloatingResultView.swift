@@ -66,15 +66,12 @@ struct FloatingResultView: View {
     }
 
     private func scrollText(_ text: String) -> some View {
-        // Fixed-height scroll area. The result window is sized ONCE when it opens and never
-        // auto-resizes (see FloatingPanelController) — the auto-resize was recursing into layout and
-        // crashing on scaled displays — so the text reserves a stable area and scrolls internally.
         ScrollView {
             MarkdownView(text: text, fontSize: resultTextBaseSize * textScale)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(height: 280)
+        .frame(minHeight: 60, maxHeight: 340)
     }
 
     private var showsTextControls: Bool {

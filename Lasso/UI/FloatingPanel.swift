@@ -24,13 +24,15 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     func present(_ content: AnyView, anchor: CGRect?) {
         close()
 
-        let hosting = NSHostingController(rootView: content)
-        // sizingOptions MUST be empty. Any non-empty option (.preferredContentSize AND
-        // .intrinsicContentSize) makes NSHostingView push the content size onto the window, whose
-        // relayout pushes back onto the content — an infinite windowDidLayout ↔ updateAnimatedWindowSize
-        // recursion that overflows the stack on scaled displays (crashes on some Macs, not others, by
-        // display geometry). With [] the view never drives the window; we size it once, below, from
-        // `fittingSize` (which still reports the SwiftUI ideal). Same approach as the Chat panel.
+        // Crash-safe auto-grow. SwiftUI must NOT drive the window (sizingOptions = []) — its animated
+        // auto-resize recurses into layout and overflows the stack on scaled displays. Instead the
+        // content reports its ideal size and *we* resize the window (see `resize(toContent:)`):
+        // asynchronously, rounded to whole points, past a 1pt threshold — so the card still grows with
+        // streaming / expanding content (Ask AI, Identify) but can never recurse.
+        let root = SelfSizingContent(content: content) { [weak self] ideal in
+            self?.resize(toContent: ideal)
+        }
+        let hosting = NSHostingController(rootView: AnyView(root))
         hosting.sizingOptions = []
 
         let panel = FloatingPanel(
@@ -49,11 +51,10 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         panel.layoutIfNeeded()
-        // Measure the content's ideal size once and set the frame a single time — the window never
-        // resizes itself afterwards, so it can't enter the layout-resize recursion.
+        // Initial size from the content's ideal; growth afterwards comes via `resize(toContent:)`.
         var size = hosting.view.fittingSize
         if size.width < 100 { size.width = 480 }
-        size.height = min(max(size.height, 140), 760)
+        size.height = min(max(size.height, 140), 900)
         let origin = origin(for: size, anchor: anchor)
         topLeft = NSPoint(x: origin.x, y: origin.y + size.height)
         panel.setFrame(NSRect(origin: origin, size: size), display: false)
@@ -62,6 +63,24 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         self.panel = panel
+    }
+
+    /// Resize to the content's ideal size, keeping the top-left fixed. Async + integer + 1pt threshold:
+    /// async means each resize is its own runloop turn (no synchronous recursion → no stack overflow),
+    /// and integer rounding + threshold absorb the sub-pixel jitter that caused the infinite loop.
+    private func resize(toContent ideal: CGSize) {
+        let w = min(max(ideal.width.rounded(), 120), 1000)
+        let h = min(max(ideal.height.rounded(), 80), 900)
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let panel = self.panel else { return }
+            let current = panel.frame.size
+            guard abs(current.width - w) > 1 || abs(current.height - h) > 1 else { return }
+            var frame = NSRect(x: self.topLeft.x, y: self.topLeft.y - h, width: w, height: h)
+            if let visible = panel.screen?.visibleFrame, frame.origin.y < visible.minY + 8 {
+                frame.origin.y = visible.minY + 8
+            }
+            panel.setFrame(frame, display: true)
+        }
     }
 
     func close() {
@@ -106,5 +125,20 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
             }
         }
         return NSPoint(x: x, y: y)
+    }
+}
+
+/// Wraps a result view so it reports its *ideal* size (independent of the window) to the controller,
+/// which resizes the window to match. `fixedSize(vertical:)` makes the content express its full ideal
+/// height regardless of the current window height, so the measurement never depends on — and so never
+/// feeds back into — the window size.
+private struct SelfSizingContent: View {
+    let content: AnyView
+    let onIdealSize: (CGSize) -> Void
+
+    var body: some View {
+        content
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { onIdealSize($0) }
     }
 }

@@ -54,26 +54,21 @@ private struct AskAIView: View {
                     Spacer()
                     TextScaleControls(scale: $textScale)
                 }
-            }
-            // Always reserve the answer area (flexible height within the card's fixed height below).
-            // The result window is sized once when it opens and never auto-resizes — auto-resizing
-            // recursed into layout and crashed on scaled displays — so reserving this space is what
-            // lets a streamed answer show instead of being clipped to nothing.
-            ScrollView {
-                Group {
-                    if !answer.isEmpty {
-                        MarkdownView(text: answer, fontSize: resultTextBaseSize * textScale)
-                    } else {
-                        Text(isStreaming ? (status.isEmpty ? "…" : status)
-                                         : "Ask a question about your selection.")
-                            .font(.system(size: resultTextBaseSize * textScale))
-                            .foregroundStyle(.secondary)
+                ScrollView {
+                    Group {
+                        if answer.isEmpty {
+                            Text(status.isEmpty ? "…" : status)
+                                .font(.system(size: resultTextBaseSize * textScale))
+                                .foregroundStyle(.secondary)
+                        } else {
+                            MarkdownView(text: answer, fontSize: resultTextBaseSize * textScale)
+                        }
                     }
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxHeight: 240)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
             if !answer.isEmpty, !isStreaming {
                 Button {
                     ChatPanelController.shared.continueInChat(
@@ -95,9 +90,7 @@ private struct AskAIView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        // Fixed height so the card is a STABLE size — the result window is sized once and never
-        // auto-resizes, so a stable content size is what keeps the answer visible.
-        .frame(maxWidth: .infinity, minHeight: 300, maxHeight: 300, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {
             // Focus the field so the user can type immediately. Deferred so the view is in the
             // window's responder chain first.
