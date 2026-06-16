@@ -12,6 +12,8 @@ struct FloatingResultView: View {
     @State private var isStreaming = false
     @State private var streamError: String?
     @State private var task: Task<Void, Never>?
+    /// Measured content height, used to give the scroll area a *concrete* height (see `scrollText`).
+    @State private var measuredTextHeight: CGFloat = 60
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -66,12 +68,19 @@ struct FloatingResultView: View {
     }
 
     private func scrollText(_ text: String) -> some View {
-        ScrollView {
+        // Give the scroll area a *concrete, integer* height (measured content, clamped) rather than a
+        // ScrollView's flexible ideal. A flexible ideal makes the auto-sizing result window oscillate
+        // by sub-pixels under fractional display scaling, recursing until the stack overflows
+        // (EXC_BAD_ACCESS / excessive recursion). A definite height makes the window's fitting size
+        // settle in one pass.
+        let height = min(max(measuredTextHeight, 60), 340).rounded(.up)
+        return ScrollView {
             MarkdownView(text: text, fontSize: resultTextBaseSize * textScale)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { measuredTextHeight = $0 }
         }
-        .frame(minHeight: 60, maxHeight: 340)
+        .frame(height: height)
     }
 
     private var showsTextControls: Bool {
