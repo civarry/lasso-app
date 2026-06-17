@@ -49,6 +49,10 @@ struct SettingsView: View {
         var lensSearch = false
         var pretranslate = true
         var launchAtLogin = false
+        // Appearance — staged like everything else so changing them flips "Unsaved changes" and
+        // applies on Save & Apply (not instantly), for a consistent Settings experience.
+        var actionBarStyle = ActionBarStyle.compact.rawValue
+        var hideUnavailable = false
     }
 
     private enum Tab: Hashable { case general, intelligence, connectors, about }
@@ -82,8 +86,11 @@ struct SettingsView: View {
     @State private var mlxStalled = false
 
     enum MLXDownloadState: Equatable { case idle, downloading, ready, failed(String) }
-    @AppStorage("ui.actionBarStyle") private var actionBarStyle = ActionBarStyle.compact.rawValue
-    @AppStorage("ui.actionBarHideUnavailable") private var hideUnavailable = false
+
+    // Appearance prefs are staged in `draft` (not bound to @AppStorage here) so they apply on
+    // Save & Apply like the rest. The keys they persist to:
+    private static let actionBarStyleKey = "ui.actionBarStyle"
+    private static let hideUnavailableKey = "ui.actionBarHideUnavailable"
 
     /// Fixed width + gap for the direct-shortcut recorders so the Selection / Full screen columns line
     /// up with their headers (the recorders are flexible-width otherwise).
@@ -176,13 +183,13 @@ struct SettingsView: View {
                 Toggle("Launch at login", isOn: $draft.launchAtLogin)
             }
             Section("Appearance") {
-                Picker("Action bar", selection: $actionBarStyle) {
+                Picker("Toolbar", selection: $draft.actionBarStyle) {
                     ForEach(ActionBarStyle.allCases) { Text($0.label).tag($0.rawValue) }
                 }
                 .pickerStyle(.segmented)
-                caption("Compact: icons only · Cozy: icons with names.")
-                Toggle("Auto-hide unavailable actions", isOn: $hideUnavailable)
-                caption("Off: greyed out in place.")
+                caption("Compact shows icons only; Comfortable shows icons with names.")
+                Toggle("Hide unavailable actions", isOn: $draft.hideUnavailable)
+                caption("When off, unavailable actions stay visible but greyed out.")
             }
             Section("Privacy") {
                 Toggle("Local-only mode", isOn: $draft.localOnly)
@@ -206,7 +213,7 @@ struct SettingsView: View {
     private var intelligenceTab: some View {
         Form {
             Section("Language model") {
-                Picker("Engine", selection: $draft.provider) {
+                Picker("Model", selection: $draft.provider) {
                     ForEach(availableProviders) { Text($0.label).tag($0) }
                 }
                 providerConfig
@@ -214,8 +221,8 @@ struct SettingsView: View {
                 caption(privacyLine)
             }
 
-            Section("Image (Identify)") {
-                Picker("Provider", selection: $draft.visionEngine) {
+            Section("Image model") {
+                Picker("Model", selection: $draft.visionEngine) {
                     ForEach(availableVisionEngines) { Text($0.label).tag($0) }
                 }
                 visionProviderConfig
@@ -284,7 +291,7 @@ struct SettingsView: View {
 
             Section {
                 Label("Connectors power both Identify and Chat. Identify reads the image with a vision "
-                      + "model first, so it needs one set up under Intelligence ▸ Image (install Ollama "
+                      + "model first, so it needs one set up under Intelligence ▸ Image model (install Ollama "
                       + "or add a cloud image model); Chat grounds answers from your question.",
                       systemImage: "eye")
                     .font(.caption).foregroundStyle(.secondary)
@@ -384,7 +391,7 @@ struct SettingsView: View {
         case .matchText:
             EmptyView()
         case .ollama:
-            modelPicker("Vision model", selection: $draft.visionModel)
+            modelPicker("Model", selection: $draft.visionModel)
         case .mlx:
             MLXModelManager(modelID: $draft.visionMLXModel, suggestions: Self.mlxVisionSuggestions,
                             defaultID: MLXVisionProvider.defaultModelID, localOnly: draft.localOnly)
@@ -402,7 +409,7 @@ struct SettingsView: View {
             cloudModelPicker(selection: openAIVisionModelField(draft.visionOpenAIService), models: visionOpenAIModels) {
                 await loadVisionModels(); return !visionOpenAIModels.isEmpty
             }
-            caption("Shares the API key with your Text provider for the same service.")
+            caption("Shares the API key with your language model for the same service.")
         case .anthropic:
             SecureKeyField("API key", text: $draft.visionAnthropicKey)
             cloudModelPicker(selection: $draft.visionAnthropicModel, models: visionAnthropicModels) {
@@ -631,7 +638,7 @@ struct SettingsView: View {
             case .mlx:
                 return MLXProvider.isVision(draft.mlxModel)
                     ? "Your MLX model is a vision-language model, so it handles images too — one local model for both."
-                    : "Your MLX language model can't see images — pick a VL model above, or choose a dedicated image provider below."
+                    : "Your MLX language model can’t see images — pick a vision-language model above, or choose a dedicated image provider below."
             case .openAICompatible:
                 return "Images go to your \(serviceName(draft.openAIBaseURL)) language model — it must be "
                     + "multimodal. Otherwise pick a dedicated image provider below."
@@ -1054,6 +1061,9 @@ struct SettingsView: View {
         d.lensSearch = UserDefaults.standard.bool(forKey: LensSearchAction.enabledKey)
         d.pretranslate = UserDefaults.standard.object(forKey: "translation.pretranslate") as? Bool ?? true
         d.launchAtLogin = LoginItem.isEnabled
+        d.actionBarStyle = UserDefaults.standard.string(forKey: Self.actionBarStyleKey)
+            ?? ActionBarStyle.compact.rawValue
+        d.hideUnavailable = UserDefaults.standard.bool(forKey: Self.hideUnavailableKey)
         // Heal an inconsistent saved state (local-only + a cloud engine / cloud image provider).
         if d.localOnly, !d.provider.isLocalKind { d.provider = .onDevice }
         if d.localOnly, d.visionEngine == .openAICompatible || d.visionEngine == .anthropic {
@@ -1118,6 +1128,8 @@ struct SettingsView: View {
         UserDefaults.standard.set(draft.localOnly, forKey: "privacy.localOnly")
         UserDefaults.standard.set(draft.lensSearch, forKey: LensSearchAction.enabledKey)
         UserDefaults.standard.set(draft.pretranslate, forKey: "translation.pretranslate")
+        UserDefaults.standard.set(draft.actionBarStyle, forKey: Self.actionBarStyleKey)
+        UserDefaults.standard.set(draft.hideUnavailable, forKey: Self.hideUnavailableKey)
         if draft.launchAtLogin != saved.launchAtLogin { LoginItem.set(draft.launchAtLogin) }
         Task { await intelligence.refreshVisionAvailability() }   // re-grey vision features as needed
         saved = draft

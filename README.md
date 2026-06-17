@@ -31,14 +31,15 @@ alt-tab away, open a link, and come back to them.
 
 ## Chat
 
-A persistent chat panel lives in the top-right corner (**⌥⌘A** to toggle). It's multi-turn, you can
+A persistent chat panel lives in the top-right corner (**⌃⇧A** to toggle). It's multi-turn, you can
 drop an image straight into it, and you can send a capture into it to keep asking questions. When you
 turn on web connectors, it grounds its answers with real sources.
 
 ## Shortcuts
 
-- **Capture** — **⌥⌘Space** (changeable in Settings).
-- **Chat** — **⌥⌘A**.
+- **Capture** — **⌃⇧C** (changeable in Settings).
+- **Chat** — **⌃⇧A**.
+- **Fix grammar** — **⌃⇧G** (runs on a selection).
 - **Direct shortcuts** — assign your own hotkeys to run **Identify** or **Google Lens** instantly,
   skipping the toolbar. Each has a *Selection* variant (drag a box first) and a *Full screen* variant
   (grabs the whole display) — like Google Lens's "Search Specific Area" / "Full Screen Search".
@@ -65,7 +66,7 @@ API keys are stored in the macOS **Keychain**, not in a plist.
 4. Lasso asks for **Screen Recording** permission (it needs to see the screen to capture it). Grant it
    in System Settings → Privacy & Security, then relaunch.
 
-The capture shortcut defaults to **⌥⌘Space** and is changeable in Settings.
+The capture shortcut defaults to **⌃⇧C** and is changeable in Settings.
 
 ## AI providers
 

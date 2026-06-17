@@ -14,7 +14,7 @@ struct IdentifyAction: CaptureAction {
     func isRelevant(to ctx: CaptureContext) -> Bool { true }
     func disabledReason(for ctx: CaptureContext, visionAvailable: Bool) -> String? {
         visionAvailable ? nil
-            : "Identify needs a vision model — install Ollama or add a cloud image model in Settings ▸ Intelligence ▸ Image."
+            : "Identify needs a vision model — install Ollama or add a cloud image model in Settings ▸ Intelligence ▸ Image model."
     }
 
     func perform(_ ctx: CaptureContext) async throws -> ActionResult {

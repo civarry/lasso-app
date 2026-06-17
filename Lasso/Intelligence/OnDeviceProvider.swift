@@ -125,13 +125,13 @@ struct OnDeviceProvider: IntelligenceProvider {
             || description.contains("safety") {
             return IntelligenceError.server(
                 "Apple's on-device model declined this content (its built-in safety filter — the "
-                + "content may be fine). Switch the engine to Ollama or a cloud model in Settings → "
+                + "content may be fine). Switch the model to Ollama or a cloud model in Settings ▸ "
                 + "Intelligence for fewer restrictions.")
         }
         if description.contains("context") && description.contains("exceed") {
             return IntelligenceError.server(
                 "The selection is too large for Apple's on-device model. Try a smaller selection, or "
-                + "switch the engine in Settings → Intelligence.")
+                + "switch the model in Settings ▸ Intelligence.")
         }
         return error
     }

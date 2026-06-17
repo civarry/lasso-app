@@ -5,7 +5,7 @@ import SwiftUI
 enum ActionBarStyle: String, CaseIterable, Identifiable {
     case compact, labeled
     var id: String { rawValue }
-    var label: String { self == .compact ? "Compact" : "Cozy" }
+    var label: String { self == .compact ? "Compact" : "Comfortable" }
 }
 
 /// Floating pill bar anchored near the selection. Renders relevant `CaptureAction`s plus

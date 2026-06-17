@@ -239,7 +239,7 @@ struct MLXVisionProvider: VisionProvider {
     func describe(_ image: CGImage, prompt: String) async throws -> String {
         guard MLXProvider.isDownloaded(modelID) else {
             throw IntelligenceError.unavailable(
-                "Download the MLX vision model first in Settings ▸ Intelligence ▸ Image.")
+                "Download the MLX vision model first in Settings ▸ Intelligence ▸ Image model.")
         }
         let container = try await MLXModelCache.shared.container(for: modelID)
         let session = ChatSession(

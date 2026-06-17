@@ -338,7 +338,7 @@ final class CaptureCoordinator {
         alert.messageText = "Screen Recording permission needed"
         alert.informativeText = """
         Lasso needs Screen Recording access to capture your screen. \
-        Enable it in System Settings → Privacy & Security → Screen Recording, then try again.
+        Enable it in System Settings ▸ Privacy & Security ▸ Screen Recording, then try again.
         """
         alert.addButton(withTitle: "Open Settings")
         alert.addButton(withTitle: "Cancel")

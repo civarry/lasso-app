@@ -395,10 +395,10 @@ struct IdentifyView: View {
             } else if intelligence.effectivePreferred.isLocalKind,
                await !OllamaEndpoint.isReachable(OllamaEndpoint.baseURL) {
                 synthError = "Ollama isn't running. Open the Ollama app (or set its server URL under "
-                    + "Settings → Intelligence), then try again."
+                    + "Settings ▸ Intelligence), then try again."
             } else {
-                synthError = "No image model is available. Choose one under Settings → Intelligence → "
-                    + "Image (e.g. Ollama (local) or a multimodal cloud model), or enable a source "
+                synthError = "No image model is available. Choose one under Settings ▸ Intelligence ▸ "
+                    + "Image model (e.g. Ollama (local) or a multimodal cloud model), or enable a source "
                     + "(Web search / Reverse image) in Connectors."
             }
             return

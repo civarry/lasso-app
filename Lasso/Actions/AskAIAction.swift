@@ -18,7 +18,7 @@ struct AskAIAction: CaptureAction {
     func disabledReason(for ctx: CaptureContext, visionAvailable: Bool) -> String? {
         let hasText = (ctx.ocrText ?? "").isEmpty == false
         return (hasText || visionAvailable) ? nil
-            : "Ask AI needs text in the selection, or a vision model for image questions (Settings ▸ Intelligence ▸ Image)."
+            : "Ask AI needs text in the selection, or a vision model for image questions (Settings ▸ Intelligence ▸ Image model)."
     }
 
     func perform(_ ctx: CaptureContext) async throws -> ActionResult {

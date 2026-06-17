@@ -414,7 +414,7 @@ final class ChatController {
                     """
                 } else if vision == nil {
                     finishError(assistantID,
-                        "No image model is set. Choose one under Settings ▸ Intelligence ▸ Image "
+                        "No image model is set. Choose one under Settings ▸ Intelligence ▸ Image model "
                         + "(a local Ollama vision model, or a multimodal cloud model) to chat about images.")
                     return
                 } else if let describeError {
@@ -422,12 +422,12 @@ final class ChatController {
                     finishError(assistantID,
                         "The image model (\(label)) couldn't read this image: "
                         + "\(describeError.localizedDescription) It may be slow, rate-limited, or "
-                        + "offline — try again, or switch image models in Settings ▸ Intelligence ▸ Image.")
+                        + "offline — try again, or switch image models in Settings ▸ Intelligence ▸ Image model.")
                     return
                 } else {
                     finishError(assistantID,
                         "The image model (\(label)) returned no description. Try again, or switch "
-                        + "models in Settings ▸ Intelligence ▸ Image.")
+                        + "models in Settings ▸ Intelligence ▸ Image model.")
                     return
                 }
             }

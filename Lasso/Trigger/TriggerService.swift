@@ -58,12 +58,12 @@ final class TriggerService {
 }
 
 extension KeyboardShortcuts.Name {
-    static let capture = Self("capture", default: .init(.space, modifiers: [.option, .command]))
+    static let capture = Self("capture", default: .init(.c, modifiers: [.control, .shift]))
     static let cancelCapture = Self("cancelCapture", default: .init(.escape))
-    static let chat = Self("chat", default: .init(.a, modifiers: [.option, .command]))
-    static let identifySelection = Self("identifySelection")
-    static let identifyFullScreen = Self("identifyFullScreen")
-    static let lensSelection = Self("lensSelection")
-    static let lensFullScreen = Self("lensFullScreen")
-    static let grammarSelection = Self("grammarSelection")
+    static let chat = Self("chat", default: .init(.a, modifiers: [.control, .shift]))
+    static let identifySelection = Self("identifySelection")            // no default — user assigns
+    static let identifyFullScreen = Self("identifyFullScreen")          // no default — user assigns
+    static let lensSelection = Self("lensSelection")                    // no default — user assigns
+    static let lensFullScreen = Self("lensFullScreen")                  // no default — user assigns
+    static let grammarSelection = Self("grammarSelection", default: .init(.g, modifiers: [.control, .shift]))
 }
