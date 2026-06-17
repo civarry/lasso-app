@@ -15,6 +15,7 @@ struct ActionBar: View {
     @Bindable var coordinator: CaptureCoordinator
     @AppStorage("ui.actionBarStyle") private var styleRaw = ActionBarStyle.compact.rawValue
     @AppStorage("ui.actionBarHideUnavailable") private var hideUnavailable = false
+    @AppStorage("ui.actionBarColorful") private var colorful = false
     private var style: ActionBarStyle { ActionBarStyle(rawValue: styleRaw) ?? .compact }
 
     /// Max labeled pills shown inline before the rest collapse into "More" (Comfortable only). Keeps
@@ -41,7 +42,9 @@ struct ActionBar: View {
                             }
                             ActionPill(title: item.title, systemImage: item.systemImage, style: style,
                                        index: idx, disabled: item.disabled, help: item.help,
-                                       isPrimary: item.id == primaryID, action: item.run)
+                                       isPrimary: item.id == primaryID,
+                                       tint: colorful ? Self.tint(for: item.id) : nil,
+                                       action: item.run)
                         }
                         if !overflow.isEmpty {
                             Divider().frame(height: 18)
@@ -80,6 +83,24 @@ struct ActionBar: View {
     /// Mirrors the `relevancePriority` ranges used across the action set.
     fileprivate static func band(_ priority: Int) -> Int {
         priority < 16 ? 0 : (priority < 50 ? 1 : 2)
+    }
+
+    /// Per-action color for the optional "Color-code actions" mode — a distinct hue per feature so
+    /// they're easy to recognize. Applied as a glass tint, not a solid fill (keeps the aesthetic).
+    fileprivate static func tint(for id: String) -> Color {
+        switch id {
+        case "ocr.copy":       return .blue
+        case "translate":      return .green
+        case "identify":       return .purple
+        case "lens.search":    return .pink
+        case "qr.open":        return .teal
+        case "ai.grammar":     return .orange
+        case "ai.summarize":   return .yellow
+        case "ai.ask":         return .indigo
+        case "color.pick":     return .cyan
+        case "builtin.copyImage", "builtin.saveImage": return .gray
+        default:               return .accentColor
+        }
     }
 
     /// The full ordered set of bar entries: relevant actions (already priority-sorted) + the built-in
@@ -123,13 +144,20 @@ private struct ActionPill: View {
     var disabled: Bool = false
     var help: String? = nil
     var isPrimary: Bool = false
+    var tint: Color? = nil
     let action: () -> Void
     @State private var hovering = false
     @State private var shown = false
 
-    /// Primary action gets an accent tint (the obvious target); others are neutral; disabled is flat.
+    /// Glass fill: a per-action color when "Color-code actions" is on, else an accent tint for the
+    /// primary action and neutral for the rest. Disabled stays flat. Translucent throughout so the
+    /// pill reads as colored glass, not a solid button.
     private var fill: AnyShapeStyle {
         if disabled { return AnyShapeStyle(.white.opacity(0.10)) }
+        if let tint {
+            return AnyShapeStyle(tint.opacity(hovering ? (isPrimary ? 0.52 : 0.40)
+                                                       : (isPrimary ? 0.40 : 0.26)))
+        }
         if isPrimary { return AnyShapeStyle(Color.accentColor.opacity(hovering ? 0.32 : 0.22)) }
         return AnyShapeStyle(.white.opacity(hovering ? 0.20 : 0.10))
     }

@@ -4,7 +4,7 @@ import SwiftUI
 struct TranslateAction: CaptureAction {
     let id = "translate"
     let title = "Translate"
-    let systemImage = "character.bubble"
+    let systemImage = "translate"
     let relevancePriority = 20
 
     func isRelevant(to ctx: CaptureContext) -> Bool { true }

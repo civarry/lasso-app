@@ -53,6 +53,7 @@ struct SettingsView: View {
         // applies on Save & Apply (not instantly), for a consistent Settings experience.
         var actionBarStyle = ActionBarStyle.compact.rawValue
         var hideUnavailable = false
+        var colorfulActions = false
     }
 
     private enum Tab: Hashable { case general, intelligence, connectors, about }
@@ -91,6 +92,7 @@ struct SettingsView: View {
     // Save & Apply like the rest. The keys they persist to:
     private static let actionBarStyleKey = "ui.actionBarStyle"
     private static let hideUnavailableKey = "ui.actionBarHideUnavailable"
+    private static let colorfulKey = "ui.actionBarColorful"
 
     /// Fixed width + gap for the direct-shortcut recorders so the Selection / Full screen columns line
     /// up with their headers (the recorders are flexible-width otherwise).
@@ -190,6 +192,9 @@ struct SettingsView: View {
                 caption("Compact shows icons only; Comfortable shows icons with names.")
                 Toggle("Hide unavailable actions", isOn: $draft.hideUnavailable)
                 caption("When off, unavailable actions stay visible but greyed out.")
+                Toggle("Color-code actions", isOn: $draft.colorfulActions)
+                caption("Tints each toolbar action a distinct color so features are easier to "
+                    + "recognize. Off by default.")
             }
             Section("Privacy") {
                 Toggle("Local-only mode", isOn: $draft.localOnly)
@@ -1064,6 +1069,7 @@ struct SettingsView: View {
         d.actionBarStyle = UserDefaults.standard.string(forKey: Self.actionBarStyleKey)
             ?? ActionBarStyle.compact.rawValue
         d.hideUnavailable = UserDefaults.standard.bool(forKey: Self.hideUnavailableKey)
+        d.colorfulActions = UserDefaults.standard.bool(forKey: Self.colorfulKey)
         // Heal an inconsistent saved state (local-only + a cloud engine / cloud image provider).
         if d.localOnly, !d.provider.isLocalKind { d.provider = .onDevice }
         if d.localOnly, d.visionEngine == .openAICompatible || d.visionEngine == .anthropic {
@@ -1130,6 +1136,7 @@ struct SettingsView: View {
         UserDefaults.standard.set(draft.pretranslate, forKey: "translation.pretranslate")
         UserDefaults.standard.set(draft.actionBarStyle, forKey: Self.actionBarStyleKey)
         UserDefaults.standard.set(draft.hideUnavailable, forKey: Self.hideUnavailableKey)
+        UserDefaults.standard.set(draft.colorfulActions, forKey: Self.colorfulKey)
         if draft.launchAtLogin != saved.launchAtLogin { LoginItem.set(draft.launchAtLogin) }
         Task { await intelligence.refreshVisionAvailability() }   // re-grey vision features as needed
         saved = draft

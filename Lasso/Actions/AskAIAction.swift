@@ -10,7 +10,7 @@ struct AskAIAction: CaptureAction {
 
     let id = "ai.ask"
     let title = "Ask AI"
-    let systemImage = "bubble.left.and.text.bubble.right"
+    let systemImage = "bubble.left.and.bubble.right"
     let relevancePriority = 40
 
     func isRelevant(to ctx: CaptureContext) -> Bool { true }

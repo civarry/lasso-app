@@ -6,7 +6,7 @@ struct SummarizeAction: CaptureAction {
 
     let id = "ai.summarize"
     let title = "Summarize"
-    let systemImage = "sparkles"
+    let systemImage = "text.line.3.summary"
     let relevancePriority = 30
 
     func isRelevant(to ctx: CaptureContext) -> Bool { true }
