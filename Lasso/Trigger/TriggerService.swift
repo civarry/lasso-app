@@ -45,7 +45,7 @@ final class TriggerService {
             CaptureCoordinator.shared.beginFullScreen(actionID: "lens.search")
         }
 
-        // Fix grammar on the highlighted text, in place (reads the selection via ⌘C, pastes the
+        // Proofread the highlighted text, in place (reads the selection via ⌘C, pastes the
         // correction back) — no screenshot/OCR, no action bar.
         KeyboardShortcuts.onKeyUp(for: .grammarSelection) {
             GrammarFixService.shared.run()

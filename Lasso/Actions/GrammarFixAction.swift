@@ -7,7 +7,7 @@ struct GrammarFixAction: CaptureAction {
     let intelligence: IntelligenceCoordinator
 
     let id = "ai.grammar"
-    let title = "Fix grammar"
+    let title = "Proofread"
     let systemImage = "text.badge.checkmark"
     let relevancePriority = 25
 

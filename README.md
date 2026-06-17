@@ -39,7 +39,7 @@ turn on web connectors, it grounds its answers with real sources.
 
 - **Capture** — **⌃⇧C** (changeable in Settings).
 - **Chat** — **⌃⇧A**.
-- **Fix grammar** — **⌃⇧G** (runs on a selection).
+- **Proofread** — **⌃⇧G** (runs on a selection).
 - **Direct shortcuts** — assign your own hotkeys to run **Identify** or **Google Lens** instantly,
   skipping the toolbar. Each has a *Selection* variant (drag a box first) and a *Full screen* variant
   (grabs the whole display) — like Google Lens's "Search Specific Area" / "Full Screen Search".

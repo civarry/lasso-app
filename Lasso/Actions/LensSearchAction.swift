@@ -8,7 +8,7 @@ import SwiftUI
 /// user enables it in Settings ▸ General ▸ Privacy.
 struct LensSearchAction: CaptureAction {
     let id = "lens.search"
-    let title = "Google Lens"
+    let title = "Lens"
     let systemImage = "photo.badge.magnifyingglass"
     let relevancePriority = 13
 

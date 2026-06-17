@@ -15,7 +15,7 @@ struct LensResultView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Label("Google Lens", systemImage: "photo.badge.magnifyingglass")
+                Label("Lens", systemImage: "photo.badge.magnifyingglass")
                     .font(.headline)
                 Spacer()
                 Button { LensPanelController.shared.close() } label: { Image(systemName: "xmark") }

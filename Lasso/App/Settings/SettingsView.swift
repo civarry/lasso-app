@@ -152,7 +152,7 @@ struct SettingsView: View {
                 KeyboardShortcuts.Recorder("Chat", name: .chat)
                 // Single-mode direct action (runs on a selection) — sits with the other single-key
                 // rows rather than the two-column grid below.
-                KeyboardShortcuts.Recorder("Fix grammar", name: .grammarSelection)
+                KeyboardShortcuts.Recorder("Proofread", name: .grammarSelection)
 
                 LabeledContent("") {
                     HStack(spacing: directRecorderGap) {
@@ -167,17 +167,17 @@ struct SettingsView: View {
                     }
                 }
                 if draft.lensSearch {
-                    LabeledContent("Google Lens") {
+                    LabeledContent("Lens") {
                         HStack(spacing: directRecorderGap) {
                             KeyboardShortcuts.Recorder("", name: .lensSelection).frame(width: directRecorderWidth)
                             KeyboardShortcuts.Recorder("", name: .lensFullScreen).frame(width: directRecorderWidth)
                         }
                     }
                 }
-                caption("Fix grammar, Identify, and Google Lens run straight from a hotkey, skipping "
+                caption("Proofread, Identify, and Lens run straight from a hotkey, skipping "
                     + "the toolbar. For the two-column ones, Selection lets you drag a box first while "
-                    + "Full screen grabs the whole display; Fix grammar always runs on a selection. "
-                    + "Turn on Google Lens in Privacy to assign its shortcuts.")
+                    + "Full screen grabs the whole display; Proofread always runs on a selection. "
+                    + "Turn on Lens in Privacy to assign its shortcuts.")
             }
             Section("Startup") {
                 Toggle("Launch at login", isOn: $draft.launchAtLogin)
@@ -194,9 +194,9 @@ struct SettingsView: View {
             Section("Privacy") {
                 Toggle("Local-only mode", isOn: $draft.localOnly)
                 caption("Blocks all network calls except your chosen model. Best for work Macs.")
-                Toggle("Search with Google Lens", isOn: $draft.lensSearch)
+                Toggle("Search with Lens", isOn: $draft.lensSearch)
                     .disabled(draft.localOnly)
-                caption("Adds a Google Lens action that uploads the selection to Google and shows the "
+                caption("Adds a Lens action that uploads the selection to Google and shows the "
                     + "visual matches in a panel next to it. Off by default — it leaves your Mac, and "
                     + "is paused in local-only mode.")
             }
