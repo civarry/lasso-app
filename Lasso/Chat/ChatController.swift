@@ -43,6 +43,22 @@ final class ChatController {
 
     private var streamTask: Task<Void, Never>?
 
+    // MARK: - Rolling conversation summary (long-session memory)
+
+    /// Running, compact recap of everything that has scrolled out of the recent verbatim window.
+    /// Injected by `buildTurns` so the model still "remembers" earlier context instead of losing it
+    /// to a hard drop. Reset in `newChat()`. Built off the send path (see `scheduleSummaryUpdate`).
+    private var rollingSummary = ""
+    /// The number of overflow turns the current `rollingSummary` already covers — so an incremental
+    /// update only folds in turns that aren't represented yet (cheap, and avoids re-summarizing).
+    private var summarizedTurnCount = 0
+    /// In-flight background summarization, cancelled on a new update or `newChat()`. Never on the
+    /// user's `send` path, so it can't block a reply.
+    private var summaryTask: Task<Void, Never>?
+    /// The budgeted assembler — char-based, provider-agnostic. Tunable here if a model needs a
+    /// tighter window later (the same pipeline serves tiny local → large cloud).
+    private let contextBuilder = ChatContextBuilder()
+
     private init() {
         // Default off; restore the user's last choice if they ever set it.
         webSearchOn = UserDefaults.standard.object(forKey: Self.webSearchKey) as? Bool ?? false
@@ -67,10 +83,6 @@ final class ChatController {
     declining. When asked to identify a person you can't name, describe who and what is visible and \
     the likely context instead of refusing. Don't invent specifics you have no basis for.
     """
-
-    /// Rough character budget for the conversation sent to the model. Local models have unknown,
-    /// often small, context windows — keep recent turns and drop the oldest beyond this.
-    private static let maxContextChars = 12_000
 
     /// Factual description of Lasso, injected only when the user asks "What can you do?" (the starter
     /// chip) so the model explains the *real* app instead of guessing. Not a standing system prompt.
@@ -162,6 +174,10 @@ final class ChatController {
     func newChat() {
         streamTask?.cancel()
         streamTask = nil
+        summaryTask?.cancel()
+        summaryTask = nil
+        rollingSummary = ""
+        summarizedTurnCount = 0
         messages.removeAll()
         input = ""
         pendingImage = nil
@@ -721,22 +737,118 @@ final class ChatController {
         return lines.joined(separator: "\n")
     }
 
-    /// Build the trimmed `[ChatTurn]` to send: system + prior history + the new (folded) user turn.
+    /// Build the budgeted `[ChatTurn]` to send: system + rolling summary + recent verbatim turns +
+    /// the new (folded) user turn. Delegates layout/budget to `ChatContextBuilder`; older turns that
+    /// fall outside the recent window are represented by `rollingSummary` (kept fresh in the
+    /// background) instead of being dropped.
     private func buildTurns(newUserText: String, imageBase64: String?) -> [ChatTurn] {
-        var turns: [ChatTurn] = [.init(role: .system, text: Self.systemPrompt)]
-        // Exclude the just-appended user-display and assistant-placeholder messages. Use each
-        // message's persisted `promptText` (with any folded image description) so context carries.
-        // Assistant thoughts are UI/debug affordances, not conversation content.
-        for m in messages.dropLast(2) {
+        // Map the prior history (excluding the just-appended user-display + assistant-placeholder)
+        // to the builder's history turns, using each message's persisted `promptText` so folded
+        // image/evidence context carries. Assistant thoughts are stripped — they're UI affordances.
+        let history = Self.historyTurns(from: messages.dropLast(2))
+
+        let out = contextBuilder.build(systemPrompt: Self.systemPrompt,
+                                       summary: rollingSummary,
+                                       history: history,
+                                       currentUserText: newUserText,
+                                       currentImageBase64: imageBase64)
+        trimmedNotice = out.didCompress
+
+        // Fold the now-out-of-window turns into the rolling summary off the send path. No-op when
+        // everything's already represented, so steady-state turns cost nothing extra.
+        scheduleSummaryUpdate(overflow: out.overflow)
+
+        return out.turns
+    }
+
+    /// Map visible `ChatMessage`s to the context builder's `HistoryTurn`s — the exact text the model
+    /// saw (`promptText`), `<think>` stripped on assistant turns. Shared by `buildTurns` and the
+    /// background summarizer so both work off identical content.
+    private static func historyTurns(from messages: ArraySlice<ChatMessage>) -> [ChatContextBuilder.HistoryTurn] {
+        messages.map { m in
             let role: ChatTurn.Role = m.role == .user ? .user : .assistant
             let text = role == .assistant
                 ? Self.stripThoughtBlocks(from: m.promptText ?? m.text)
                 : (m.promptText ?? m.text)
-            turns.append(.init(role: m.role == .user ? .user : .assistant,
-                               text: text, imageBase64: m.imageBase64))
+            return .init(role: role, text: text, imageBase64: m.imageBase64)
         }
-        turns.append(.init(role: .user, text: newUserText, imageBase64: imageBase64))
-        return trim(turns)
+    }
+
+    // MARK: - Background summarization
+
+    /// Fold the turns that scrolled out of the recent window into `rollingSummary`, using the active
+    /// provider. Runs in a cancellable background `Task` — never on `send` — so it can't block a
+    /// reply. Incremental: only the overflow turns not yet covered by the summary are summarized, so
+    /// steady-state sends do no extra work.
+    private func scheduleSummaryUpdate(overflow: [ChatContextBuilder.HistoryTurn]) {
+        // Only the overflow turns we haven't already summarized.
+        guard overflow.count > summarizedTurnCount else { return }
+        let newTurns = Array(overflow.suffix(from: summarizedTurnCount))
+        let priorSummary = rollingSummary
+        let coveredCount = overflow.count
+
+        summaryTask?.cancel()
+        summaryTask = Task { [weak self] in
+            guard let self else { return }
+            let transcript = Self.transcript(of: newTurns)
+            guard !transcript.isEmpty else { return }
+            let prompt = Self.summarizationPrompt(prior: priorSummary, newTranscript: transcript)
+            // A plain single-turn request through the active provider — provider-agnostic, no tools,
+            // no grounding. Keep it tight; strip any <think> the model emits.
+            var raw = ""
+            do {
+                for try await delta in self.intelligence.respond(prompt: prompt, context: nil) {
+                    if Task.isCancelled { return }
+                    raw += delta
+                }
+            } catch {
+                Log.chat.error("summary update FAILED: \(error.localizedDescription, privacy: .public)")
+                return   // keep the prior summary; we'll retry on the next overflow.
+            }
+            if Task.isCancelled { return }
+            let summary = Self.stripThoughtBlocks(from: raw).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !summary.isEmpty else { return }
+            // Commit on the main actor; guard against a `newChat()` having raced in (count reset to 0
+            // with a shorter overflow than we computed against).
+            guard coveredCount >= self.summarizedTurnCount else { return }
+            self.rollingSummary = summary
+            self.summarizedTurnCount = coveredCount
+            Log.chat.notice("summary updated: covers \(coveredCount, privacy: .public) turns, \(summary.count, privacy: .public) chars")
+        }
+    }
+
+    /// Render history turns as a compact transcript for the summarizer.
+    private static func transcript(of turns: [ChatContextBuilder.HistoryTurn]) -> String {
+        turns.map { turn -> String in
+            let speaker = turn.role == .user ? "User" : "Assistant"
+            let body = turn.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return body.isEmpty ? "" : "\(speaker): \(body)"
+        }
+        .filter { !$0.isEmpty }
+        .joined(separator: "\n\n")
+    }
+
+    /// Tight summarization instruction: evolve the prior summary with the new exchanges into one
+    /// compact recap. Model-agnostic and deliberately small so even a 0.6B model can follow it.
+    private static func summarizationPrompt(prior: String, newTranscript: String) -> String {
+        let priorBlock = prior.isEmpty
+            ? "There is no earlier summary yet."
+            : "Current running summary so far:\n\(prior)"
+        return """
+        You are maintaining a running summary of an ongoing chat so a later assistant can stay \
+        coherent without the full history. Update the summary to incorporate the new exchanges below.
+
+        Keep it compact (a few short sentences or terse bullet points, well under 200 words). Preserve \
+        durable facts the user shared, their goal/task, decisions made, named entities, and any open \
+        questions or constraints. Drop greetings, filler, and anything superseded. Write it as plain \
+        notes — no preamble, no "here is the summary", no markdown headings. Output only the updated \
+        summary.
+
+        \(priorBlock)
+
+        New exchanges to fold in:
+        \(newTranscript)
+        """
     }
 
     private static func stripThoughtBlocks(from text: String) -> String {
@@ -753,19 +865,6 @@ final class ChatController {
         }
         result += remaining
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    /// Keep the system turn + most recent turns under the char budget, dropping the oldest.
-    private func trim(_ turns: [ChatTurn]) -> [ChatTurn] {
-        func total(_ t: [ChatTurn]) -> Int { t.reduce(0) { $0 + $1.text.count } }
-        guard total(turns) > Self.maxContextChars else { trimmedNotice = false; return turns }
-        let system = turns.first
-        var rest = Array(turns.dropFirst())
-        while rest.count > 1, total((system.map { [$0] } ?? []) + rest) > Self.maxContextChars {
-            rest.removeFirst()
-        }
-        trimmedNotice = true
-        return (system.map { [$0] } ?? []) + rest
     }
 
     // MARK: - Message mutation helpers
