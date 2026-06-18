@@ -22,23 +22,42 @@ struct OnDeviceProvider: IntelligenceProvider {
         stream(fullPrompt: Self.compose(prompt: prompt, context: context))
     }
 
-    /// Multi-turn for the Chat panel. Apple's model is text-only and the session here is rebuilt per
-    /// turn, so the conversation is replayed as a single labelled transcript (any attached image has
-    /// already been converted to a text description upstream).
+    /// Multi-turn for the Chat panel. Apple's model is text-only (any attached image was converted to
+    /// a text description upstream). We replay prior turns as a structured `Transcript` of
+    /// `.prompt`/`.response` entries and stream only the *current* user turn — so the model sees real
+    /// conversational turn boundaries instead of a flat "User:/Assistant:" text blob it would imitate
+    /// and run past, inventing fake follow-up turns. The system prompt (plus any injected rolling
+    /// summary) becomes the transcript's `.instructions`.
     func respond(messages: [ChatTurn]) -> AsyncThrowingStream<String, Error> {
-        let instructions = messages.first(where: { $0.role == .system })?.text ?? Self.instructions
-        let transcript = messages
-            .filter { $0.role != .system && !$0.text.isEmpty }
-            .map { turn -> String in
-                switch turn.role {
-                case .user: "User: \(turn.text)"
-                case .assistant: "Assistant: \(turn.text)"
-                case .system: turn.text
-                }
+        let instructions = Self.mergedInstructions(from: messages)
+        let convo = messages.filter { $0.role != .system && !$0.text.isEmpty }
+
+        // The trailing user turn is the question to answer now; everything before it is prior context.
+        guard let current = convo.last, current.role == .user else {
+            // No current user turn (shouldn't happen in chat) — fall back to a plain instructions session.
+            return stream(fullPrompt: convo.map(\.text).joined(separator: "\n\n"),
+                          instructions: instructions)
+        }
+
+        var entries: [Transcript.Entry] = [
+            .instructions(.init(segments: [.text(.init(content: instructions))], toolDefinitions: []))
+        ]
+        for turn in convo.dropLast() {
+            let segments: [Transcript.Segment] = [.text(.init(content: turn.text))]
+            switch turn.role {
+            case .user:      entries.append(.prompt(.init(segments: segments)))
+            case .assistant: entries.append(.response(.init(assetIDs: [], segments: segments)))
+            case .system:    break
             }
-            .joined(separator: "\n\n")
-        let full = transcript.isEmpty ? "" : "\(transcript)\n\nAssistant:"
-        return stream(fullPrompt: full, instructions: instructions)
+        }
+        return streamChat(transcript: Transcript(entries: entries), prompt: current.text)
+    }
+
+    /// Combine every system-role turn (the base prompt + any rolling-summary block injected by
+    /// `ChatContextBuilder`) into one instructions string. Falls back to the default when there are none.
+    private static func mergedInstructions(from messages: [ChatTurn]) -> String {
+        let systems = messages.filter { $0.role == .system && !$0.text.isEmpty }.map(\.text)
+        return systems.isEmpty ? instructions : systems.joined(separator: "\n\n")
     }
 
     // MARK: - Tool calling
@@ -82,6 +101,26 @@ struct OnDeviceProvider: IntelligenceProvider {
     private func stream(fullPrompt full: String, instructions: String = Self.instructions,
                         tools: [any Tool] = [])
         -> AsyncThrowingStream<String, Error> {
+        streamSession(prompt: full) {
+            tools.isEmpty
+                ? LanguageModelSession(instructions: instructions)
+                : LanguageModelSession(tools: tools, instructions: instructions)
+        }
+    }
+
+    /// Multi-turn variant: seed the session with a prior-conversation `Transcript` and stream the
+    /// current user turn against it.
+    private func streamChat(transcript: Transcript, prompt: String)
+        -> AsyncThrowingStream<String, Error> {
+        streamSession(prompt: prompt) { LanguageModelSession(transcript: transcript) }
+    }
+
+    /// Shared streaming core: build a session, stream the prompt, and convert FoundationModels'
+    /// *cumulative* snapshots into deltas so the ResultPane can simply append (matches the Ollama
+    /// provider's contract). The session is constructed inside the Task via `makeSession`.
+    private func streamSession(prompt: String,
+                               makeSession: @escaping @Sendable () -> LanguageModelSession)
+        -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -89,14 +128,9 @@ struct OnDeviceProvider: IntelligenceProvider {
                         throw IntelligenceError.unavailable(
                             "Apple Intelligence is off or unsupported on this Mac.")
                     }
-                    let session = tools.isEmpty
-                        ? LanguageModelSession(instructions: instructions)
-                        : LanguageModelSession(tools: tools, instructions: instructions)
-
-                    // FoundationModels streams *cumulative* snapshots; convert to deltas so the
-                    // ResultPane can simply append (matches the Ollama provider's contract).
+                    let session = makeSession()
                     var emitted = ""
-                    for try await partial in session.streamResponse(to: full) {
+                    for try await partial in session.streamResponse(to: prompt) {
                         let snapshot = partial.content
                         if snapshot.count >= emitted.count, snapshot.hasPrefix(emitted) {
                             let delta = String(snapshot.dropFirst(emitted.count))
