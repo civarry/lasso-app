@@ -26,3 +26,6 @@ dist/
 # Misc
 *.log
 /tmp/
+
+# Local scratch test plans (not product)
+PHASE2_TEST.md

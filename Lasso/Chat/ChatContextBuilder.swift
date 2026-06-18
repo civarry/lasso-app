@@ -1,5 +1,25 @@
 import Foundation
 
+/// Two-track memory of everything older than the recent verbatim window. Splitting the recap lets us
+/// *protect* durable facts from the clamp that keeps the recap bounded: in a long, topic-jumping chat
+/// a single flat summary tail-clamps the oldest content off the front (e.g. "the user's name is Sam",
+/// stated at turn 1) to make room for recent chatter — durable facts silently die while trivia
+/// survives. Here durable facts live in their own reserve and are never clamped; only the topic trace
+/// (which is expected to churn) is bounded.
+struct ConversationMemory: Sendable {
+    /// Stable facts about the user and their goal/task/constraints (name, role, what they're building,
+    /// standing preferences). Short, additive, deduped. PROTECTED — never clamped away.
+    var durableFacts: String = ""
+    /// Running notes on what's been discussed: current topic sharp, older topics condensed to a line.
+    /// This is the churning track and the one the budget clamps.
+    var topicTrace: String = ""
+
+    var isEmpty: Bool {
+        durableFacts.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && topicTrace.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
 /// Composes the `[ChatTurn]` actually sent to a provider, fitting a char-based budget with sensible
 /// per-section reserves. Provider-agnostic and pure (no I/O, no provider calls) so the *same*
 /// pipeline serves Qwen3-0.6B through GPT-OSS-20B and cloud — the model is the last component; this
@@ -7,13 +27,15 @@ import Foundation
 ///
 /// Layout, in priority order:
 ///   1. system prompt        — always kept
-///   2. rolling summary      — a single evolving recap of everything older than the recent window,
-///                             injected as a labeled `system` turn so the model still "remembers"
+///   2. conversation memory  — an evolving recap of everything older than the recent window, in two
+///                             tracks (durable facts + topic trace), injected as a labeled `system`
+///                             turn so the model still "remembers"; durable facts are protected from
+///                             the topic clamp so they can't be evicted by recent chatter
 ///   3. recent verbatim turns — the last few exchanges, kept word-for-word
 ///   4. current user turn    — always kept (it's the question being answered)
 ///
 /// This replaces the old "drop the oldest turns" trim. Older turns aren't dropped silently — they're
-/// represented by the summary (built off the user's send path, see `ChatController`). When even the
+/// represented by the memory (built off the user's send path, see `ChatController`). When even the
 /// recent window + current turn overflow the budget, we shed the oldest *recent* turns last; the
 /// current turn and system prompt are never dropped.
 struct ChatContextBuilder: Sendable {
@@ -26,8 +48,12 @@ struct ChatContextBuilder: Sendable {
         /// Verbatim turns to keep at the tail (a "turn" here = one mapped message). Everything older
         /// is summary material. Counts user + assistant messages, so ~`recentTurns / 2` exchanges.
         var recentTurns: Int = 6
-        /// Hard cap on the injected summary block; protects the budget from an ever-growing recap.
+        /// Hard cap on the injected topic-trace block; protects the budget from an ever-growing recap.
+        /// (Named for history; clamps the topic track only — durable facts have their own reserve.)
         var maxSummaryChars: Int = 1_500
+        /// Reserve for durable facts. Small and PROTECTED — these are never subject to the topic clamp,
+        /// so a fact stated at turn 1 survives no matter how much recent chatter accumulates.
+        var maxDurableChars: Int = 800
 
         static let `default` = Budget()
     }
@@ -55,11 +81,11 @@ struct ChatContextBuilder: Sendable {
 
     var budget: Budget = .default
 
-    /// Assemble the send list. `summary` is the current rolling summary (may be empty); `history` is
+    /// Assemble the send list. `memory` is the current two-track recap (may be empty); `history` is
     /// the full prior conversation (oldest-first, excluding the current turn); `currentUserText` /
     /// `currentImageBase64` are the turn being answered now.
     func build(systemPrompt: String,
-               summary: String,
+               memory: ConversationMemory,
                history: [HistoryTurn],
                currentUserText: String,
                currentImageBase64: String?) -> Output {
@@ -69,19 +95,38 @@ struct ChatContextBuilder: Sendable {
         let overflow = Array(history.dropLast(recentCount))
         var recent = Array(history.suffix(recentCount))
 
-        // 2. The summary block represents the overflow. It's only meaningful when there *is* overflow
-        //    (or a summary already exists from earlier compression). Clamp to its reserve.
-        let trimmedSummary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
-        let haveSummary = !trimmedSummary.isEmpty && !overflow.isEmpty
-        let summaryBlock = haveSummary ? Self.clamp(trimmedSummary, to: budget.maxSummaryChars) : ""
+        // 2. The memory block represents the overflow. It's only meaningful when there *is* overflow
+        //    (or memory already exists from earlier compression). Durable facts get their own reserve
+        //    and are clamped from the *front* only as a last-ditch overflow safety net (oldest fact
+        //    first), so the most recently learned facts survive; the topic trace is tail-clamped to its
+        //    reserve (latest topic state matters most). Durable facts are NOT subject to the topic clamp.
+        let facts = memory.durableFacts.trimmingCharacters(in: .whitespacesAndNewlines)
+        let topics = memory.topicTrace.trimmingCharacters(in: .whitespacesAndNewlines)
+        let haveMemory = (!facts.isEmpty || !topics.isEmpty) && !overflow.isEmpty
+        let factsBlock = haveMemory ? Self.clampHead(facts, to: budget.maxDurableChars) : ""
+        let topicsBlock = haveMemory ? Self.clamp(topics, to: budget.maxSummaryChars) : ""
+
+        // Render the two tracks into one labeled system block, each clearly sub-labeled so even a tiny
+        // model treats them as background memory (not new instructions). Empty tracks are omitted.
+        func memoryTurn() -> ChatTurn? {
+            guard haveMemory else { return nil }
+            var body = ""
+            if !factsBlock.isEmpty { body += "Durable facts about the user:\n\(factsBlock)" }
+            if !topicsBlock.isEmpty {
+                if !body.isEmpty { body += "\n\n" }
+                body += "What's been discussed:\n\(topicsBlock)"
+            }
+            guard !body.isEmpty else { return nil }
+            return .init(role: .system, text: Self.summaryPreamble + body)
+        }
 
         // 3. Assemble, then enforce the total budget by shedding the oldest *recent* turns first
-        //    (system, summary, and current turn are protected). Older shed turns join the overflow so
+        //    (system, memory, and current turn are protected). Older shed turns join the overflow so
         //    the summarizer still covers them next cycle.
         func assemble(_ recentTurns: [HistoryTurn]) -> [ChatTurn] {
             var turns: [ChatTurn] = [.init(role: .system, text: systemPrompt)]
-            if !summaryBlock.isEmpty {
-                turns.append(.init(role: .system, text: Self.summaryPreamble + summaryBlock))
+            if let memoryTurn = memoryTurn() {
+                turns.append(memoryTurn)
             }
             for h in recentTurns {
                 turns.append(.init(role: h.role, text: h.text, imageBase64: h.imageBase64))
@@ -121,5 +166,18 @@ struct ChatContextBuilder: Sendable {
             return String(tail[tail.index(after: space)...])
         }
         return tail
+    }
+
+    /// Keep the *head* of a string (drop the oldest tail) — used only as a last-ditch safety net on
+    /// durable facts: the model is told to merge/prune them under cap, so this rarely fires; when it
+    /// does we drop the *oldest* facts (the model carries them forward earliest-first), preferring the
+    /// most recently learned ones. Cuts on a whitespace boundary near the cap to avoid splitting a line.
+    static func clampHead(_ s: String, to maxChars: Int) -> String {
+        guard s.count > maxChars else { return s }
+        let head = String(s.prefix(maxChars))
+        if let space = head.lastIndex(where: { $0 == " " || $0 == "\n" }) {
+            return String(head[..<space])
+        }
+        return head
     }
 }

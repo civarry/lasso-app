@@ -45,11 +45,12 @@ final class ChatController {
 
     // MARK: - Rolling conversation summary (long-session memory)
 
-    /// Running, compact recap of everything that has scrolled out of the recent verbatim window.
-    /// Injected by `buildTurns` so the model still "remembers" earlier context instead of losing it
-    /// to a hard drop. Reset in `newChat()`. Built off the send path (see `scheduleSummaryUpdate`).
-    private var rollingSummary = ""
-    /// The number of overflow turns the current `rollingSummary` already covers — so an incremental
+    /// Two-track recap of everything that has scrolled out of the recent verbatim window: durable
+    /// facts about the user (protected) + a churning topic trace. Injected by `buildTurns` so the
+    /// model still "remembers" earlier context instead of losing it to a hard drop. Reset in
+    /// `newChat()`. Built off the send path (see `scheduleSummaryUpdate`).
+    private var memory = ConversationMemory()
+    /// The number of overflow turns the current `memory` already covers — so an incremental
     /// update only folds in turns that aren't represented yet (cheap, and avoids re-summarizing).
     private var summarizedTurnCount = 0
     /// In-flight background summarization, cancelled on a new update or `newChat()`. Never on the
@@ -182,7 +183,7 @@ final class ChatController {
         streamTask = nil
         summaryTask?.cancel()
         summaryTask = nil
-        rollingSummary = ""
+        memory = ConversationMemory()
         summarizedTurnCount = 0
         messages.removeAll()
         input = ""
@@ -754,7 +755,7 @@ final class ChatController {
         let history = Self.historyTurns(from: messages.dropLast(2))
 
         let out = contextBuilder.build(systemPrompt: Self.systemPrompt,
-                                       summary: rollingSummary,
+                                       memory: memory,
                                        history: history,
                                        currentUserText: newUserText,
                                        currentImageBase64: imageBase64)
@@ -782,15 +783,15 @@ final class ChatController {
 
     // MARK: - Background summarization
 
-    /// Fold the turns that scrolled out of the recent window into `rollingSummary`, using the active
-    /// provider. Runs in a cancellable background `Task` — never on `send` — so it can't block a
-    /// reply. Incremental: only the overflow turns not yet covered by the summary are summarized, so
-    /// steady-state sends do no extra work.
+    /// Fold the turns that scrolled out of the recent window into `memory`, using the active provider.
+    /// Runs in a cancellable background `Task` — never on `send` — so it can't block a reply.
+    /// Incremental: only the overflow turns not yet covered are summarized, so steady-state sends do
+    /// no extra work.
     private func scheduleSummaryUpdate(overflow: [ChatContextBuilder.HistoryTurn]) {
         // Only the overflow turns we haven't already summarized.
         guard overflow.count > summarizedTurnCount else { return }
         let newTurns = Array(overflow.suffix(from: summarizedTurnCount))
-        let priorSummary = rollingSummary
+        let priorMemory = memory
         let coveredCount = overflow.count
 
         summaryTask?.cancel()
@@ -798,7 +799,7 @@ final class ChatController {
             guard let self else { return }
             let transcript = Self.transcript(of: newTurns)
             guard !transcript.isEmpty else { return }
-            let prompt = Self.summarizationPrompt(prior: priorSummary, newTranscript: transcript)
+            let prompt = Self.summarizationPrompt(prior: priorMemory, newTranscript: transcript)
             // A plain single-turn request through the active provider — provider-agnostic, no tools,
             // no grounding. Keep it tight; strip any <think> the model emits.
             var raw = ""
@@ -809,17 +810,73 @@ final class ChatController {
                 }
             } catch {
                 Log.chat.error("summary update FAILED: \(error.localizedDescription, privacy: .public)")
-                return   // keep the prior summary; we'll retry on the next overflow.
+                return   // keep the prior memory; we'll retry on the next overflow.
             }
             if Task.isCancelled { return }
-            let summary = Self.stripThoughtBlocks(from: raw).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !summary.isEmpty else { return }
+            let cleaned = Self.stripThoughtBlocks(from: raw)
+            // Parse the FACTS/TOPICS contract back into the struct; falls back gracefully on a sloppy
+            // small-model response (never loses prior facts, never crashes).
+            let updated = Self.parseMemory(from: cleaned, prior: priorMemory)
+            guard !updated.isEmpty else { return }
             // Commit on the main actor; guard against a `newChat()` having raced in (count reset to 0
             // with a shorter overflow than we computed against).
             guard coveredCount >= self.summarizedTurnCount else { return }
-            self.rollingSummary = summary
+            self.memory = updated
             self.summarizedTurnCount = coveredCount
-            Log.chat.notice("summary updated: covers \(coveredCount, privacy: .public) turns, \(summary.count, privacy: .public) chars")
+            Log.chat.notice("memory updated: covers \(coveredCount, privacy: .public) turns, facts=\(updated.durableFacts.count, privacy: .public) topics=\(updated.topicTrace.count, privacy: .public) chars")
+        }
+    }
+
+    /// Parse the model's `FACTS:` / `TOPICS:` output into the two-track memory. Robust by design — a
+    /// 0.6B model will sometimes drop a label, reorder, or wrap the whole thing in prose. Fallback
+    /// rules, in order of preference:
+    ///   • Both labels present → split on them (this is the happy path).
+    ///   • Only one label present → that section is parsed; the *other* track carries the prior value
+    ///     forward (never silently emptied).
+    ///   • No labels at all → treat the entire output as the new topic trace and PRESERVE prior durable
+    ///     facts (facts are the protected track — we'd rather keep a slightly stale fact than lose it).
+    /// Empty parsed sections fall back to the prior value for that track, so a cycle can only add or
+    /// refine, never erase, what we already knew.
+    nonisolated static func parseMemory(from output: String, prior: ConversationMemory) -> ConversationMemory {
+        let text = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return prior }
+
+        // Case-insensitive search for the section labels at a line start (tolerant of "FACTS:" /
+        // "Facts:" / leading whitespace).
+        func labelRange(_ label: String) -> Range<String.Index>? {
+            text.range(of: label, options: [.caseInsensitive])
+        }
+        let factsLabel = labelRange("FACTS:")
+        let topicsLabel = labelRange("TOPICS:")
+
+        func clean(_ s: Substring) -> String {
+            s.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        switch (factsLabel, topicsLabel) {
+        case let (.some(f), .some(t)) where f.upperBound <= t.lowerBound:
+            // FACTS … TOPICS (expected order).
+            let facts = clean(text[f.upperBound..<t.lowerBound])
+            let topics = clean(text[t.upperBound...])
+            return ConversationMemory(durableFacts: facts.isEmpty ? prior.durableFacts : facts,
+                                      topicTrace: topics.isEmpty ? prior.topicTrace : topics)
+        case let (.some(f), .some(t)):
+            // TOPICS … FACTS (reordered).
+            let topics = clean(text[t.upperBound..<f.lowerBound])
+            let facts = clean(text[f.upperBound...])
+            return ConversationMemory(durableFacts: facts.isEmpty ? prior.durableFacts : facts,
+                                      topicTrace: topics.isEmpty ? prior.topicTrace : topics)
+        case let (.some(f), .none):
+            let facts = clean(text[f.upperBound...])
+            return ConversationMemory(durableFacts: facts.isEmpty ? prior.durableFacts : facts,
+                                      topicTrace: prior.topicTrace)
+        case let (.none, .some(t)):
+            let topics = clean(text[t.upperBound...])
+            return ConversationMemory(durableFacts: prior.durableFacts,
+                                      topicTrace: topics.isEmpty ? prior.topicTrace : topics)
+        case (.none, .none):
+            // No structure at all — treat as topic notes, keep prior facts protected.
+            return ConversationMemory(durableFacts: prior.durableFacts, topicTrace: text)
         }
     }
 
@@ -834,21 +891,42 @@ final class ChatController {
         .joined(separator: "\n\n")
     }
 
-    /// Tight summarization instruction: evolve the prior summary with the new exchanges into one
-    /// compact recap. Model-agnostic and deliberately small so even a 0.6B model can follow it.
-    private static func summarizationPrompt(prior: String, newTranscript: String) -> String {
-        let priorBlock = prior.isEmpty
-            ? "There is no earlier summary yet."
-            : "Current running summary so far:\n\(prior)"
-        return """
-        You are maintaining a running summary of an ongoing chat so a later assistant can stay \
-        coherent without the full history. Update the summary to incorporate the new exchanges below.
+    /// Tight summarization instruction: evolve the two-track memory with the new exchanges. Emits a
+    /// strict two-section contract (FACTS / TOPICS) so the parser is reliable even on a 0.6B model.
+    /// Deliberately small and concrete — a tiny model can follow it.
+    private static func summarizationPrompt(prior: ConversationMemory, newTranscript: String) -> String {
+        let priorFacts = prior.durableFacts.trimmingCharacters(in: .whitespacesAndNewlines)
+        let priorTopics = prior.topicTrace.trimmingCharacters(in: .whitespacesAndNewlines)
+        let priorBlock = (priorFacts.isEmpty && priorTopics.isEmpty)
+            ? "There is no earlier memory yet."
+            : """
+            Current FACTS so far:
+            \(priorFacts.isEmpty ? "(none yet)" : priorFacts)
 
-        Keep it compact (a few short sentences or terse bullet points, well under 200 words). Preserve \
-        durable facts the user shared, their goal/task, decisions made, named entities, and any open \
-        questions or constraints. Drop greetings, filler, and anything superseded. Write it as plain \
-        notes — no preamble, no "here is the summary", no markdown headings. Output only the updated \
-        summary.
+            Current TOPICS so far:
+            \(priorTopics.isEmpty ? "(none yet)" : priorTopics)
+            """
+        return """
+        You maintain a compact memory of an ongoing chat so a later assistant stays coherent without \
+        the full history. Fold the new exchanges below into the memory and output it in exactly this \
+        format, with these two labels and nothing else:
+
+        FACTS:
+        - <one durable fact per line>
+        TOPICS:
+        <running notes on what's been discussed>
+
+        FACTS = stable facts about the user and their goal: their name, role, what they're building, \
+        and standing preferences or constraints. Carry every prior fact forward, add any new durable \
+        ones, merge duplicates, and drop nothing important. No greetings or filler. Keep it short — \
+        well under 150 words; if it grows too long, merge and prune wording, never drop a real fact.
+
+        TOPICS = what has been discussed. Keep the CURRENT topic detailed; condense each OLDER topic \
+        to a single short line so the notes shrink over time instead of piling up — but always leave a \
+        thin trace of every past topic so earlier points can still be referenced. Under 200 words.
+
+        Output ONLY those two sections — no preamble, no "here is", no markdown headings beyond the \
+        FACTS:/TOPICS: labels.
 
         \(priorBlock)
 
