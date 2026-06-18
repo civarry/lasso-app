@@ -18,11 +18,17 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     static let shared = FloatingPanelController()
     private var panel: FloatingPanel?
     private var topLeft: NSPoint = .zero
+    /// True when the current card remembers its position (non-anchored, e.g. Proofread on read-only
+    /// text). Selection-anchored cards stay by the selection and don't persist.
+    private var persistsPosition = false
+    private static let tlxKey = "result.panel.tlx"
+    private static let tlyKey = "result.panel.tly"
 
     /// `anchor` is the selection in global screen coordinates (AppKit, bottom-left origin), so the
     /// card appears at the selection (below it, flipping above).
     func present(_ content: AnyView, anchor: CGRect?) {
         close()
+        persistsPosition = (anchor == nil)
 
         // Crash-safe auto-grow. SwiftUI must NOT drive the window (sizingOptions = []) — its animated
         // auto-resize recurses into layout and overflows the stack on scaled displays. Instead the
@@ -55,9 +61,17 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         var size = hosting.view.fittingSize
         if size.width < 100 { size.width = 480 }
         size.height = min(max(size.height, 140), 900)
-        let origin = origin(for: size, anchor: anchor)
-        topLeft = NSPoint(x: origin.x, y: origin.y + size.height)
-        panel.setFrame(NSRect(origin: origin, size: size), display: false)
+        // Non-anchored cards (e.g. Proofread on read-only text) reopen where you last dragged them;
+        // selection-anchored cards appear next to the selection.
+        let resolved: NSPoint
+        if persistsPosition, let tl = savedTopLeft(for: size) {
+            topLeft = tl
+            resolved = NSPoint(x: tl.x, y: tl.y - size.height)
+        } else {
+            resolved = origin(for: size, anchor: anchor)
+            topLeft = NSPoint(x: resolved.x, y: resolved.y + size.height)
+        }
+        panel.setFrame(NSRect(origin: resolved, size: size), display: false)
 
         // Activate so text fields (Ask AI) receive keystrokes; the panel still floats and persists.
         NSApp.activate(ignoringOtherApps: true)
@@ -87,6 +101,30 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         panel?.delegate = nil
         panel?.orderOut(nil)
         panel = nil
+    }
+
+    /// Track the user's drags so content growth keeps the new spot (not the original), and remember
+    /// it across sessions for non-anchored cards.
+    func windowDidMove(_ notification: Notification) {
+        guard let panel else { return }
+        topLeft = NSPoint(x: panel.frame.minX, y: panel.frame.maxY)
+        if persistsPosition { saveTopLeft(topLeft) }
+    }
+
+    /// Restore a persisted top-left, but only if it still lands on a connected screen (handles a
+    /// disconnected monitor or resolution change) — otherwise fall back to the default placement.
+    private func savedTopLeft(for size: NSSize) -> NSPoint? {
+        let d = UserDefaults.standard
+        guard d.object(forKey: Self.tlxKey) != nil, d.object(forKey: Self.tlyKey) != nil else { return nil }
+        let tl = NSPoint(x: d.double(forKey: Self.tlxKey), y: d.double(forKey: Self.tlyKey))
+        let frame = NSRect(x: tl.x, y: tl.y - size.height, width: size.width, height: size.height)
+        guard NSScreen.screens.contains(where: { $0.visibleFrame.intersects(frame) }) else { return nil }
+        return tl
+    }
+
+    private func saveTopLeft(_ tl: NSPoint) {
+        UserDefaults.standard.set(tl.x, forKey: Self.tlxKey)
+        UserDefaults.standard.set(tl.y, forKey: Self.tlyKey)
     }
 
     /// Keep the top-left fixed as content grows (grow downward), clamped on-screen.

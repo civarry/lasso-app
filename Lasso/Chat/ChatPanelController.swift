@@ -14,6 +14,8 @@ final class ChatPanelController: NSObject, NSWindowDelegate {
     private let defaultSize = NSSize(width: 420, height: 580)
     private static let widthKey = "chat.panel.width"
     private static let heightKey = "chat.panel.height"
+    private static let xKey = "chat.panel.x"
+    private static let yKey = "chat.panel.y"
 
     var isOpen: Bool { panel != nil }
 
@@ -67,9 +69,10 @@ final class ChatPanelController: NSObject, NSWindowDelegate {
         panel.minSize = NSSize(width: 340, height: 360)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-        // Force the intended size + top-right origin *after* the content view is installed, so the
-        // hosting controller can't override it.
-        panel.setFrame(NSRect(origin: topRightOrigin(for: size), size: size), display: false)
+        // Reopen where the user last dragged it; otherwise top-right. Set *after* the content view is
+        // installed so the hosting controller can't override it.
+        let origin = savedOrigin(for: size) ?? topRightOrigin(for: size)
+        panel.setFrame(NSRect(origin: origin, size: size), display: false)
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         self.panel = panel
@@ -79,7 +82,7 @@ final class ChatPanelController: NSObject, NSWindowDelegate {
     }
 
     func close() {
-        if let panel { saveSize(panel.frame.size) }
+        if let panel { saveSize(panel.frame.size); saveOrigin(panel.frame.origin) }
         removePasteMonitor()
         panel?.delegate = nil
         panel?.orderOut(nil)
@@ -88,9 +91,13 @@ final class ChatPanelController: NSObject, NSWindowDelegate {
 
     // NSWindowDelegate: clear our reference if the panel closes itself (Esc).
     func windowWillClose(_ notification: Notification) {
-        if let panel { saveSize(panel.frame.size) }
+        if let panel { saveSize(panel.frame.size); saveOrigin(panel.frame.origin) }
         removePasteMonitor()
         panel = nil
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        if let panel { saveOrigin(panel.frame.origin) }
     }
 
     // MARK: - ⌘V image paste
@@ -139,5 +146,21 @@ final class ChatPanelController: NSObject, NSWindowDelegate {
     private func saveSize(_ size: NSSize) {
         UserDefaults.standard.set(size.width, forKey: Self.widthKey)
         UserDefaults.standard.set(size.height, forKey: Self.heightKey)
+    }
+
+    /// Last-dragged origin, only if it still lands on a connected screen (handles an unplugged monitor
+    /// or resolution change) — otherwise nil so we fall back to the top-right default.
+    private func savedOrigin(for size: NSSize) -> NSPoint? {
+        let d = UserDefaults.standard
+        guard d.object(forKey: Self.xKey) != nil, d.object(forKey: Self.yKey) != nil else { return nil }
+        let p = NSPoint(x: d.double(forKey: Self.xKey), y: d.double(forKey: Self.yKey))
+        guard NSScreen.screens.contains(where: { $0.visibleFrame.intersects(NSRect(origin: p, size: size)) })
+        else { return nil }
+        return p
+    }
+
+    private func saveOrigin(_ p: NSPoint) {
+        UserDefaults.standard.set(p.x, forKey: Self.xKey)
+        UserDefaults.standard.set(p.y, forKey: Self.yKey)
     }
 }

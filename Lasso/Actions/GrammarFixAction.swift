@@ -44,9 +44,18 @@ struct GrammarFixAction: CaptureAction {
     Use time expressions as tense cues ("yesterday", "last week" point to past; "tomorrow", \
     "next week" point to future).
 
+    If there is nothing to correct — a URL, file path, email address, code, a number, a single token, \
+    or text that is already correct — return it EXACTLY as given. Never ask a question, never explain, \
+    never refuse.
+
     Output ONLY the corrected text — no explanations, quotes, or labels.
 
     Examples:
+
+    Input:
+    https://www.example.com/appointment-system/taipei
+    Output:
+    https://www.example.com/appointment-system/taipei
 
     Input:
     she don't like coffee

@@ -48,30 +48,76 @@ final class GrammarFixService {
             restore(savedClipboard, to: pb)
             return
         }
+        // Nothing to proofread in a bare URL / path / email / code token — skip the model so it can't
+        // mangle it or go conversational, and leave it untouched.
+        if isNonProse(selected) {
+            StatusHUD.shared.show(icon: "checkmark", text: "Nothing to change.", persist: 1.2)
+            restore(savedClipboard, to: pb)
+            return
+        }
+        // Decide now — while focus is still on the target — whether we can replace the selection in
+        // place. Read-only text (a sent message, a web page, a PDF) can't be pasted into.
+        let editable = isSelectionEditable()
 
-        StatusHUD.shared.show(icon: "text.badge.checkmark", text: "Fixing grammar…", spinner: true)
+        StatusHUD.shared.show(icon: "text.badge.checkmark", text: "Proofreading…", spinner: true)
         let corrected: String
         do {
             corrected = try await correct(selected)
         } catch {
             StatusHUD.shared.show(icon: "exclamationmark.triangle",
-                text: "Couldn't fix grammar — \(error.localizedDescription)", persist: 4)
+                text: "Couldn't proofread — \(error.localizedDescription)", persist: 4)
             restore(savedClipboard, to: pb)
             return
         }
-        guard !corrected.isEmpty else {
+        let unchanged = corrected.trimmingCharacters(in: .whitespacesAndNewlines)
+            == selected.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !corrected.isEmpty, !unchanged else {
             StatusHUD.shared.show(icon: "checkmark", text: "Nothing to change.", persist: 1.5)
             restore(savedClipboard, to: pb)
             return
         }
 
-        // Paste the correction back over the selection, then restore the user's clipboard.
-        pb.clearContents()
-        pb.setString(corrected, forType: .string)
-        sendKey(keyV)
-        StatusHUD.shared.show(icon: "checkmark.circle.fill", text: "Grammar fixed", persist: 1.2)
-        try? await Task.sleep(nanoseconds: 250_000_000)   // let the paste land before restoring
-        restore(savedClipboard, to: pb)
+        if editable {
+            // Paste the correction back over the selection, then restore the user's clipboard.
+            pb.clearContents()
+            pb.setString(corrected, forType: .string)
+            sendKey(keyV)
+            StatusHUD.shared.show(icon: "checkmark.circle.fill", text: "Proofread", persist: 1.2)
+            try? await Task.sleep(nanoseconds: 250_000_000)   // let the paste land before restoring
+            restore(savedClipboard, to: pb)
+        } else {
+            // Read-only selection: pasting would silently fail. Restore the user's clipboard and show
+            // the corrected text in a card they can copy from — so Proofread still works on web pages,
+            // PDFs, and already-sent messages, just as a copy-out instead of an in-place edit.
+            restore(savedClipboard, to: pb)
+            StatusHUD.shared.hide()
+            FloatingPanelController.shared.present(
+                AnyView(FloatingResultView(title: "Proofread", result: .text(corrected))), anchor: nil)
+        }
+    }
+
+    /// Whether the focused element's selection can be replaced (so paste-back will actually work).
+    /// Uses the Accessibility tree: selected-text/value settable, or a known editable role. String
+    /// literals for the attribute names avoid the non-concurrency-safe `kAX…` globals.
+    private func isSelectionEditable() -> Bool {
+        let system = AXUIElementCreateSystemWide()
+        var focusedRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(system, "AXFocusedUIElement" as CFString, &focusedRef) == .success,
+              let focused = focusedRef, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return false }
+        let element = focused as! AXUIElement
+
+        func settable(_ attr: String) -> Bool {
+            var flag: DarwinBoolean = false
+            return AXUIElementIsAttributeSettable(element, attr as CFString, &flag) == .success && flag.boolValue
+        }
+        if settable("AXSelectedText") || settable("AXValue") { return true }
+
+        var roleRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, "AXRole" as CFString, &roleRef) == .success,
+           let role = roleRef as? String {
+            return ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"].contains(role)
+        }
+        return false
     }
 
     /// Accumulate the engine's correction to a full string (can't stream into another app's field),
@@ -82,7 +128,31 @@ final class GrammarFixService {
                                                     context: nil) {
             out += delta
         }
-        return GrammarFixAction.cleanCorrection(out)
+        let cleaned = GrammarFixAction.cleanCorrection(out)
+        // If the model went conversational (asked a question / refused) or returned nothing, keep the
+        // original verbatim — never replace the user's text with a refusal.
+        return (cleaned.isEmpty || looksLikeRefusal(cleaned)) ? text : cleaned
+    }
+
+    /// A bare URL / file path / email / code token has no prose to correct — skip the model entirely.
+    private func isNonProse(_ s: String) -> Bool {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.contains(where: \.isWhitespace) else { return false }   // has spaces → treat as prose
+        if t.contains("://") || t.lowercased().hasPrefix("www.") { return true }   // URL
+        if t.contains("@"), t.contains(".") { return true }                        // email
+        if t.hasPrefix("/") || t.hasPrefix("~/") || t.hasPrefix("./") { return true }  // path
+        return t.filter(\.isLetter).count < 2                                      // numbers/symbols
+    }
+
+    /// Heuristic: did the model answer conversationally instead of returning corrected text? Guards
+    /// against pasting "I'm not sure what you meant…"-style replies over the user's selection.
+    private func looksLikeRefusal(_ s: String) -> Bool {
+        let t = s.lowercased()
+        let markers = ["i'm not sure", "i am not sure", "not sure what", "please provide",
+                       "you'd like me to", "you would like me to", "i'll try to", "i will try to",
+                       "as an ai", "i cannot", "i can't help", "could you clarify", "what would you like",
+                       "there is no text", "no text to correct", "please share"]
+        return markers.contains { t.contains($0) }
     }
 
     // MARK: - Clipboard & key simulation
