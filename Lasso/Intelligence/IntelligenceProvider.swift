@@ -234,6 +234,57 @@ final class IntelligenceCoordinator {
         return "Custom"
     }
 
+    // MARK: - OpenAI-compatible services (per-service config, shared with Settings)
+
+    /// The known OpenAI-compatible services and their canonical base URLs / names. Mirrors Settings so
+    /// quick-switching from the chat header stays consistent with the editor.
+    static let openAIServices = ["openai", "groq", "openrouter", "custom"]
+    static func openAIServiceURL(_ service: String, custom: String) -> String {
+        switch service {
+        case "groq": return "https://api.groq.com/openai/v1"
+        case "openrouter": return "https://openrouter.ai/api/v1"
+        case "custom": return custom
+        default: return "https://api.openai.com/v1"
+        }
+    }
+    static func openAIServiceName(_ service: String) -> String {
+        switch service {
+        case "groq": return "Groq"
+        case "openrouter": return "OpenRouter"
+        case "custom": return "Custom"
+        default: return "OpenAI"
+        }
+    }
+    /// Per-service key only — never the shared/legacy "openai.apiKey", which holds the *active*
+    /// service's key. Falling back to it made an unconfigured service (e.g. OpenAI) look configured
+    /// by borrowing another service's key.
+    private func openAIServiceKey(_ service: String) -> String {
+        Keychain.get("openai.svc.\(service).key") ?? ""
+    }
+    /// The active OpenAI-compatible service key (UserDefaults), defaulting to "openai".
+    var activeOpenAIService: String { UserDefaults.standard.string(forKey: "intelligence.openai.service") ?? "openai" }
+
+    /// Services the user has configured (a key + a model) — for the chat header's quick switcher.
+    func configuredOpenAIServices() -> [(service: String, name: String, model: String)] {
+        Self.openAIServices.compactMap { s in
+            let model = UserDefaults.standard.string(forKey: "intelligence.openai.svc.\(s).model") ?? ""
+            guard !openAIServiceKey(s).isEmpty, !model.isEmpty else { return nil }
+            return (s, Self.openAIServiceName(s), model)
+        }
+    }
+
+    /// Switch the active OpenAI-compatible service (and its saved model + key) — the same commit
+    /// Settings ▸ Apply performs, so the two never diverge.
+    func switchOpenAIService(_ service: String) {
+        let custom = UserDefaults.standard.string(forKey: "intelligence.openai.customBaseURL")
+            ?? "https://api.openai.com/v1"
+        openAIBaseURL = Self.openAIServiceURL(service, custom: custom)
+        openAIModel = UserDefaults.standard.string(forKey: "intelligence.openai.svc.\(service).model") ?? openAIModel
+        Keychain.set(openAIServiceKey(service), for: "openai.apiKey")
+        UserDefaults.standard.set(service, forKey: "intelligence.openai.service")
+        preferred = .openAICompatible
+    }
+
     /// Resolve the text model to use: the user's choice if installed, else the best installed chat
     /// model (Auto). Returns "" only when no suitable model is installed.
     func resolvedTextModel() async -> String {

@@ -186,6 +186,70 @@ final class ChatController {
         let nativeVision = await intelligence.textModelSupportsVision()
         imageInputAvailable = intelligence.visionAvailable || nativeVision
         webConnectorsAvailable = Self.computeWebAvailable()
+        await refreshModels()
+    }
+
+    // MARK: - Quick model switch (header menu)
+
+    /// Installed local Ollama text models, cached for the header menu (Ollama listing is async; the
+    /// rest are read synchronously when the menu builds).
+    private(set) var ollamaModels: [String] = []
+
+    func refreshModels() async {
+        ollamaModels = (await OllamaModels.installed())
+            .filter { !OllamaModels.isEmbedding($0) && !OllamaModels.isVision($0) }
+    }
+
+    /// Downloaded MLX models as (display, repo id).
+    var mlxModels: [(label: String, id: String)] {
+        MLXCache.installed().map { entry in
+            (entry.repoID.split(separator: "/").last.map(String.init) ?? entry.repoID, entry.repoID)
+        }
+    }
+
+    /// Configured OpenAI-compatible services (Groq / OpenRouter / Custom / OpenAI) for the header's
+    /// quick switcher — one tap each switches to that service and its saved model. Hidden in
+    /// local-only mode.
+    var openAIServices: [(service: String, name: String, model: String)] {
+        PrivacyMode.localOnly ? [] : intelligence.configuredOpenAIServices()
+    }
+    /// Cloud engines are only offered when configured (key + model) and not in local-only mode.
+    var anthropicReady: Bool {
+        !PrivacyMode.localOnly && !intelligence.anthropicModel.isEmpty
+            && !(Keychain.getMigrating("anthropic.apiKey", legacyDefaultsKey: "anthropic.apiKey") ?? "").isEmpty
+    }
+
+    /// Switch the active text engine/model globally — persists exactly like Settings would, so it
+    /// affects capture actions too. Cloud switches keep whatever model is configured in Settings.
+    func selectTextModel(_ provider: ProviderKind, model: String = "") {
+        intelligence.preferred = provider
+        switch provider {
+        case .ollama: if !model.isEmpty { intelligence.ollamaModel = model }
+        case .mlx:    if !model.isEmpty { intelligence.mlxModel = model }
+        case .onDevice, .openAICompatible, .anthropic: break
+        }
+        Task { await refreshCapabilities() }
+    }
+
+    /// Whether `provider` (+`model`) is the active text engine — drives the menu checkmarks.
+    func isCurrentTextModel(_ provider: ProviderKind, model: String = "") -> Bool {
+        guard intelligence.effectivePreferred == provider else { return false }
+        switch provider {
+        case .ollama: return model.isEmpty || intelligence.ollamaModel == model
+        case .mlx: return model.isEmpty
+            || MLXProvider.normalizedID(intelligence.mlxModel) == MLXProvider.normalizedID(model)
+        default: return true
+        }
+    }
+
+    /// Switch to a specific OpenAI-compatible service (Groq / OpenRouter / Custom / OpenAI) and its
+    /// saved model — global, persists, matches Settings.
+    func selectOpenAIService(_ service: String) {
+        intelligence.switchOpenAIService(service)
+        Task { await refreshCapabilities() }
+    }
+    func isCurrentOpenAIService(_ service: String) -> Bool {
+        intelligence.effectivePreferred == .openAICompatible && intelligence.activeOpenAIService == service
     }
 
     /// OCR the attached image locally; nil if there's no readable text.
@@ -473,12 +537,16 @@ final class ChatController {
         // Search → Answer. Otherwise add it up front (with the cold-load hint).
         var answerStepID: UUID? = toolPath ? nil : addStep(assistantID, icon: "sparkles", text: "Answering · \(textLabel)")
 
-        // If no token arrives within a few seconds, the provider is likely cold-loading the model.
+        // If no token arrives within a few seconds, say why: a local model is cold-loading into
+        // memory ("first use can take a while"); a cloud model is just slow/busy on the network.
+        let coldLoadHint = intelligence.effectivePreferred.isLocalKind
+            ? "Loading \(textLabel)… (first use can take a while)"
+            : "Waiting for \(textLabel)…"
         let loadingHint: Task<Void, Never>? = answerStepID.map { stepID in
             Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 if Task.isCancelled { return }
-                self?.setStepText(assistantID, stepID, "Loading \(textLabel)… (first use can take a while)")
+                self?.setStepText(assistantID, stepID, coldLoadHint)
             }
         }
 

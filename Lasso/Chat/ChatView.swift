@@ -7,7 +7,7 @@ struct ChatView: View {
     @AppStorage("ui.resultTextScale") private var textScale = 1.0
     @FocusState private var inputFocused: Bool
     @State private var isDropTarget = false
-    @State private var showModelInfo = false
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(spacing: 0) {
@@ -67,9 +67,61 @@ struct ChatView: View {
         .background(WindowDragArea())
     }
 
-    /// Compact model indicator in the header; opens a popover with full Text/Image/privacy details.
+    /// Compact model indicator that doubles as a quick switcher — pick any model you've already set
+    /// up (no keys/downloads here; that stays in Settings). Switching applies globally.
     private var modelChip: some View {
-        Button { showModelInfo.toggle() } label: {
+        Menu {
+            Section("Language model") {
+                Button { chat.selectTextModel(.onDevice) } label: {
+                    Label("Apple Intelligence",
+                          systemImage: chat.isCurrentTextModel(.onDevice) ? "checkmark" : "cpu")
+                }
+                if !chat.ollamaModels.isEmpty {
+                    Menu("Ollama") {
+                        ForEach(chat.ollamaModels, id: \.self) { m in
+                            Button { chat.selectTextModel(.ollama, model: m) } label: {
+                                if chat.isCurrentTextModel(.ollama, model: m) {
+                                    Label(m, systemImage: "checkmark")
+                                } else { Text(m) }
+                            }
+                        }
+                    }
+                }
+                let mlx = chat.mlxModels
+                if !mlx.isEmpty {
+                    Menu("MLX") {
+                        ForEach(mlx, id: \.id) { item in
+                            Button { chat.selectTextModel(.mlx, model: item.id) } label: {
+                                if chat.isCurrentTextModel(.mlx, model: item.id) {
+                                    Label(item.label, systemImage: "checkmark")
+                                } else { Text(item.label) }
+                            }
+                        }
+                    }
+                }
+                ForEach(chat.openAIServices, id: \.service) { svc in
+                    Button { chat.selectOpenAIService(svc.service) } label: {
+                        Label("\(svc.name) · \(Self.shortModel(svc.model))",
+                              systemImage: chat.isCurrentOpenAIService(svc.service) ? "checkmark" : "cloud")
+                    }
+                }
+                if chat.anthropicReady {
+                    Button { chat.selectTextModel(.anthropic) } label: {
+                        Label("Anthropic · \(intelligence.anthropicModel)",
+                              systemImage: chat.isCurrentTextModel(.anthropic) ? "checkmark" : "cloud")
+                    }
+                }
+            }
+            if chat.imageInputAvailable {
+                Section("Image model") {
+                    Text(Self.shortModel(intelligence.imageEngineLabel))   // read-only — change in Settings
+                }
+            }
+            Divider()
+            Label(intelligence.privacyNote,
+                  systemImage: intelligence.usedOffDeviceThisSession ? "cloud" : "lock.fill")
+            Button("Open Intelligence Settings…") { openSettings() }
+        } label: {
             HStack(spacing: 4) {
                 Image(systemName: textIcon).font(.system(size: 9))
                 Text(Self.shortModel(intelligence.textEngineLabel))
@@ -81,35 +133,10 @@ struct ChatView: View {
             .background(.white.opacity(0.06), in: Capsule())
             .overlay(Capsule().strokeBorder(.white.opacity(0.10)))
         }
-        .buttonStyle(.plain)
-        .help("Models & privacy")
-        .popover(isPresented: $showModelInfo, arrowEdge: .bottom) { modelInfoPopover }
-    }
-
-    private var modelInfoPopover: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Models").font(.headline)
-            Label { Text("Language · \(intelligence.textEngineLabel)") } icon: {
-                Image(systemName: textIcon)
-            }
-            if chat.imageInputAvailable {
-                Label { Text("Image · \(intelligence.imageEngineLabel)") } icon: {
-                    Image(systemName: imageIcon)
-                }
-            }
-            Divider()
-            Label {
-                Text(intelligence.privacyNote)
-            } icon: {
-                Image(systemName: intelligence.usedOffDeviceThisSession ? "cloud" : "lock.fill")
-            }
-            .foregroundStyle(.secondary)
-            Text("Change models in Settings ▸ Intelligence.")
-                .font(.caption2).foregroundStyle(.secondary)
-        }
-        .font(.callout)
-        .padding(14)
-        .frame(width: 300, alignment: .leading)
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Switch model")
     }
 
     /// "Groq · openai/gpt-oss-20b" → "gpt-oss-20b" for the compact chip.
