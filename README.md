@@ -10,6 +10,8 @@ what an object is, scan a QR code, grab a color.
 Think "Circle to Search," but native to the Mac and **local by default** —
 nothing leaves your machine unless you decide it should.
 
+<p align="center"><img src="screenshots/hero.png" alt="Drag a box around anything on screen and translate it in place"></p>
+
 ## What you can do with a selection
 
 - **Copy text** — OCR pulls the words straight out of the image.
@@ -21,6 +23,22 @@ nothing leaves your machine unless you decide it should.
   tells you what it is, with sources and a confidence rating.
 - **Scan QR / barcodes**, and **pick a color** from any pixel.
 
+<p align="center"><img src="screenshots/actions.png" alt="The full set of things Lasso can do with a selection"></p>
+
+## Identify
+
+<p align="center"><img src="screenshots/identify.png" alt="Identify names what you point at and writes a short, sourced answer"></p>
+
+A local vision model names it, then writes a short, sourced answer with a
+confidence rating. Repeat lookups are instant.
+
+## Chat
+
+<p align="center"><img src="screenshots/chat.png" alt="A persistent chat panel that remembers the thread and grounds answers with sources"></p>
+
+A persistent chat panel that remembers the thread, takes a dropped image, and
+grounds its answers with real sources when you want.
+
 ## Privacy
 
 Out of the box everything runs on your Mac — text via **Apple Intelligence**,
@@ -29,6 +47,8 @@ Mac is the optional web lookup in Identify, and it's off until you turn it on.
 There's a **Local-only mode** that forces a local model and blocks every
 incidental network call. Cloud models (OpenAI, Groq, Anthropic, custom) are
 supported too, but strictly opt-in; API keys live in the macOS Keychain.
+
+<p align="center"><img src="screenshots/privacy.png" alt="Runs on your Mac — nothing leaves unless you say so"></p>
 
 ## Install
 
