@@ -1,4 +1,4 @@
-<p align="center"><img src="icon.png" width="120" alt="Lasso"></p>
+<p align="center"><img src="app-icon.png" width="120" alt="Lasso"></p>
 
 # Lasso
 
