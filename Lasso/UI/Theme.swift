@@ -36,18 +36,16 @@ private struct LiquidGlassPanel: ViewModifier {
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        // The panel surface is a single frosted material (cohesive, clearly a card on any desktop) —
-        // NOT `.glassEffect`, which is near-invisible over a dark desktop and reads as "no background".
-        // Glass is reserved for the control pills. Material becomes more opaque under Reduce Transparency.
-        return Group {
-            if reduceTransparency {
-                content.background(.regularMaterial, in: shape)
-            } else {
-                content.background(.ultraThinMaterial, in: shape)
-            }
-        }
-        .overlay(shape.strokeBorder(.white.opacity(0.12), lineWidth: 1))
-        .shadow(color: .black.opacity(0.40), radius: 24, y: 10)
+        // Frosted material surface hard-clipped to the rounded shape (so the material can never bleed a
+        // square corner), with a hairline rim. NO SwiftUI drop shadow — the panel window uses the native
+        // macOS shadow, which is cast outside the card's real silhouette instead of showing *through*
+        // the translucent glass at the corners. Glass stays on the control pills; material is more
+        // opaque under Reduce Transparency.
+        content
+            .background(reduceTransparency ? AnyShapeStyle(.regularMaterial)
+                                           : AnyShapeStyle(.ultraThinMaterial), in: shape)
+            .overlay(shape.strokeBorder(.white.opacity(0.10), lineWidth: 1))
+            .clipShape(shape)
     }
 }
 

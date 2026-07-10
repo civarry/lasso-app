@@ -61,7 +61,7 @@ final class ChatPanelController: NSObject, NSWindowDelegate {
         panel.level = .floating
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = false
+        panel.hasShadow = true   // native shadow follows the rounded card; no see-through corner halo
         panel.hidesOnDeactivate = false
         // Off: movable-by-background swallows clicks on SwiftUI controls (turns them into window
         // drags). The header provides an explicit drag region instead (see ChatView.WindowDragArea).

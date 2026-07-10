@@ -39,9 +39,7 @@ struct FloatingResultView: View {
         }
         .padding(14)
         .frame(width: 460)
-        .background(RoundedRectangle(cornerRadius: 16).fill(Color(nsColor: .windowBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.10)))
-        .shadow(color: .black.opacity(0.4), radius: 20, y: 8)
+        .liquidGlassPanel()
         .task { startStreamingIfNeeded() }
         .onDisappear { task?.cancel() }
     }
@@ -72,6 +70,8 @@ struct FloatingResultView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(minHeight: 60, maxHeight: 340)
+        .padding(12)
+        .glassWell()
     }
 
     private var showsTextControls: Bool {
