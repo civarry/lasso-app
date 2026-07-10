@@ -118,10 +118,14 @@ flowchart TD
 ---
 
 ## Phasing
-1. **Retrieval memory** — ✅ **SHIPPED**. `ChatMemoryIndex` (embedder ladder Ollama→NLEmbedding→none,
-   exchange-chunk index, importance filter, query = text + last 1–2 turns) + `ChatContextBuilder`
-   retrieval reserve, wired into `ChatController` (index on turn finish, retrieve on send, reset on
-   `/clear`). In-session, graceful skip when no embedder.
+1. **Retrieval memory** — ✅ **SHIPPED & VALIDATED** (MLX Qwen2.5-7B + Apple NLEmbedding).
+   `ChatMemoryIndex` (embedder ladder Ollama→NLEmbedding→none, exchange-chunk index, importance filter,
+   query = text + last 1–2 turns) + `ChatContextBuilder` retrieval reserve, wired into `ChatController`
+   (index on turn finish, retrieve on send, reset on `/clear`). In-session, graceful skip when no
+   embedder. **Gate is hybrid lexical + semantic** — NLEmbedding's cosines can't separate signal from
+   noise (a real recall scored below unrelated noise), so a keyword-overlap gate provides precision and
+   the embedding only ranks (with a `+0.1·kw` boost that fixes ranking where semantics can't). Test:
+   exact far-back recall (steps 7/8), zero retrieval on unrelated turns (5/6/9).
 2. **Multi-image per turn** — data model + provider array encoders + composer thumbnails + per-image
    caption/OCR. (Not started.)
 3. Offer `nomic-embed-text` in the setup/model list. (Not started.)
