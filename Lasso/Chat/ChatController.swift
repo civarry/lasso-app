@@ -180,6 +180,25 @@ final class ChatController {
         active = target
     }
 
+    /// Remove a conversation (cancelling its work). If it was the active one, fall back to the most
+    /// recent remaining; closing the last conversation leaves a fresh empty one.
+    func close(_ id: UUID) {
+        guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
+        sessions[idx].cancelWork()
+        let wasActive = sessions[idx].id == active.id
+        sessions.remove(at: idx)
+        if sessions.isEmpty {
+            let fresh = Conversation()
+            sessions = [fresh]
+            active = fresh
+        } else if wasActive {
+            active = sessions.last!
+        }
+    }
+
+    /// Close the conversation currently shown (the recents menu's "Close" action).
+    func closeActive() { close(active.id) }
+
     /// Open a *new* conversation seeded with a prior one-shot exchange (Ask AI's "Continue in chat") —
     /// the conversation you were in is preserved and reachable from the recents menu.
     func continueWith(question: String, answer: String, context: String?, image: CGImage?) {

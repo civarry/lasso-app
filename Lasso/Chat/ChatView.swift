@@ -75,6 +75,10 @@ struct ChatView: View {
             Button { chat.newChat(); inputFocused = true } label: {
                 Label("New chat", systemImage: "square.and.pencil")
             }
+            Button(role: .destructive) { chat.closeActive(); inputFocused = true } label: {
+                Label("Close this chat", systemImage: "trash")
+            }
+            .disabled(chat.active.isStreaming || (chat.sessions.count == 1 && !chat.canClear))
         } label: {
             HStack(spacing: 3) {
                 Text(chat.sessions.count > 1 ? chat.active.title : "Chat")
