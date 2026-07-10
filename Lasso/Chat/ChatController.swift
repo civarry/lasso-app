@@ -502,25 +502,40 @@ final class ChatController {
                 }
                 let stepID = addStep(assistantID, icon: "eye",
                                      text: "Looking at \(attachments.count) image\(multi ? "s" : "") · \(label)")
-                var descriptions: [String] = []
-                var describeError: Error?
-                for (i, att) in attachments.enumerated() {
-                    let prompt = typed.isEmpty
-                        ? "Describe this image in detail."
-                        : "Describe this image in detail to help answer: \(typed)"
-                    do {
-                        let d = try await vision.describe(att.image, prompt: prompt)
-                        if !d.isEmpty { descriptions.append(multi ? "Image \(i + 1): \(d)" : d) }
-                    } catch {
-                        describeError = error
-                        Log.chat.error("runTurn · describe FAILED (image \(i + 1, privacy: .public)): \(error.localizedDescription, privacy: .public)")
+                // Describe images concurrently: a real speedup for HTTP vision (Ollama / cloud —
+                // parallel requests); local MLX serializes safely on its `ModelContainer` actor (queued,
+                // never concurrent-generate). `VisionProvider` is Sendable so it's safe to capture.
+                let describeQuery = typed
+                struct Described: Sendable { let index: Int; let text: String?; let error: String? }
+                let results = await withTaskGroup(of: Described.self) { group in
+                    for (i, att) in attachments.enumerated() {
+                        group.addTask {
+                            let prompt = describeQuery.isEmpty
+                                ? "Describe this image in detail."
+                                : "Describe this image in detail to help answer: \(describeQuery)"
+                            do {
+                                let d = try await vision.describe(att.image, prompt: prompt)
+                                return Described(index: i, text: d.isEmpty ? nil : d, error: nil)
+                            } catch {
+                                Log.chat.error("runTurn · describe FAILED (image \(i + 1, privacy: .public)): \(error.localizedDescription, privacy: .public)")
+                                return Described(index: i, text: nil, error: error.localizedDescription)
+                            }
+                        }
                     }
+                    var out: [Described] = []
+                    for await r in group { out.append(r) }
+                    return out
+                }
+                let ordered = results.sorted { $0.index < $1.index }
+                var descriptions: [String] = []
+                for r in ordered {
+                    if let t = r.text { descriptions.append(multi ? "Image \(r.index + 1): \(t)" : t) }
                 }
                 if descriptions.isEmpty {
                     completeStep(assistantID, stepID, text: "Couldn't read the image\(multi ? "s" : "") · \(label)")
-                    finishError(assistantID, describeError.map {
+                    finishError(assistantID, ordered.compactMap(\.error).first.map {
                         "The image model (\(label)) couldn't read \(multi ? "these images" : "this image"): "
-                        + "\($0.localizedDescription) It may be slow, rate-limited, or offline — try again, "
+                        + "\($0) It may be slow, rate-limited, or offline — try again, "
                         + "or switch image models in Settings ▸ Intelligence ▸ Image model."
                     } ?? "The image model (\(label)) returned no description. Try again, or switch models in "
                         + "Settings ▸ Intelligence ▸ Image model.")
