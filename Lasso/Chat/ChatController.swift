@@ -60,6 +60,12 @@ final class ChatController {
     /// tighter window later (the same pipeline serves tiny local → large cloud).
     private let contextBuilder = ChatContextBuilder()
 
+    /// In-session semantic memory: embeds completed exchanges and retrieves the relevant older ones
+    /// verbatim so specifics the summary compressed away can be recalled. Reset in `newChat()`.
+    private let memoryIndex = ChatMemoryIndex()
+    /// In-flight background indexing of completed exchanges. Never on the send path.
+    private var indexTask: Task<Void, Never>?
+
     private init() {
         // Default off; restore the user's last choice if they ever set it.
         webSearchOn = UserDefaults.standard.object(forKey: Self.webSearchKey) as? Bool ?? false
@@ -183,6 +189,9 @@ final class ChatController {
         streamTask = nil
         summaryTask?.cancel()
         summaryTask = nil
+        indexTask?.cancel()
+        indexTask = nil
+        memoryIndex.reset()
         memory = ConversationMemory()
         summarizedTurnCount = 0
         messages.removeAll()
@@ -549,8 +558,20 @@ final class ChatController {
         // Persist what was actually sent so the description / image carries into follow-up turns.
         update(userID) { $0.promptText = userText; $0.imageBase64 = imageBase64 }
 
+        // Pull relevant older exchanges back in verbatim (semantic recall; empty when nothing indexed
+        // or no embedder). Runs before assembly so the builder can place them in their reserve.
+        let retrieved = await retrieveMemory(currentUserText: userText)
+        if !retrieved.isEmpty {
+            Log.chat.notice("runTurn · retrieved \(retrieved.count, privacy: .public) memory chunk(s) (+\(ms(), privacy: .public)ms)")
+            // Debug-level so it's visible in Xcode while testing but not persisted for regular users.
+            for (i, chunk) in retrieved.enumerated() {
+                let preview = String(chunk.replacingOccurrences(of: "\n", with: " ⏎ ").prefix(140))
+                Log.chat.debug("runTurn ·   retrieved[\(i, privacy: .public)]: \(preview, privacy: .public)")
+            }
+        }
+
         let textLabel = intelligence.textEngineLabel
-        let turns = buildTurns(newUserText: userText, imageBase64: imageBase64)
+        let turns = buildTurns(newUserText: userText, imageBase64: imageBase64, retrieved: retrieved)
         let totalChars = turns.reduce(0) { $0 + $1.text.count }
         Log.chat.notice("runTurn · built \(turns.count, privacy: .public) turns, \(totalChars, privacy: .public) chars, toolPath=\(toolPath, privacy: .public) — stream START (+\(ms(), privacy: .public)ms)")
         if Task.isCancelled { Log.chat.notice("runTurn · cancelled before stream"); return }
@@ -741,7 +762,7 @@ final class ChatController {
     /// the new (folded) user turn. Delegates layout/budget to `ChatContextBuilder`; older turns that
     /// fall outside the recent window are represented by `rollingSummary` (kept fresh in the
     /// background) instead of being dropped.
-    private func buildTurns(newUserText: String, imageBase64: String?) -> [ChatTurn] {
+    private func buildTurns(newUserText: String, imageBase64: String?, retrieved: [String] = []) -> [ChatTurn] {
         // Map the prior history (excluding the just-appended user-display + assistant-placeholder)
         // to the builder's history turns, using each message's persisted `promptText` so folded
         // image/evidence context carries. Assistant thoughts are stripped — they're UI affordances.
@@ -750,6 +771,7 @@ final class ChatController {
         let out = contextBuilder.build(systemPrompt: Self.systemPrompt,
                                        memory: memory,
                                        history: history,
+                                       retrieved: retrieved,
                                        currentUserText: newUserText,
                                        currentImageBase64: imageBase64)
         trimmedNotice = out.didCompress
@@ -1002,6 +1024,56 @@ final class ChatController {
             }
         }
         isStreaming = false
+        scheduleIndex()
+    }
+
+    // MARK: - Semantic memory index (background)
+
+    /// Embed newly-completed exchanges into the in-session memory index — off the send path, so it
+    /// never blocks a reply. Incremental (only new exchanges are embedded).
+    private func scheduleIndex() {
+        let exchanges = Self.exchanges(from: messages)
+        guard !exchanges.isEmpty else { return }
+        indexTask?.cancel()
+        indexTask = Task { [weak self] in
+            await self?.memoryIndex.index(exchanges)
+        }
+    }
+
+    /// Pair the visible conversation into (user + assistant) exchanges — the retrieval unit, so a
+    /// recalled answer always carries its question. Uses the exact text the model saw (`promptText`),
+    /// `<think>` stripped; skips unfinished / errored assistant turns.
+    private static func exchanges(from messages: [ChatMessage]) -> [ChatMemoryIndex.Exchange] {
+        var out: [ChatMemoryIndex.Exchange] = []
+        var i = 0
+        while i < messages.count {
+            let m = messages[i]
+            if m.role == .user, i + 1 < messages.count, messages[i + 1].role == .assistant {
+                let a = messages[i + 1]
+                if a.isStreaming || a.isError { i += 1; continue }
+                let userText = m.promptText ?? m.text
+                let asstText = stripThoughtBlocks(from: a.text)
+                out.append(.init(messageIDs: [m.id, a.id],
+                                 text: "User: \(userText)\nAssistant: \(asstText)"))
+                i += 2
+            } else {
+                i += 1
+            }
+        }
+        return out
+    }
+
+    /// Retrieve relevant older exchanges for this turn. Query = the current (folded) user text plus the
+    /// last couple of turns, so a follow-up like "continue debugging the parser" still matches the
+    /// earlier parser thread. Excludes anything already in the recent verbatim window (no duplicates).
+    private func retrieveMemory(currentUserText: String) async -> [String] {
+        let history = messages.dropLast(2)                       // drop the just-appended user+placeholder
+        guard !history.isEmpty else { return [] }
+        let recentWindow = history.suffix(contextBuilder.budget.recentTurns)
+        let recentIDs = Set(recentWindow.map(\.id))
+        let recentContext = history.suffix(2).map { $0.promptText ?? $0.text }
+        let query = (recentContext + [currentUserText]).joined(separator: "\n")
+        return await memoryIndex.retrieve(query: query, excluding: recentIDs)
     }
 
     private func finishError(_ id: UUID, _ message: String) {

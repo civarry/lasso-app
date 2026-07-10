@@ -118,11 +118,13 @@ flowchart TD
 ---
 
 ## Phasing
-1. **Retrieval memory** — `NLEmbedding` + in-memory top-K + new `ChatContextBuilder` reserve; Ollama
-   embed as optional upgrade. (Self-contained; biggest recall win.)
+1. **Retrieval memory** — ✅ **SHIPPED**. `ChatMemoryIndex` (embedder ladder Ollama→NLEmbedding→none,
+   exchange-chunk index, importance filter, query = text + last 1–2 turns) + `ChatContextBuilder`
+   retrieval reserve, wired into `ChatController` (index on turn finish, retrieve on send, reset on
+   `/clear`). In-session, graceful skip when no embedder.
 2. **Multi-image per turn** — data model + provider array encoders + composer thumbnails + per-image
-   caption/OCR.
-3. Offer `nomic-embed-text` in the setup/model list.
+   caption/OCR. (Not started.)
+3. Offer `nomic-embed-text` in the setup/model list. (Not started.)
 
 ## Deferred (revisit later)
 - Cross-session persistent memory (needs on-disk store + "forget me" + privacy surface).

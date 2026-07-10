@@ -145,6 +145,14 @@ Persistent top-right panel (⌥⌘A), independent of the capture overlay. Multi-
 `ChatContextBuilder`). Grounds via the same keyless web search; reverse-image is the one-tap Lens
 escalation, not a silent per-turn API call.
 
+**Context memory (three speeds):** recent 6 turns verbatim → two-track running summary (durable facts
++ topic trace) → **semantic retrieval** (`ChatMemoryIndex`, Phase 1). The index embeds completed
+*exchanges* (user + assistant) in the background; at send it retrieves the top-K most relevant *older*
+exchanges verbatim (query = current text + last 1–2 turns), deduped against the recent window, into a
+bounded reserve in `ChatContextBuilder`. Embedder ladder: Ollama `nomic-embed-text` → Apple
+`NLEmbedding` (zero-setup) → none (retrieval silently off). In-session only. See
+`docs/CHAT_MEMORY_DESIGN.md`; multi-image is Phase 2 (not built).
+
 ---
 
 ## 8. Connectors, web grounding & privacy
@@ -192,6 +200,12 @@ Primitives in `UI/Theme.swift`:
 ---
 
 ## Change log
+- Chat semantic retrieval memory (`ChatMemoryIndex`) — Phase 1: exchange-chunk index, embedder ladder
+  (Ollama→NLEmbedding→none), retrieval reserve in `ChatContextBuilder`. In-session only.
+- **Provider system-turn fix (latent bug):** MLX dropped ALL `.system` turns (used its own hardcoded
+  prompt) and Anthropic used only the *first* — silently discarding the injected conversation-memory
+  AND semantic-retrieval blocks AND the app's chat system prompt. Both now merge every system turn.
+  (Ollama / OpenAI-compatible / on-device already propagated them.)
 - Removed Google Vision (keyed reverse-image) connector + source; Lens is the reverse-image path.
 - Web search defaults ON; Tavily/SerpApi demoted to collapsed "Advanced".
 - Identify text-heavy captures show `TextActionsView` instead of a refusal; escape hatch "Google Lens"
