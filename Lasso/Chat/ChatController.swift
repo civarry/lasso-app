@@ -164,9 +164,9 @@ final class ChatController {
 
     // MARK: - Session management
 
-    /// Recents-menu rows (id, title, active flag), most-recent first.
-    var sessionSummaries: [(id: UUID, title: String, isActive: Bool)] {
-        sessions.reversed().map { ($0.id, $0.title, $0.id == active.id) }
+    /// Recents-menu rows (id, title, icon, active flag), most-recent first.
+    var sessionSummaries: [(id: UUID, title: String, systemImage: String, isActive: Bool)] {
+        sessions.reversed().map { ($0.id, $0.title, $0.systemImage, $0.id == active.id) }
     }
 
     /// Start a brand-new empty conversation — keeps the current ones (no longer wipes).
@@ -203,7 +203,9 @@ final class ChatController {
     /// the conversation you were in is preserved and reachable from the recents menu.
     func continueWith(question: String, answer: String, context: String?, image: CGImage?) {
         let s = Conversation()
-        s.originLabel = "Ask AI"
+        s.kind = .askAI
+        if let image { s.anchor = .image(image) }
+        else if let context, !context.isEmpty { s.anchor = .selection(context) }
         let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
         var user = ChatMessage(role: .user, text: q.isEmpty ? "About this" : q,
                                attachments: image.map { [Attachment(image: $0)] } ?? [])
@@ -219,10 +221,15 @@ final class ChatController {
     /// current conversation.
     func seed(text: String?, image: CGImage?) {
         let s = Conversation()
-        s.originLabel = image != nil ? "Image" : "Selection"
+        s.kind = image != nil ? .image : .selection
         let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines)
         s.seededContext = (trimmed?.isEmpty == false) ? trimmed : nil
-        if let image { s.pendingAttachments = [Attachment(image: image)] }
+        if let image {
+            s.pendingAttachments = [Attachment(image: image)]
+            s.anchor = .image(image)
+        } else if let trimmed, !trimmed.isEmpty {
+            s.anchor = .selection(trimmed)
+        }
         startSession(s)
     }
 
@@ -903,6 +910,9 @@ final class ChatController {
             }
             if Task.isCancelled { return }
             let cleaned = Self.stripThoughtBlocks(from: raw)
+            // Auto-name the conversation from the same pass (so long chats don't stay titled by their
+            // first message). Best-effort — falls back to first-message / kind if absent.
+            if let title = Self.parseTitle(from: cleaned) { session.autoTitle = title }
             // Parse the FACTS/TOPICS contract back into the struct; falls back gracefully on a sloppy
             // small-model response (never loses prior facts, never crashes).
             let updated = Self.parseMemory(from: cleaned, prior: priorMemory)
@@ -968,6 +978,14 @@ final class ChatController {
         }
     }
 
+    /// Extract the `TITLE:` line the summarizer emits (kept separate from the FACTS/TOPICS memory).
+    private static func parseTitle(from output: String) -> String? {
+        guard let r = output.range(of: "TITLE:", options: .caseInsensitive) else { return nil }
+        let line = output[r.upperBound...].prefix(while: { !$0.isNewline })
+        let title = line.trimmingCharacters(in: CharacterSet(charactersIn: " \t\"'"))
+        return title.isEmpty ? nil : String(title.prefix(42))
+    }
+
     /// Render history turns as a compact transcript for the summarizer.
     private static func transcript(of turns: [ChatContextBuilder.HistoryTurn]) -> String {
         turns.map { turn -> String in
@@ -997,8 +1015,9 @@ final class ChatController {
         return """
         You maintain a compact memory of an ongoing chat so a later assistant stays coherent without \
         the full history. Fold the new exchanges below into the memory and output it in exactly this \
-        format, with these two labels and nothing else:
+        format, with these labels and nothing else:
 
+        TITLE: <a 2–5 word name for this whole conversation, no quotes>
         FACTS:
         - <one durable fact per line>
         TOPICS:
@@ -1013,8 +1032,8 @@ final class ChatController {
         to a single short line so the notes shrink over time instead of piling up — but always leave a \
         thin trace of every past topic so earlier points can still be referenced. Under 200 words.
 
-        Output ONLY those two sections — no preamble, no "here is", no markdown headings beyond the \
-        FACTS:/TOPICS: labels.
+        Output ONLY those sections — no preamble, no "here is", no markdown headings beyond the \
+        TITLE:/FACTS:/TOPICS: labels.
 
         \(priorBlock)
 

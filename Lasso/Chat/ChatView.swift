@@ -67,16 +67,16 @@ struct ChatView: View {
                 Button {
                     chat.switchTo(s.id); inputFocused = true
                 } label: {
-                    if s.isActive { Label(s.title, systemImage: "checkmark") } else { Text(s.title) }
+                    Label(s.title, systemImage: s.isActive ? "checkmark" : s.systemImage)
                 }
                 .disabled(s.isActive || chat.active.isStreaming)
             }
             Divider()
             Button { chat.newChat(); inputFocused = true } label: {
-                Label("New chat", systemImage: "square.and.pencil")
+                Label("New conversation", systemImage: "square.and.pencil")
             }
             Button(role: .destructive) { chat.closeActive(); inputFocused = true } label: {
-                Label("Close this chat", systemImage: "trash")
+                Label("Close this conversation", systemImage: "trash")
             }
             .disabled(chat.active.isStreaming || (chat.sessions.count == 1 && !chat.canClear))
         } label: {
