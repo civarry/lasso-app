@@ -39,12 +39,13 @@ struct ChatTurn: Sendable {
     enum Role: String, Sendable { case system, user, assistant }
     var role: Role
     var text: String
-    var imageBase64: String?
+    /// Base64 JPEGs for a multimodal user turn (may be several — "compare these"). Empty for text-only.
+    var imageBase64s: [String]
 
-    init(role: Role, text: String, imageBase64: String? = nil) {
+    init(role: Role, text: String, imageBase64s: [String] = []) {
         self.role = role
         self.text = text
-        self.imageBase64 = imageBase64
+        self.imageBase64s = imageBase64s
     }
 }
 

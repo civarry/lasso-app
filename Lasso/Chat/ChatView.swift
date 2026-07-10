@@ -240,15 +240,15 @@ struct ChatView: View {
     private var composer: some View {
         VStack(spacing: 8) {
             // Seeded capture context + pending image attachment chips.
-            if chat.seededContext != nil || chat.pendingImage != nil {
+            if chat.seededContext != nil || !chat.pendingAttachments.isEmpty {
                 HStack(spacing: 8) {
-                    if let image = chat.pendingImage {
+                    ForEach(chat.pendingAttachments) { att in
                         ZStack(alignment: .topTrailing) {
-                            Image(decorative: image, scale: 1)
+                            Image(decorative: att.image, scale: 1)
                                 .resizable().scaledToFill()
                                 .frame(width: 44, height: 44)
                                 .clipShape(RoundedRectangle(cornerRadius: 6))
-                            Button { chat.clearAttachment() } label: {
+                            Button { chat.removeAttachment(att.id) } label: {
                                 Image(systemName: "xmark.circle.fill").font(.caption)
                             }
                             .buttonStyle(.plain).foregroundStyle(.white, .black.opacity(0.5))
@@ -317,7 +317,7 @@ struct ChatView: View {
     }
 
     private var canSend: Bool {
-        !chat.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || chat.pendingImage != nil
+        !chat.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !chat.pendingAttachments.isEmpty
     }
 
     private var engineName: String {
@@ -343,12 +343,14 @@ struct ChatView: View {
     private func attachImage() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        if panel.runModal() == .OK, let url = panel.url,
-           let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-           let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
-            chat.attach(image)
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+                chat.attach(image)
+            }
         }
     }
 }
@@ -386,11 +388,20 @@ private struct MessageBubble: View {
         HStack(spacing: 0) {
             if isUser { Spacer(minLength: 36) }
             VStack(alignment: .leading, spacing: 6) {
-                if let image = message.image {
-                    Image(decorative: image, scale: 1)
+                if message.attachments.count == 1, let att = message.attachments.first {
+                    Image(decorative: att.image, scale: 1)
                         .resizable().scaledToFit()
                         .frame(maxWidth: 240, maxHeight: 180)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else if !message.attachments.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(message.attachments) { att in
+                            Image(decorative: att.image, scale: 1)
+                                .resizable().scaledToFill()
+                                .frame(width: 92, height: 92)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                    }
                 }
                 if !isUser, hasTrace {
                     TraceView(message: message)

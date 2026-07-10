@@ -66,7 +66,7 @@ struct ChatContextBuilder: Sendable {
     struct HistoryTurn: Sendable {
         var role: ChatTurn.Role
         var text: String
-        var imageBase64: String?
+        var imageBase64s: [String] = []
     }
 
     /// Result of assembling the context.
@@ -92,7 +92,7 @@ struct ChatContextBuilder: Sendable {
                history: [HistoryTurn],
                retrieved: [String] = [],
                currentUserText: String,
-               currentImageBase64: String?) -> Output {
+               currentImageBase64s: [String]) -> Output {
 
         // 1. Split history into the recent verbatim window and the older overflow.
         let recentCount = min(budget.recentTurns, history.count)
@@ -150,9 +150,9 @@ struct ChatContextBuilder: Sendable {
                 turns.append(retrievedTurn)
             }
             for h in recentTurns {
-                turns.append(.init(role: h.role, text: h.text, imageBase64: h.imageBase64))
+                turns.append(.init(role: h.role, text: h.text, imageBase64s: h.imageBase64s))
             }
-            turns.append(.init(role: .user, text: currentUserText, imageBase64: currentImageBase64))
+            turns.append(.init(role: .user, text: currentUserText, imageBase64s: currentImageBase64s))
             return turns
         }
 

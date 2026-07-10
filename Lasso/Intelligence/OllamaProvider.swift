@@ -54,7 +54,7 @@ struct OllamaProvider: IntelligenceProvider {
         }
         for turn in messages {
             wire.append(.init(role: turn.role.rawValue, content: turn.text,
-                              images: turn.imageBase64.map { [$0] }))
+                              images: turn.imageBase64s.isEmpty ? nil : turn.imageBase64s))
         }
         return stream(messages: wire)
     }
@@ -73,7 +73,7 @@ struct OllamaProvider: IntelligenceProvider {
         }
         for turn in messages {
             var msg: [String: Any] = ["role": turn.role.rawValue, "content": turn.text]
-            if let base64 = turn.imageBase64 { msg["images"] = [base64] }
+            if !turn.imageBase64s.isEmpty { msg["images"] = turn.imageBase64s }
             wire.append(msg)
         }
         return wire
