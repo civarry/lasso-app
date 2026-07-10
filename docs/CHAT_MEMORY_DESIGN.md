@@ -135,8 +135,21 @@ flowchart TD
    per turn / carried via `promptText`), and cross-turn image eviction/retrieval.
 3. Offer `nomic-embed-text` in the setup/model list. (Not started.)
 
+## Persistence (SHIPPED — `ConversationStore`)
+Conversations now persist to `~/Library/Application Support/Lasso/` (outside the `.app`, so history
+survives GitHub-DMG updates/reinstall). **One JSON per conversation** + `index.json`; `schemaVersion` on
+every file. **Source-of-truth only** — messages, two-track memory, title, `promptText` (carries the image
+description) + a small thumbnail per attachment; the **semantic index is derived and rebuilt lazily on
+load** (`reindexActive`), never stored (per "persist source, regenerate derived"). Saved on turn-finish /
+memory-update / session lifecycle (off-main). **Clear chat history** in Settings ▸ General. Adopted from
+review: per-file storage (not one big JSON), schemaVersion from day one, image thumbnails (not text-only),
+lightweight index for the switcher. **Not adopted:** a `Workspace` root type — kept the folder nestable
+and rely on `schemaVersion` to migrate if/when workspaces become real (avoids a no-behavior abstraction).
+*Deferred:* full-res image persistence, image-anchor pixels, cross-session **shared** memory + search UI.
+
 ## Deferred (revisit later)
-- Cross-session persistent memory (needs on-disk store + "forget me" + privacy surface).
+- Cross-session **shared/global** memory (search across *all* past chats → then a persisted vector store
+  earns its keep; the per-conversation index stays in-RAM/derived) + "forget me" surface.
 - Cross-turn image gallery + image eviction (recent-pixels/older-captions) + image retrieval.
 - **Caption versioning** — regenerate cached captions when the vision model changes. Moot while
   in-session (captions die with the session); pairs with persistence.

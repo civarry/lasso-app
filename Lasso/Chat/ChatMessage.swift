@@ -7,13 +7,22 @@ import Foundation
 ///
 /// `@unchecked Sendable`: the `CGImage` is an immutable Core Graphics object, safe to read concurrently.
 struct Attachment: Identifiable, @unchecked Sendable {
-    let id = UUID()
+    let id: UUID
     let image: CGImage
     /// Vision-model description (generated once, cached). Kept separate from `ocr` so providers can
     /// format them however their model prefers.
     var caption: String?
     /// On-screen text recognized in the image (generated once, cached).
     var ocr: String?
+
+    /// `id` is restorable so a persisted attachment reloads matched to its thumbnail file. The default
+    /// keeps every existing `Attachment(image:)` call site working unchanged.
+    init(id: UUID = UUID(), image: CGImage, caption: String? = nil, ocr: String? = nil) {
+        self.id = id
+        self.image = image
+        self.caption = caption
+        self.ocr = ocr
+    }
 }
 
 /// One message shown in the Chat panel. `attachments` are the user's images (rendered as thumbnails);

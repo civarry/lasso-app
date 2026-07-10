@@ -61,11 +61,46 @@ final class ChatController {
     private let contextBuilder = ChatContextBuilder()
 
     private init() {
-        let first = Conversation()
-        sessions = [first]
-        active = first
+        // Restore persisted conversations (Application Support — survives app updates/reinstall). The
+        // semantic index isn't stored; it rebuilds lazily (see `reindexActive`).
+        let restored = ConversationStore.loadAll().map(ConversationStore.rebuild)
+        if let last = restored.last {
+            sessions = restored
+            active = last
+        } else {
+            let first = Conversation()
+            sessions = [first]
+            active = first
+        }
         // Default off; restore the user's last choice if they ever set it.
         webSearchOn = UserDefaults.standard.object(forKey: Self.webSearchKey) as? Bool ?? false
+        // Lazily rebuild the active conversation's semantic index from its restored messages.
+        reindexActive()
+    }
+
+    // MARK: - Persistence (Application Support; source-of-truth only, index is derived)
+
+    /// Persist one conversation (its own file) and refresh the shared index. Skips empty conversations
+    /// (nothing to save until they have content). Disk I/O runs off the main actor.
+    private func persist(_ c: Conversation) {
+        let entries = sessions.filter(\.hasMessages).map(ConversationStore.indexEntry)
+        guard c.hasMessages else {
+            Task.detached(priority: .utility) { ConversationStore.writeIndex(entries) }
+            return
+        }
+        let dto = ConversationStore.snapshot(c)
+        let thumbs = ConversationStore.thumbnailJobs(c)
+        Task.detached(priority: .utility) {
+            ConversationStore.writeConversation(dto, thumbnails: thumbs)
+            ConversationStore.writeIndex(entries)
+        }
+    }
+
+    /// Rebuild the active conversation's semantic index from its (possibly restored) messages. The
+    /// index cursor makes this a no-op once caught up, so it's cheap to call on load and on switch.
+    private func reindexActive() {
+        guard active.hasMessages else { return }
+        scheduleIndex()
     }
 
     private static let systemPrompt = """
@@ -178,6 +213,7 @@ final class ChatController {
         guard !active.isStreaming, id != active.id,
               let target = sessions.first(where: { $0.id == id }) else { return }
         active = target
+        reindexActive()   // rebuild its semantic index if it was restored from disk (no-op once caught up)
     }
 
     /// Remove a conversation (cancelling its work). If it was the active one, fall back to the most
@@ -187,13 +223,16 @@ final class ChatController {
         sessions[idx].cancelWork()
         let wasActive = sessions[idx].id == active.id
         sessions.remove(at: idx)
+        ConversationStore.delete(id: id)   // drop its file; index is rewritten below
         if sessions.isEmpty {
             let fresh = Conversation()
             sessions = [fresh]
             active = fresh
         } else if wasActive {
             active = sessions.last!
+            reindexActive()
         }
+        persist(active)   // rewrite the shared index to reflect the removal
     }
 
     /// Close the conversation currently shown (the recents menu's "Close" action).
@@ -245,6 +284,19 @@ final class ChatController {
         active.seededContext = nil
         active.isStreaming = false
         active.trimmedNotice = false
+        // The conversation is now empty — drop its persisted file and refresh the index.
+        ConversationStore.delete(id: active.id)
+        persist(active)
+    }
+
+    /// Wipe ALL persisted chat history (Settings → privacy). Cancels every session, clears disk, and
+    /// leaves one fresh empty conversation.
+    func clearAllHistory() {
+        for s in sessions { s.cancelWork() }
+        let fresh = Conversation()
+        sessions = [fresh]
+        active = fresh
+        Task.detached(priority: .utility) { ConversationStore.clearAll() }
     }
 
     /// Append a session, make it active, and enforce the cap (drop the oldest non-active sessions).
@@ -260,6 +312,7 @@ final class ChatController {
             guard overflow > 0, session.id != active.id else { return false }
             session.cancelWork(); overflow -= 1; return true
         }
+        persist(active)   // a seeded conversation (Ask AI / capture) already has content worth saving
     }
 
     func cancelStreaming() {
@@ -928,6 +981,7 @@ final class ChatController {
             session.memory = updated
             session.summarizedTurnCount = coveredCount
             Log.chat.notice("memory updated: covers \(coveredCount, privacy: .public) turns, facts=\(updated.durableFacts.count, privacy: .public) topics=\(updated.topicTrace.count, privacy: .public) chars")
+            self.persist(session)   // memory/title changed — persist the source of truth
         }
     }
 
@@ -1123,6 +1177,7 @@ final class ChatController {
         }
         isStreaming = false
         scheduleIndex()
+        persist(active)   // a completed turn is the main state change worth saving
     }
 
     // MARK: - Semantic memory index (background)

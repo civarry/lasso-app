@@ -13,12 +13,20 @@ import Observation
 @MainActor
 @Observable
 final class Conversation: Identifiable {
-    let id = UUID()
-    let createdAt = Date()
+    let id: UUID
+    let createdAt: Date
+
+    /// Restorable identity so a persisted conversation reloads under its original id/date (keeps its
+    /// on-disk file + attachment thumbnails matched). Defaults make `Conversation()` still valid.
+    init(id: UUID = UUID(), createdAt: Date = Date()) {
+        self.id = id
+        self.createdAt = createdAt
+    }
 
     /// What kind of conversation this is — where it began. Drives the recents-menu icon and the
     /// fallback title. (Origin is metadata, not a subclass — every conversation is uniform.)
-    enum Kind: Sendable {
+    /// `String`-backed so it round-trips through persistence.
+    enum Kind: String, Sendable {
         case general, selection, image, askAI
         var systemImage: String {
             switch self {

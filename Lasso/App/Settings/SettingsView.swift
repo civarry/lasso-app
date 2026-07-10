@@ -59,6 +59,7 @@ struct SettingsView: View {
     private enum Tab: Hashable { case general, intelligence, connectors, about }
 
     @State private var tab: Tab = .general
+    @State private var showClearHistoryConfirm = false
     @State private var draft = Draft()
     @State private var saved = Draft()
     @State private var availableModels: [String] = []
@@ -209,8 +210,20 @@ struct SettingsView: View {
                 Toggle("Pre-translate selections", isOn: $draft.pretranslate)
                 caption("Translates in the background so Translate is instant.")
             }
+            Section("Chat history") {
+                Button("Clear chat history…", role: .destructive) { showClearHistoryConfirm = true }
+                caption("Conversations are saved on this Mac (in Application Support) so they survive "
+                    + "app updates. They never leave your device. This deletes them all.")
+            }
         }
         .formStyle(.grouped)
+        .confirmationDialog("Delete all saved conversations?", isPresented: $showClearHistoryConfirm,
+                            titleVisibility: .visible) {
+            Button("Delete All", role: .destructive) { ChatController.shared.clearAllHistory() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently removes every saved chat from this Mac. This can't be undone.")
+        }
     }
 
     // MARK: - Intelligence

@@ -169,8 +169,30 @@ escalation, not a silent per-turn API call.
 *exchanges* (user + assistant) in the background; at send it retrieves the top-K most relevant *older*
 exchanges verbatim (query = current text + last 1–2 turns), deduped against the recent window, into a
 bounded reserve in `ChatContextBuilder`. Embedder ladder: Ollama `nomic-embed-text` → Apple
-`NLEmbedding` (zero-setup) → none (retrieval silently off). In-session only. See
-`docs/CHAT_MEMORY_DESIGN.md`; multi-image is Phase 2 (not built).
+`NLEmbedding` (zero-setup) → none (retrieval silently off). See `docs/CHAT_MEMORY_DESIGN.md`.
+
+**Persistence (`ConversationStore`):** conversations are saved to `~/Library/Application Support/Lasso/`
+— **one JSON per conversation** + a lightweight `index.json`, so history survives app updates /
+uninstall→reinstall (the data lives outside the `.app`, like `UserDefaults`/Keychain). **Source-of-truth
+only:** messages, two-track memory, title, and the *textual* image representation (`promptText` already
+folds in the vision description) + a small **thumbnail** per attachment (`images/<id>.jpg`). The semantic
+index (embeddings) is **derived** — never stored; it rebuilds lazily on load/switch (`reindexActive`).
+Every file carries `schemaVersion` for future migration. Saved on turn-finish / memory-update / session
+lifecycle (disk I/O off the main actor); **Clear chat history** in Settings ▸ General wipes it. Restore
+drops streaming/derived state and image-anchor pixels (selection anchors persist).
+
+```mermaid
+flowchart LR
+  subgraph Disk["~/Library/Application Support/Lasso/"]
+    IDX["index.json (schemaVersion + [title,kind,count])"]
+    C1["conversations/&lt;id&gt;.json (messages, memory, title)"]
+    T1["images/&lt;attachmentId&gt;.jpg (thumbnail)"]
+  end
+  Turn["turn finishes / memory updates"] -->|snapshot· off-main| C1
+  C1 --> IDX
+  Launch["app launch"] -->|loadAll → rebuild| Mem["in-RAM Conversations"]
+  Mem -->|reindexActive· lazy| Emb["semantic index (rebuilt, never stored)"]
+```
 
 ---
 
@@ -219,6 +241,13 @@ Primitives in `UI/Theme.swift`:
 ---
 
 ## Change log
+- **Chat persistence** (`ConversationStore`): conversations now survive app updates / reinstall — saved
+  as one JSON per conversation + `index.json` in Application Support (outside the bundle). Source-of-truth
+  only (messages, two-track memory, title, image thumbnails + `promptText` descriptions); the semantic
+  index is derived and rebuilt lazily on load. `schemaVersion` on every file. Stable ids restored on
+  `Conversation`/`Attachment`. `Kind` is now `String`-backed. Save hooks on turn-finish / memory-update /
+  session lifecycle; **Clear chat history** in Settings ▸ General. See §7. (Deferred: full-res images,
+  image-anchor pixels, cross-session shared memory.)
 - **Provider reliability trio**: (1) transient-error **failover** — one `streamWithFailover` wrapper
   around all three coordinator `respond(…)` paths retries once on the on-device model when the active
   provider throws a transient error (429/timeout/5xx/network) before the first token; never mid-answer,
