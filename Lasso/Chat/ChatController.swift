@@ -911,8 +911,11 @@ final class ChatController {
             if Task.isCancelled { return }
             let cleaned = Self.stripThoughtBlocks(from: raw)
             // Auto-name the conversation from the same pass (so long chats don't stay titled by their
-            // first message). Best-effort — falls back to first-message / kind if absent.
-            if let title = Self.parseTitle(from: cleaned) {
+            // first message). **Sticky:** set once — the first summary pass only fires after the chat
+            // has overflowed the recent window (~8 messages), so there's enough substance to name it
+            // well; regenerating every later pass just made the identity drift under the user. The
+            // fallback title (first message / kind) still applies until this lands. Best-effort.
+            if session.autoTitle?.isEmpty ?? true, let title = Self.parseTitle(from: cleaned) {
                 session.autoTitle = title
                 Log.chat.notice("conversation auto-titled: \(title, privacy: .public)")
             }
