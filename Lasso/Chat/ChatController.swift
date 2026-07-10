@@ -912,7 +912,10 @@ final class ChatController {
             let cleaned = Self.stripThoughtBlocks(from: raw)
             // Auto-name the conversation from the same pass (so long chats don't stay titled by their
             // first message). Best-effort — falls back to first-message / kind if absent.
-            if let title = Self.parseTitle(from: cleaned) { session.autoTitle = title }
+            if let title = Self.parseTitle(from: cleaned) {
+                session.autoTitle = title
+                Log.chat.notice("conversation auto-titled: \(title, privacy: .public)")
+            }
             // Parse the FACTS/TOPICS contract back into the struct; falls back gracefully on a sloppy
             // small-model response (never loses prior facts, never crashes).
             let updated = Self.parseMemory(from: cleaned, prior: priorMemory)
