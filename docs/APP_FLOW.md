@@ -202,9 +202,10 @@ Primitives in `UI/Theme.swift`:
 ## Change log
 - Chat semantic retrieval memory (`ChatMemoryIndex`) — Phase 1: exchange-chunk index, embedder ladder
   (Ollama→NLEmbedding→none), retrieval reserve in `ChatContextBuilder`. In-session only.
-- Retrieval **relevance gate** (tuning): question-weighted scoring + relative outlier gate
-  (`mean + σ·relevanceSigma`, floor) so unrelated turns retrieve nothing instead of injecting noise
-  (NLEmbedding cosines cluster high). Score debug logs for calibration. k lowered 3→2.
+- Retrieval **relevance gate** — **hybrid lexical + semantic**: a candidate must share a keyword with
+  the question (or clear a high semantic bar only strong embedders reach); semantic just ranks. Fixes
+  the case where NLEmbedding scored genuine recall (0.34) below topically-adjacent noise (0.36). Also
+  makes retrieval work with no embedder (pure lexical). k=2. (Superseded the relative-outlier attempt.)
 - **Provider system-turn fix (latent bug):** MLX dropped ALL `.system` turns (used its own hardcoded
   prompt) and Anthropic used only the *first* — silently discarding the injected conversation-memory
   AND semantic-retrieval blocks AND the app's chat system prompt. Both now merge every system turn.

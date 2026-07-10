@@ -10,9 +10,9 @@ retrieval reserve). Companion to `CHAT_MEMORY_DESIGN.md`.
    - `memory index embedder: …` — which backend resolved (`Apple NLEmbedding`, `Ollama nomic-embed-text`, or `none`).
    - `runTurn · retrieved N memory chunk(s)` — retrieval fired this turn.
    - `runTurn ·   retrieved[i]: …` — **what** was pulled in (a 140-char preview of each chunk).
-   - `retrieve · score=… bar=… · <preview>` — every candidate's blended score and the relevance `bar`
-     (a chunk is kept only if `score ≥ bar` and `score ≥ floor`). Use this to calibrate `relevanceSigma`
-     / `scoreFloor` in `ChatMemoryIndex`.
+   - `retrieve · sem=… kw=… · <preview>` — each surviving candidate's semantic score and keyword-overlap
+     count. A candidate is kept only if it shares a keyword with the question (`kw ≥ 1`) or clears the
+     high semantic bar; ranked by `sem + 0.1·kw`.
    These are `.debug` lines: in Xcode they show by default; in Console.app turn on "Include Debug
    Messages" (Action menu).
 4. Send each message below in order; let each reply finish before the next.
@@ -60,12 +60,14 @@ retrieval reserve). Companion to `CHAT_MEMORY_DESIGN.md`.
 - **Short chat** (2–3 messages): no `retrieved` line, normal replies, zero overhead.
 - **`/clear`:** index resets — the planted fact can no longer be recalled afterward.
 
-## Relevance gate (calibration)
-NLEmbedding cosines cluster high, so retrieval uses a **relative** gate, not a flat threshold: a chunk
-is kept only if its score is a clear outlier above the candidate mean (`mean + relevanceSigma·σ`) AND
-above `scoreFloor`. Scoring weights the current question (`questionWeight`) over recent context. Tune
-the three constants at the top of `ChatMemoryIndex` from the `retrieve · score=… bar=…` logs:
-- **Unrelated turns (5 "egg", 9 "octopus") still retrieve** → raise `relevanceSigma` and/or `scoreFloor`.
-- **A genuine recall (7, 8) retrieves nothing** → lower them (or lower `questionWeight` if the recent
-  context should count more).
-- Expected after tuning: **7 & 8 retrieve the right exchange; 5 & 9 retrieve nothing.**
+## Relevance gate (hybrid lexical + semantic)
+NLEmbedding's cosines are too compressed to separate a genuine match from a topically-adjacent one (in
+testing a real recall scored **0.341** while unrelated noise — "octopus" → "coffee shop" — scored
+**0.362**). So the gate is **lexical**: a candidate must share a significant keyword with the question
+(`kw ≥ 1`), or clear a high semantic bar (`highSemanticBar`, which only a stronger embedder like Ollama
+`nomic-embed-text` reaches). Semantic similarity only *ranks* the survivors. Expected: **7 & 8 retrieve
+the right exchange; 5, 6 & 9 retrieve nothing.**
+
+Tuning knobs in `ChatMemoryIndex`: `stopwords` (filler words excluded from keywords), `highSemanticBar`
+(pure-semantic escape hatch), `questionWeight`. Lexical gating also means retrieval **works with no
+embedder at all** (pure keyword recall) — a bonus for the graceful-skip path.

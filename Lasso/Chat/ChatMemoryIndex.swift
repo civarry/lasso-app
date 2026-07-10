@@ -55,58 +55,72 @@ final class ChatMemoryIndex {
         indexedExchanges = exchanges.count
     }
 
-    /// Retrieval relevance tuning. NLEmbedding cosines cluster high, so a flat threshold over-fires
-    /// (retrieves noise on unrelated turns). Relevance is judged *relatively* — a chunk must stand out
-    /// above the candidate set (mean + σ·`relevanceSigma`) — plus an absolute floor as a small-N
-    /// backstop. Calibrate both from the `retrieve · score=…` debug logs on a real conversation.
-    private static let relevanceSigma = 1.0
-    private static let scoreFloor = 0.30
-    /// Weight of the current question vs. the recent-context blend (helps follow-ups without letting
-    /// off-topic recent turns dilute an explicit question).
-    private static let questionWeight = 0.7
+    /// Retrieval tuning. NLEmbedding's cosines are too compressed to separate a genuine match from a
+    /// topically-adjacent one (a real recall scored 0.34 while unrelated noise scored 0.36 in testing),
+    /// so **lexical overlap** — sharing a significant keyword with the question — is the reliable
+    /// precision gate. Semantic similarity only ranks the survivors, plus a high-bar OR-path that stays
+    /// dormant for NLEmbedding and activates only for a stronger embedder (Ollama nomic-embed).
+    private static let questionWeight = 0.7     // question vs. recent-context weight in the semantic score
+    private static let highSemanticBar = 0.55   // pure-semantic escape hatch (only strong embedders reach it)
 
     /// Retrieve up to `k` older exchanges relevant to the current turn, excluding any already in the
-    /// recent verbatim window. Scores blend the question (primary) with recent context (tiebreaker),
-    /// then a relevance gate keeps only clear standouts — so an unrelated turn retrieves NOTHING.
+    /// recent verbatim window. A candidate must share a keyword with the question (or clear the high
+    /// semantic bar); survivors are ranked by semantic similarity + keyword overlap. An unrelated turn
+    /// (no shared keywords, weak similarity) retrieves NOTHING. Works even with no embedder (lexical).
     func retrieve(question: String, context: String, excluding: Set<UUID>, k: Int = 2) async -> [String] {
         let candidates = chunks.filter { $0.messageIDs.isDisjoint(with: excluding) }
-        guard !candidates.isEmpty, !question.isEmpty,
-              let embedder = await resolveEmbedder(),
-              let qs = await embedder.embed([question, context]), qs.count == 2 else { return [] }
-        let qMain = qs[0]
-        let qCtx = qs[1]
+        guard !candidates.isEmpty, !question.isEmpty else { return [] }
+        let qWords = Self.keywords(question)
 
-        // Blend the question (primary) with the recent-context vector, nudged by importance.
-        var scored: [(text: String, score: Double)] = []
-        scored.reserveCapacity(candidates.count)
+        // Semantic vectors are best-effort — lexical gating still works if the embedder is unavailable.
+        var qMain: [Double]?, qCtx: [Double]?
+        if let embedder = await resolveEmbedder(),
+           let qs = await embedder.embed([question, context]), qs.count == 2 {
+            qMain = qs[0]; qCtx = qs[1]
+        }
+
+        struct Ranked { let text: String; let semantic: Double; let overlap: Int }
+        var ranked: [Ranked] = []
         for c in candidates {
-            let main = OllamaEmbeddings.cosine(qMain, c.vector)
-            let ctxSim = OllamaEmbeddings.cosine(qCtx, c.vector)
-            let sim = Self.questionWeight * main + (1.0 - Self.questionWeight) * ctxSim
-            scored.append((c.text, sim * (0.85 + 0.15 * c.importance)))
+            var sem = 0.0
+            if let qMain, let qCtx {
+                sem = Self.questionWeight * OllamaEmbeddings.cosine(qMain, c.vector)
+                    + (1.0 - Self.questionWeight) * OllamaEmbeddings.cosine(qCtx, c.vector)
+            }
+            let overlap = qWords.intersection(Self.keywords(c.text)).count
+            // Keep only clearly-relevant candidates: a shared keyword, or (strong embedder only) a very
+            // high semantic score.
+            if overlap > 0 || sem >= Self.highSemanticBar {
+                ranked.append(Ranked(text: c.text, semantic: sem, overlap: overlap))
+            }
         }
-        scored.sort { $0.score > $1.score }
+        guard !ranked.isEmpty else { return [] }
+        ranked.sort { ($0.semantic + 0.1 * Double($0.overlap)) > ($1.semantic + 0.1 * Double($1.overlap)) }
 
-        // Relevance gate: a chunk must stand clearly above the candidate mean (outlier), plus a floor.
-        let n = Double(scored.count)
-        var sum = 0.0
-        for s in scored { sum += s.score }
-        let mean = sum / n
-        var varAcc = 0.0
-        for s in scored { let d = s.score - mean; varAcc += d * d }
-        let sd = (varAcc / n).squareRoot()
-        let bar = mean + Self.relevanceSigma * sd
-
-        for s in scored.prefix(5) {
-            Log.chat.debug("retrieve · score=\(String(format: "%.3f", s.score), privacy: .public) bar=\(String(format: "%.3f", bar), privacy: .public) · \(String(s.text.prefix(48)), privacy: .public)")
+        for r in ranked.prefix(5) {
+            Log.chat.debug("retrieve · sem=\(String(format: "%.3f", r.semantic), privacy: .public) kw=\(r.overlap, privacy: .public) · \(String(r.text.prefix(48)), privacy: .public)")
         }
-
-        var kept: [String] = []
-        for s in scored where s.score >= bar && s.score >= Self.scoreFloor && kept.count < k {
-            kept.append(s.text)
-        }
-        return kept
+        return ranked.prefix(k).map(\.text)
     }
+
+    /// Significant keywords for lexical overlap: lowercase alphanumeric tokens ≥4 chars, minus common
+    /// question/filler words. (Codes/numbers ≥4 chars are kept — a "TX-8841" recall can match on 8841.)
+    private static func keywords(_ text: String) -> Set<String> {
+        var out = Set<String>()
+        for token in text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }) {
+            let w = String(token)
+            if w.count >= 4, !stopwords.contains(w) { out.insert(w) }
+        }
+        return out
+    }
+
+    private static let stopwords: Set<String> = [
+        "what", "when", "where", "which", "that", "this", "then", "there", "here", "about", "again",
+        "your", "yours", "yourself", "were", "was", "are", "have", "has", "had", "does", "did", "doing",
+        "with", "from", "into", "than", "they", "them", "just", "like", "want", "need", "know", "tell",
+        "remind", "give", "some", "will", "would", "could", "should", "please", "also", "over", "very",
+        "much", "many", "more", "most", "such", "only", "still",
+    ]
 
     // MARK: - Embedder ladder
 
