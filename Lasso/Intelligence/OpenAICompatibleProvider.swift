@@ -88,16 +88,15 @@ struct OpenAICompatibleProvider: IntelligenceProvider {
             wire.append(["role": "system", "content": Self.systemPrompt])
         }
         for turn in messages {
-            if let base64 = turn.imageBase64 {
-                wire.append([
-                    "role": turn.role.rawValue,
-                    "content": [
-                        ["type": "text", "text": turn.text],
-                        ["type": "image_url", "image_url": ["url": "data:image/jpeg;base64,\(base64)"]],
-                    ],
-                ])
-            } else {
+            if turn.imageBase64s.isEmpty {
                 wire.append(["role": turn.role.rawValue, "content": turn.text])
+            } else {
+                var content: [[String: Any]] = [["type": "text", "text": turn.text]]
+                for base64 in turn.imageBase64s {
+                    content.append(["type": "image_url",
+                                    "image_url": ["url": "data:image/jpeg;base64,\(base64)"]])
+                }
+                wire.append(["role": turn.role.rawValue, "content": content])
             }
         }
         return stream(messages: wire)
@@ -114,16 +113,15 @@ struct OpenAICompatibleProvider: IntelligenceProvider {
             wire.append(["role": "system", "content": Self.systemPrompt])
         }
         for turn in messages {
-            if let base64 = turn.imageBase64 {
-                wire.append([
-                    "role": turn.role.rawValue,
-                    "content": [
-                        ["type": "text", "text": turn.text],
-                        ["type": "image_url", "image_url": ["url": "data:image/jpeg;base64,\(base64)"]],
-                    ],
-                ])
-            } else {
+            if turn.imageBase64s.isEmpty {
                 wire.append(["role": turn.role.rawValue, "content": turn.text])
+            } else {
+                var content: [[String: Any]] = [["type": "text", "text": turn.text]]
+                for base64 in turn.imageBase64s {
+                    content.append(["type": "image_url",
+                                    "image_url": ["url": "data:image/jpeg;base64,\(base64)"]])
+                }
+                wire.append(["role": turn.role.rawValue, "content": content])
             }
         }
         return wire

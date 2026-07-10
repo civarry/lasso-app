@@ -22,8 +22,10 @@ final class ChatController {
     private(set) var messages: [ChatMessage] = []
     /// Composer text.
     var input = ""
-    /// Image attached in the composer but not yet sent (rendered as a thumbnail chip).
-    private(set) var pendingImage: CGImage?
+    /// Images attached in the composer but not yet sent (rendered as thumbnail chips).
+    private(set) var pendingAttachments: [Attachment] = []
+    /// Max images per turn — keeps context/token cost bounded.
+    static let maxAttachments = 5
     /// Text carried in from a capture ("Continue in chat"), shown as a removable context chip.
     private(set) var seededContext: String?
 
@@ -118,8 +120,13 @@ final class ChatController {
 
     // MARK: - Composer state
 
-    func attach(_ image: CGImage) { pendingImage = image }
-    func clearAttachment() { pendingImage = nil }
+    /// Append an image to the composer (up to `maxAttachments`).
+    func attach(_ image: CGImage) {
+        guard pendingAttachments.count < Self.maxAttachments else { return }
+        pendingAttachments.append(Attachment(image: image))
+    }
+    func removeAttachment(_ id: UUID) { pendingAttachments.removeAll { $0.id == id } }
+    func clearAttachments() { pendingAttachments.removeAll() }
     func clearSeededContext() { seededContext = nil }
 
     /// Attach an image only when a vision backend can actually use it (otherwise no-op).
@@ -159,7 +166,7 @@ final class ChatController {
     var hasMessages: Bool { !messages.isEmpty }
     /// Whether there's anything to clear (drives the "New chat" button's enabled state).
     var canClear: Bool {
-        !messages.isEmpty || !input.isEmpty || pendingImage != nil || seededContext != nil
+        !messages.isEmpty || !input.isEmpty || !pendingAttachments.isEmpty || seededContext != nil
     }
 
     /// Open a fresh chat seeded with a prior one-shot exchange (e.g. from Ask AI), so the user can
@@ -168,7 +175,8 @@ final class ChatController {
     func continueWith(question: String, answer: String, context: String?, image: CGImage?) {
         newChat()
         let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        var user = ChatMessage(role: .user, text: q.isEmpty ? "About this" : q, image: image)
+        var user = ChatMessage(role: .user, text: q.isEmpty ? "About this" : q,
+                               attachments: image.map { [Attachment(image: $0)] } ?? [])
         if let context, !context.isEmpty {
             user.promptText = "Context — from my screen:\n\(context)\n\n\(q.isEmpty ? "About this" : q)"
         }
@@ -181,7 +189,7 @@ final class ChatController {
         newChat()
         let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines)
         seededContext = (trimmed?.isEmpty == false) ? trimmed : nil
-        pendingImage = image
+        pendingAttachments = image.map { [Attachment(image: $0)] } ?? []
     }
 
     func newChat() {
@@ -196,7 +204,7 @@ final class ChatController {
         summarizedTurnCount = 0
         messages.removeAll()
         input = ""
-        pendingImage = nil
+        pendingAttachments = []
         seededContext = nil
         isStreaming = false
         trimmedNotice = false
@@ -386,14 +394,15 @@ final class ChatController {
             return
         }
 
-        guard !typed.isEmpty || pendingImage != nil else { return }
+        guard !typed.isEmpty || !pendingAttachments.isEmpty else { return }
         guard !isStreaming else { return }
 
-        let image = pendingImage
+        let attachments = pendingAttachments
         let context = seededContext
+        let placeholder = attachments.count > 1 ? "Look at these images" : "Look at this image"
 
-        let userMessage = ChatMessage(role: .user, text: typed.isEmpty ? "Look at this image" : typed,
-                                      image: image)
+        let userMessage = ChatMessage(role: .user, text: typed.isEmpty ? placeholder : typed,
+                                      attachments: attachments)
         messages.append(userMessage)
         let userID = userMessage.id
         let assistant = ChatMessage(role: .assistant, text: "", isStreaming: true)
@@ -401,7 +410,7 @@ final class ChatController {
         let assistantID = assistant.id
 
         input = ""
-        pendingImage = nil
+        pendingAttachments = []
         seededContext = nil
         isStreaming = true
 
@@ -411,15 +420,15 @@ final class ChatController {
         // local heuristic — so simple chat (greetings, write/translate) stays fast and quiet.
         let allowGround = (webSearch ?? webSearchOn) && webConnectorsAvailable
 
-        Log.chat.notice("send: typedChars=\(typed.count, privacy: .public) hasImage=\(image != nil, privacy: .public) allowGround=\(allowGround, privacy: .public) history=\(self.messages.count, privacy: .public)")
+        Log.chat.notice("send: typedChars=\(typed.count, privacy: .public) images=\(attachments.count, privacy: .public) allowGround=\(allowGround, privacy: .public) history=\(self.messages.count, privacy: .public)")
         streamTask?.cancel()
         streamTask = Task { [weak self] in
-            await self?.runTurn(typed: typed, image: image, context: context, appContext: extraContext,
+            await self?.runTurn(typed: typed, attachments: attachments, context: context, appContext: extraContext,
                                 allowGround: allowGround, userID: userID, assistantID: assistantID)
         }
     }
 
-    private func runTurn(typed: String, image: CGImage?, context: String?, appContext: String?,
+    private func runTurn(typed: String, attachments: [Attachment], context: String?, appContext: String?,
                          allowGround: Bool, userID: UUID, assistantID: UUID) async {
         let t0 = Date()
         func ms() -> Int { Int(Date().timeIntervalSince(t0) * 1000) }
@@ -436,19 +445,25 @@ final class ChatController {
             userText = "\(appContext)\n\n\(userText)"
             Log.chat.notice("runTurn · folded app context (\(appContext.count, privacy: .public) chars)")
         }
-        var imageBase64: String?
+        var imageBase64s: [String] = []
+        let multi = attachments.count > 1
 
-        // Kick off connector grounding now so it overlaps the image describe — they're independent
-        // (the web query uses the reverse-image guess / the user's text, not the description). The
-        // box lets the CGImage cross the async-let task boundary (it's immutable, safe to read).
-        let boxed = image.map { UncheckedImage(cg: $0) }
+        // Grounding uses at most one image (reverse-image is out anyway) — box the first for the tool path.
+        let boxed = attachments.first.map { UncheckedImage(cg: $0.image) }
 
-        // OCR any text in the attached image (fast, local) — sharpens both the answer and the web
-        // query (brand/model/signage). Skip when we already have seeded capture text.
-        var ocrText: String?
-        if let image, (context?.isEmpty ?? true) {
-            ocrText = await recognizeText(image)
-            if let ocrText { Log.chat.notice("runTurn · OCR \(ocrText.count, privacy: .public) chars (+\(ms(), privacy: .public)ms)") }
+        // OCR every attachment (fast, local), labeled when there are several. Skip when we already have
+        // seeded capture text. Built into a `let` so it can be safely sent into the grounding task below.
+        var ocrParts: [String] = []
+        if !attachments.isEmpty, (context?.isEmpty ?? true) {
+            for (i, att) in attachments.enumerated() {
+                if let t = await recognizeText(att.image), !t.isEmpty {
+                    ocrParts.append(multi ? "Image \(i + 1):\n\(t)" : t)
+                }
+            }
+        }
+        let ocrText: String? = ocrParts.isEmpty ? nil : ocrParts.joined(separator: "\n\n")
+        if let ocrText {
+            Log.chat.notice("runTurn · OCR \(ocrText.count, privacy: .public) chars across \(attachments.count, privacy: .public) image(s) (+\(ms(), privacy: .public)ms)")
         }
 
         // Grounding routing. A cheap heuristic pre-filter runs on BOTH paths: obvious no-search turns
@@ -456,7 +471,7 @@ final class ChatController {
         // over-search a "hello how are you". For turns that pass, a tool-capable provider gets a
         // `web_search` tool and the *model* makes the final call (industry standard); otherwise we
         // fall back to the local heuristic and pre-gather evidence.
-        let benefits = Self.turnBenefitsFromWeb(typed: typed, hasImage: image != nil)
+        let benefits = Self.turnBenefitsFromWeb(typed: typed, hasImage: !attachments.isEmpty)
         let providerTools = allowGround ? await intelligence.activeTextProviderSupportsTools() : false
         let toolPath = allowGround && providerTools && benefits
         let heuristicGround = allowGround && !providerTools && benefits
@@ -468,70 +483,66 @@ final class ChatController {
         async let evidenceResult = gatherEvidence(typed: typed, boxed: boxed,
                                                   ocrText: ocrText, enabled: heuristicGround)
 
-        if let image {
-            Log.chat.notice("runTurn · image present — checking native vision (+\(ms(), privacy: .public)ms)")
+        if !attachments.isEmpty {
             let native = await intelligence.textModelSupportsVision()
-            Log.chat.notice("runTurn · textModelSupportsVision=\(native, privacy: .public) (+\(ms(), privacy: .public)ms)")
+            Log.chat.notice("runTurn · \(attachments.count, privacy: .public) image(s), native=\(native, privacy: .public) (+\(ms(), privacy: .public)ms)")
             if native {
-                imageBase64 = ImageEncoder.jpegBase64(image)
-                Log.chat.notice("runTurn · native encode done, base64=\(imageBase64?.count ?? 0, privacy: .public) chars (+\(ms(), privacy: .public)ms)")
+                imageBase64s = attachments.compactMap { ImageEncoder.jpegBase64($0.image) }
+                Log.chat.notice("runTurn · native encode \(imageBase64s.count, privacy: .public) image(s) (+\(ms(), privacy: .public)ms)")
             }
-            if imageBase64 == nil {
-                // Text-only model: describe the image via the vision provider and fold it in.
-                Log.chat.notice("runTurn · resolving vision provider for describe (+\(ms(), privacy: .public)ms)")
+            if imageBase64s.isEmpty {
+                // Text-only model: describe each image via the vision provider and fold them in (labeled).
                 let vision = await intelligence.activeVisionProvider()
                 let label = intelligence.imageEngineLabel
-                Log.chat.notice("runTurn · vision provider=\(vision == nil ? "nil" : "\(type(of: vision!))", privacy: .public) (+\(ms(), privacy: .public)ms)")
-                var described: String?
-                var describeError: Error?
-                if let vision {
-                    let stepID = addStep(assistantID, icon: "eye", text: "Looking at the image · \(label)")
-                    let prompt = typed.isEmpty
-                        ? "Describe this image in detail."
-                        : "Describe this image in detail to help answer: \(typed)"
-                    Log.chat.notice("runTurn · describe START (+\(ms(), privacy: .public)ms)")
-                    do {
-                        described = try await vision.describe(image, prompt: prompt)
-                        completeStep(assistantID, stepID, text: "Looked at the image · \(label)")
-                        Log.chat.notice("runTurn · describe DONE len=\(described?.count ?? 0, privacy: .public) (+\(ms(), privacy: .public)ms)")
-                    } catch {
-                        describeError = error
-                        completeStep(assistantID, stepID, text: "Couldn't read the image · \(label)")
-                        Log.chat.error("runTurn · describe FAILED: \(error.localizedDescription, privacy: .public) (+\(ms(), privacy: .public)ms)")
-                    }
-                }
-                if let described, !described.isEmpty {
-                    userText = """
-                    [I attached an image. A separate vision model produced this description of it — \
-                    it may be incomplete or wrong, so treat it cautiously and don't attribute it to me:]
-                    \(described)
-
-                    \(typed.isEmpty ? "What is this?" : typed)
-                    """
-                } else if vision == nil {
+                guard let vision else {
                     finishError(assistantID,
                         "No image model is set. Choose one under Settings ▸ Intelligence ▸ Image model "
                         + "(a local Ollama vision model, or a multimodal cloud model) to chat about images.")
                     return
-                } else if let describeError {
-                    // The image model exists but the request failed (timeout / rate-limit / offline).
-                    finishError(assistantID,
-                        "The image model (\(label)) couldn't read this image: "
-                        + "\(describeError.localizedDescription) It may be slow, rate-limited, or "
-                        + "offline — try again, or switch image models in Settings ▸ Intelligence ▸ Image model.")
-                    return
-                } else {
-                    finishError(assistantID,
-                        "The image model (\(label)) returned no description. Try again, or switch "
-                        + "models in Settings ▸ Intelligence ▸ Image model.")
+                }
+                let stepID = addStep(assistantID, icon: "eye",
+                                     text: "Looking at \(attachments.count) image\(multi ? "s" : "") · \(label)")
+                var descriptions: [String] = []
+                var describeError: Error?
+                for (i, att) in attachments.enumerated() {
+                    let prompt = typed.isEmpty
+                        ? "Describe this image in detail."
+                        : "Describe this image in detail to help answer: \(typed)"
+                    do {
+                        let d = try await vision.describe(att.image, prompt: prompt)
+                        if !d.isEmpty { descriptions.append(multi ? "Image \(i + 1): \(d)" : d) }
+                    } catch {
+                        describeError = error
+                        Log.chat.error("runTurn · describe FAILED (image \(i + 1, privacy: .public)): \(error.localizedDescription, privacy: .public)")
+                    }
+                }
+                if descriptions.isEmpty {
+                    completeStep(assistantID, stepID, text: "Couldn't read the image\(multi ? "s" : "") · \(label)")
+                    finishError(assistantID, describeError.map {
+                        "The image model (\(label)) couldn't read \(multi ? "these images" : "this image"): "
+                        + "\($0.localizedDescription) It may be slow, rate-limited, or offline — try again, "
+                        + "or switch image models in Settings ▸ Intelligence ▸ Image model."
+                    } ?? "The image model (\(label)) returned no description. Try again, or switch models in "
+                        + "Settings ▸ Intelligence ▸ Image model.")
                     return
                 }
+                completeStep(assistantID, stepID,
+                             text: "Looked at \(descriptions.count) image\(descriptions.count == 1 ? "" : "s") · \(label)")
+                let joined = descriptions.joined(separator: "\n\n")
+                userText = """
+                [I attached \(attachments.count) image\(multi ? "s" : ""). A separate vision model produced \
+                \(multi ? "these descriptions" : "this description") — treat \(multi ? "them" : "it") cautiously \
+                and don't attribute \(multi ? "them" : "it") to me:]
+                \(joined)
+
+                \(typed.isEmpty ? (multi ? "What are these?" : "What is this?") : typed)
+                """
             }
         }
 
         // Fold any OCR'd text into the turn so the model can use it directly.
         if let ocrText, !ocrText.isEmpty {
-            userText += "\n\nText visible in the image:\n\(ocrText)"
+            userText += "\n\nText visible in the image\(multi ? "s" : ""):\n\(ocrText)"
         }
 
         // Fold in the connector evidence started above (waits only if it's still running). Tool-path
@@ -556,7 +567,7 @@ final class ChatController {
         }
 
         // Persist what was actually sent so the description / image carries into follow-up turns.
-        update(userID) { $0.promptText = userText; $0.imageBase64 = imageBase64 }
+        update(userID) { $0.promptText = userText; $0.imageBase64s = imageBase64s }
 
         // Pull relevant older exchanges back in verbatim (semantic recall; empty when nothing indexed
         // or no embedder). Runs before assembly so the builder can place them in their reserve.
@@ -571,7 +582,7 @@ final class ChatController {
         }
 
         let textLabel = intelligence.textEngineLabel
-        let turns = buildTurns(newUserText: userText, imageBase64: imageBase64, retrieved: retrieved)
+        let turns = buildTurns(newUserText: userText, imageBase64s: imageBase64s, retrieved: retrieved)
         let totalChars = turns.reduce(0) { $0 + $1.text.count }
         Log.chat.notice("runTurn · built \(turns.count, privacy: .public) turns, \(totalChars, privacy: .public) chars, toolPath=\(toolPath, privacy: .public) — stream START (+\(ms(), privacy: .public)ms)")
         if Task.isCancelled { Log.chat.notice("runTurn · cancelled before stream"); return }
@@ -762,7 +773,7 @@ final class ChatController {
     /// the new (folded) user turn. Delegates layout/budget to `ChatContextBuilder`; older turns that
     /// fall outside the recent window are represented by `rollingSummary` (kept fresh in the
     /// background) instead of being dropped.
-    private func buildTurns(newUserText: String, imageBase64: String?, retrieved: [String] = []) -> [ChatTurn] {
+    private func buildTurns(newUserText: String, imageBase64s: [String], retrieved: [String] = []) -> [ChatTurn] {
         // Map the prior history (excluding the just-appended user-display + assistant-placeholder)
         // to the builder's history turns, using each message's persisted `promptText` so folded
         // image/evidence context carries. Assistant thoughts are stripped — they're UI affordances.
@@ -773,7 +784,7 @@ final class ChatController {
                                        history: history,
                                        retrieved: retrieved,
                                        currentUserText: newUserText,
-                                       currentImageBase64: imageBase64)
+                                       currentImageBase64s: imageBase64s)
         trimmedNotice = out.didCompress
 
         // Fold the now-out-of-window turns into the rolling summary off the send path. No-op when
@@ -792,7 +803,7 @@ final class ChatController {
             let text = role == .assistant
                 ? Self.stripThoughtBlocks(from: m.promptText ?? m.text)
                 : (m.promptText ?? m.text)
-            return .init(role: role, text: text, imageBase64: m.imageBase64)
+            return .init(role: role, text: text, imageBase64s: m.imageBase64s)
         }
     }
 

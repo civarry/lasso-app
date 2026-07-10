@@ -126,8 +126,13 @@ flowchart TD
    noise (a real recall scored below unrelated noise), so a keyword-overlap gate provides precision and
    the embedding only ranks (with a `+0.1·kw` boost that fixes ranking where semantics can't). Test:
    exact far-back recall (steps 7/8), zero retrieval on unrelated turns (5/6/9).
-2. **Multi-image per turn** — data model + provider array encoders + composer thumbnails + per-image
-   caption/OCR. (Not started.)
+2. **Multi-image per turn** — ✅ **SHIPPED**. `Attachment {id, image, caption?, ocr?}`;
+   `ChatMessage.attachments`, `ChatController.pendingAttachments` (cap `maxAttachments=5`);
+   `ChatTurn.imageBase64s` + array encoders in every provider (Ollama/OpenAI-compat/Anthropic/MLX).
+   `runTurn` OCRs + (native) encodes all images or (text-only) describes each, folded as labeled
+   "Image N:" blocks. Composer shows a removable thumbnail row; bubble renders single large / multi grid.
+   *Deferred:* populating `Attachment.caption`/`.ocr` for reuse across follow-ups (currently recomputed
+   per turn / carried via `promptText`), and cross-turn image eviction/retrieval.
 3. Offer `nomic-embed-text` in the setup/model list. (Not started.)
 
 ## Deferred (revisit later)

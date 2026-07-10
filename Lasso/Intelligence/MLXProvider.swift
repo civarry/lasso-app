@@ -106,12 +106,13 @@ struct MLXProvider: IntelligenceProvider {
         return (instructions, Array(prior), last.text, mlxRole(for: last.role))
     }
 
-    /// The image attached to the latest user turn (if any), as an MLX vision input.
+    /// The images attached to the latest user turn (if any), as MLX vision inputs.
     private static func images(from turns: [ChatTurn]) -> [UserInput.Image] {
-        guard let base64 = turns.last(where: { $0.role == .user })?.imageBase64,
-              let data = Data(base64Encoded: base64),
-              let ciImage = CIImage(data: data) else { return [] }
-        return [.ciImage(ciImage)]
+        guard let base64s = turns.last(where: { $0.role == .user })?.imageBase64s else { return [] }
+        return base64s.compactMap { base64 in
+            guard let data = Data(base64Encoded: base64), let ciImage = CIImage(data: data) else { return nil }
+            return .ciImage(ciImage)
+        }
     }
 
     /// Whether an MLX model is a vision-language model (serves images *and* text). For a downloaded

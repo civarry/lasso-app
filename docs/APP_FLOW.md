@@ -140,9 +140,10 @@ flowchart TD
 
 ## 7. Chat (`Chat/`)
 
-Persistent top-right panel (⌥⌘A), independent of the capture overlay. Multi-turn, image attach
-(button / ⌘V / capture "Continue in chat" seed), two-track memory (`ConversationMemory`,
-`ChatContextBuilder`). Grounds via the same keyless web search; reverse-image is the one-tap Lens
+Persistent top-right panel (⌥⌘A), independent of the capture overlay. Multi-turn, **multi-image**
+attach (button / ⌘V / drag / capture seed; up to `maxAttachments`), two-track memory
+(`ConversationMemory`, `ChatContextBuilder`). Images: `Attachment` (structured, stable id) → native
+models get an image array per turn; text-only models get per-image "Image N:" captions + OCR. Grounds via the same keyless web search; reverse-image is the one-tap Lens
 escalation, not a silent per-turn API call.
 
 **Context memory (three speeds):** recent 6 turns verbatim → two-track running summary (durable facts
@@ -200,6 +201,9 @@ Primitives in `UI/Theme.swift`:
 ---
 
 ## Change log
+- Chat **multi-image per turn** (Phase 2): `Attachment` model, `ChatTurn.imageBase64s` + array encoders
+  in all providers, `runTurn` OCRs/encodes/describes each image (labeled), composer thumbnail row +
+  multi-image bubble. Cap `maxAttachments=5`.
 - Chat semantic retrieval memory (`ChatMemoryIndex`) — Phase 1: exchange-chunk index, embedder ladder
   (Ollama→NLEmbedding→none), retrieval reserve in `ChatContextBuilder`. In-session only.
 - Retrieval **relevance gate** — **hybrid lexical + semantic**: a candidate must share a keyword with

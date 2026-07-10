@@ -56,12 +56,13 @@ struct AnthropicProvider: IntelligenceProvider {
     /// (requires a vision-capable Claude — the caller routes others to a text description instead).
     func respond(messages: [ChatTurn]) -> AsyncThrowingStream<String, Error> {
         let wire: [[String: Any]] = messages.filter { $0.role != .system }.map { turn in
-            if let base64 = turn.imageBase64 {
-                return ["role": turn.role.rawValue, "content": [
+            if !turn.imageBase64s.isEmpty {
+                var content: [[String: Any]] = turn.imageBase64s.map { base64 in
                     ["type": "image",
-                     "source": ["type": "base64", "media_type": "image/jpeg", "data": base64]],
-                    ["type": "text", "text": turn.text],
-                ]]
+                     "source": ["type": "base64", "media_type": "image/jpeg", "data": base64]]
+                }
+                content.append(["type": "text", "text": turn.text])
+                return ["role": turn.role.rawValue, "content": content]
             }
             return ["role": turn.role.rawValue, "content": turn.text]
         }
@@ -83,12 +84,13 @@ struct AnthropicProvider: IntelligenceProvider {
     /// Wire `messages` array (system is sent top-level, so it's excluded here).
     private func wireMessages(_ messages: [ChatTurn]) -> [[String: Any]] {
         messages.filter { $0.role != .system }.map { turn in
-            if let base64 = turn.imageBase64 {
-                return ["role": turn.role.rawValue, "content": [
+            if !turn.imageBase64s.isEmpty {
+                var content: [[String: Any]] = turn.imageBase64s.map { base64 in
                     ["type": "image",
-                     "source": ["type": "base64", "media_type": "image/jpeg", "data": base64]],
-                    ["type": "text", "text": turn.text],
-                ]]
+                     "source": ["type": "base64", "media_type": "image/jpeg", "data": base64]]
+                }
+                content.append(["type": "text", "text": turn.text])
+                return ["role": turn.role.rawValue, "content": content]
             }
             return ["role": turn.role.rawValue, "content": turn.text]
         }
