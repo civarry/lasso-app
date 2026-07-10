@@ -79,8 +79,9 @@ final class ChatMemoryIndex {
             qMain = qs[0]; qCtx = qs[1]
         }
 
-        struct Ranked { let text: String; let semantic: Double; let overlap: Int }
-        var ranked: [Ranked] = []
+        let qCount = Double(max(1, qWords.count))
+        struct Cand { let text: String; let sem: Double; let overlap: Int; let final: Double; let passes: Bool }
+        var cands: [Cand] = []
         for c in candidates {
             var sem = 0.0
             if let qMain, let qCtx {
@@ -88,19 +89,28 @@ final class ChatMemoryIndex {
                     + (1.0 - Self.questionWeight) * OllamaEmbeddings.cosine(qCtx, c.vector)
             }
             let overlap = qWords.intersection(Self.keywords(c.text)).count
-            // Keep only clearly-relevant candidates: a shared keyword, or (strong embedder only) a very
-            // high semantic score.
-            if overlap > 0 || sem >= Self.highSemanticBar {
-                ranked.append(Ranked(text: c.text, semantic: sem, overlap: overlap))
-            }
+            // Gate on lexical overlap (the reliable precision signal), or a very high semantic score
+            // that only a stronger embedder reaches. `final` normalizes keyword overlap to 0–1 and
+            // adds semantic as a tiebreaker, so the score is legible and tunable.
+            let passes = overlap > 0 || sem >= Self.highSemanticBar
+            let final = (Double(overlap) / qCount) + 0.3 * sem
+            cands.append(Cand(text: c.text, sem: sem, overlap: overlap, final: final, passes: passes))
         }
-        guard !ranked.isEmpty else { return [] }
-        ranked.sort { ($0.semantic + 0.1 * Double($0.overlap)) > ($1.semantic + 0.1 * Double($1.overlap)) }
+        cands.sort { $0.final > $1.final }
 
-        for r in ranked.prefix(5) {
-            Log.chat.debug("retrieve · sem=\(String(format: "%.3f", r.semantic), privacy: .public) kw=\(r.overlap, privacy: .public) · \(String(r.text.prefix(48)), privacy: .public)")
+        var kept: [String] = []
+        for c in cands where c.passes && kept.count < k { kept.append(c.text) }
+
+        // Glanceable log: what was retrieved (✓) vs. skipped (• with reason) and the scores behind it —
+        // so "why did it remember this?" is answerable at a glance.
+        let keptChars = kept.reduce(0) { $0 + $1.count }
+        Log.chat.debug("🧠 retrieve · kept \(kept.count, privacy: .public)/\(cands.count, privacy: .public) (\(keptChars, privacy: .public) chars) · q=\"\(String(question.prefix(44)), privacy: .public)\"")
+        for c in cands.prefix(6) {
+            let inTopK = kept.contains(c.text)
+            let reason = inTopK ? "" : (c.passes ? " over-k" : " no-kw")
+            Log.chat.debug("   \(inTopK ? "✓" : "•", privacy: .public) final=\(String(format: "%.2f", c.final), privacy: .public) sem=\(String(format: "%.3f", c.sem), privacy: .public) kw=\(c.overlap, privacy: .public)/\(Int(qCount), privacy: .public)\(reason, privacy: .public) · \(String(c.text.prefix(40)), privacy: .public)")
         }
-        return ranked.prefix(k).map(\.text)
+        return kept
     }
 
     /// Significant keywords for lexical overlap: lowercase alphanumeric tokens ≥4 chars, minus common

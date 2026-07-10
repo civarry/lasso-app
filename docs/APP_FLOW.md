@@ -206,6 +206,9 @@ Primitives in `UI/Theme.swift`:
   the question (or clear a high semantic bar only strong embedders reach); semantic just ranks. Fixes
   the case where NLEmbedding scored genuine recall (0.34) below topically-adjacent noise (0.36). Also
   makes retrieval work with no embedder (pure lexical). k=2. (Superseded the relative-outlier attempt.)
+- Retrieval ranking/logging polish: normalized keyword signal + a single legible `final` score, and a
+  glanceable log (`🧠 retrieve · kept N/M` + per-candidate `✓/•` with reason) so "why did it remember
+  this?" is answerable at a glance. (Recency/importance-in-ranking deferred to persistent memory.)
 - **Provider system-turn fix (latent bug):** MLX dropped ALL `.system` turns (used its own hardcoded
   prompt) and Anthropic used only the *first* — silently discarding the injected conversation-memory
   AND semantic-retrieval blocks AND the app's chat system prompt. Both now merge every system turn.
