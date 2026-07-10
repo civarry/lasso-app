@@ -4,6 +4,9 @@ import Foundation
 /// can offer a real selection instead of a hardcoded model name.
 enum OllamaModels {
     static func installed(baseURL: URL = OllamaEndpoint.baseURL) async -> [String] {
+        // Short-circuit on cached reachability so a down server returns instantly (no 4s hang / repeated
+        // connection-refused). `isReachable` itself probes `api/tags`, so at most one probe per window.
+        guard await OllamaEndpoint.isReachable(baseURL, maxAge: 30) else { return [] }
         var request = URLRequest(url: baseURL.appendingPathComponent("api/tags"))
         request.timeoutInterval = 4
         guard let (data, response) = try? await URLSession.shared.data(for: request),

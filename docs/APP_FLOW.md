@@ -86,6 +86,24 @@ Two independent **roles**, each chosen in Settings:
   and pauses every off-device path (see §8).
 - **Tools** (`Intelligence/Tools/`): a model-decided `web_search` tool for Chat on tool-capable
   backends; others fall back to heuristic grounding.
+- **Transient-error failover** (`streamWithFailover`): every `respond(…)` streams through one wrapper.
+  If the active provider throws a *transient* error (`isTransient`: 429/timeout/5xx/network) **before the
+  first token**, it retries **once on the on-device Apple model** and prefixes a short honest note. Never
+  swaps mid-answer (would splice two models); never falls back to a *cloud* provider — the only target is
+  the always-local on-device model, so it can't leak (and local-only mode never reaches the network). Bad
+  keys / oversized prompts / cancellation are not transient → surface as-is. `setLastProvider` updates the
+  attribution + privacy badge to the model that actually answered.
+
+```mermaid
+flowchart LR
+  R["respond(…)"] --> P["active provider streams"]
+  P -->|first token then done| OK([answer])
+  P -->|error before any token| C{transient?<br/>429·timeout·5xx·net}
+  C -->|no| E([surface error])
+  C -->|yes| F{on-device available<br/>& primary ≠ on-device?}
+  F -->|no| E
+  F -->|yes| N["note + retry on-device (local)"] --> OK
+```
 
 ---
 
@@ -201,6 +219,13 @@ Primitives in `UI/Theme.swift`:
 ---
 
 ## Change log
+- **Provider reliability trio**: (1) transient-error **failover** — one `streamWithFailover` wrapper
+  around all three coordinator `respond(…)` paths retries once on the on-device model when the active
+  provider throws a transient error (429/timeout/5xx/network) before the first token; never mid-answer,
+  never cloud (§4). (2) **Embedder-reason logging** + reachability-gated Ollama probe in
+  `ChatMemoryIndex.pickEmbedder` — no more `api/embed` connection-refused spam when Ollama is down; logs
+  why it picked Ollama/Apple/none. (3) `OllamaModels.installed` now short-circuits on cached
+  reachability. (Grounding-route logging in `ChatController.runTurn` was already present.)
 - Chat **multiple conversations**: `Conversation` holds one chat's state (messages, two-track memory,
   semantic index, attachments); `ChatController` is now a manager (`sessions: [Conversation]` + `active`,
   forwarding facade). "Continue in chat" / Ask AI / capture seed **spawn a new conversation instead of

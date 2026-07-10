@@ -142,12 +142,23 @@ final class ChatMemoryIndex {
         return resolved
     }
 
-    /// Probe the ladder once: Ollama (only if it actually returns a vector) → Apple → none.
+    /// Probe the ladder once: Ollama (only if it actually returns a vector) → Apple → none. The Ollama
+    /// step is gated on a cached reachability check so we don't fire a guaranteed connection-refused at
+    /// `api/embed` (and spam the console) when the server is down. Logs the *reason* for the pick.
     private static func pickEmbedder() async -> ChatEmbedder? {
-        let ollama = OllamaChatEmbedder()
-        if let probe = await ollama.embed(["probe"]), probe.first?.isEmpty == false { return ollama }
+        if await OllamaEndpoint.isReachable(OllamaEndpoint.baseURL, maxAge: 30) {
+            let ollama = OllamaChatEmbedder()
+            if let probe = await ollama.embed(["probe"]), probe.first?.isEmpty == false {
+                Log.chat.notice("memory index embedder ladder: Ollama reachable + embed model → nomic-embed-text")
+                return ollama
+            }
+            Log.chat.notice("memory index embedder ladder: Ollama reachable but no embed model → Apple")
+        } else {
+            Log.chat.notice("memory index embedder ladder: Ollama unreachable → Apple")
+        }
         let apple = AppleSentenceEmbedder()
         if apple.isAvailable { return apple }
+        Log.chat.notice("memory index embedder ladder: no embedder available → retrieval off")
         return nil
     }
 

@@ -550,27 +550,99 @@ final class IntelligenceCoordinator {
         return try await onDevice.generateTableMarkdown(instruction: prompt, context: context)
     }
 
-    /// Stream a response from the active provider.
-    func respond(prompt: String, context: String?) -> AsyncThrowingStream<String, Error> {
+    // MARK: - Streaming with transient-error failover
+
+    /// Record which provider actually served a request (drives the result-footer attribution and the
+    /// privacy badge). Called again after a failover so the UI reflects the model that truly answered.
+    private func setLastProvider(_ provider: IntelligenceProvider) {
+        lastProviderName = provider.name
+        lastProviderIsAppleOnDevice = provider.isAppleOnDevice
+        lastProviderIsLocal = provider.isLocal
+        if !provider.isLocal { usedOffDeviceThisSession = true }
+    }
+
+    /// The one safe failover target: the on-device Apple model. It's always **local** — so a cloud→local
+    /// fallback can never leak, and local-only mode never reaches for the network — and it doesn't
+    /// rate-limit. Returns nil when the primary already *is* on-device, or on-device isn't available on
+    /// this Mac (nothing better to do → surface the original error).
+    private func failoverProvider(from primary: IntelligenceProvider) async -> IntelligenceProvider? {
+        guard !primary.isAppleOnDevice, await onDevice.checkAvailability() else { return nil }
+        return onDevice
+    }
+
+    /// Whether an error is worth retrying on the fallback: transient outages (rate limits, timeouts,
+    /// 5xx, network blips) — NOT bad keys, oversized prompts, or cancellation (retrying those just fails
+    /// again, or is the user's own doing). Errors surface as `IntelligenceError.server(msg)` (HTTP text)
+    /// or `URLError`, so we classify on both.
+    static func isTransient(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut, .cannotConnectToHost, .cannotFindHost, .networkConnectionLost,
+                 .notConnectedToInternet, .dnsLookupFailed, .resourceUnavailable:
+                return true
+            default:
+                return false
+            }
+        }
+        let m = error.localizedDescription.lowercased()
+        // Explicit non-transient signals win (a rate-limit message never contains these).
+        if m.contains("401") || m.contains("403") || m.contains("api key") || m.contains("unauthor")
+            || m.contains("invalid") || m.contains("too large") || m.contains("cancel") {
+            return false
+        }
+        return m.contains("429") || m.contains("rate limit") || m.contains("timed out")
+            || m.contains("timeout") || m.contains("overloaded")
+            || m.contains("500") || m.contains("502") || m.contains("503") || m.contains("504")
+    }
+
+    /// Shared streaming core with **pre-first-token** failover. Resolves the active provider, streams via
+    /// `open`, and — if the stream throws a *transient* error **before any token was emitted** — retries
+    /// once on the on-device model (never cloud), prefixing a short honest note. Once tokens have
+    /// streamed we never swap mid-answer (that would splice two models); the error surfaces instead.
+    private func streamWithFailover(
+        label: String,
+        _ open: @escaping @Sendable (IntelligenceProvider) -> AsyncThrowingStream<String, Error>
+    ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task { [weak self] in
                 guard let self else { continuation.finish(); return }
-                let provider = await self.activeProvider()
-                self.lastProviderName = provider.name
-                self.lastProviderIsAppleOnDevice = provider.isAppleOnDevice
-                self.lastProviderIsLocal = provider.isLocal
-                if !provider.isLocal { self.usedOffDeviceThisSession = true }
-                do {
-                    for try await delta in provider.respond(prompt: prompt, context: context) {
-                        continuation.yield(delta)
+                let t0 = Date()
+                var provider = await self.activeProvider()
+                self.setLastProvider(provider)
+                Log.intelligence.notice("\(label, privacy: .public) · provider=\(provider.name, privacy: .public) local=\(provider.isLocal, privacy: .public) (+\(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public)ms)")
+                var didFailover = false
+                while true {
+                    var emitted = false
+                    do {
+                        for try await delta in open(provider) {
+                            emitted = true
+                            continuation.yield(delta)
+                        }
+                        continuation.finish()
+                        return
+                    } catch {
+                        if !emitted, !didFailover, Self.isTransient(error),
+                           let fallback = await self.failoverProvider(from: provider) {
+                            didFailover = true
+                            Log.intelligence.notice("\(label, privacy: .public) · \(provider.name, privacy: .public) failed transiently (\(error.localizedDescription, privacy: .public)); failing over to \(fallback.name, privacy: .public)")
+                            continuation.yield("_(\(provider.name) was unavailable — answered on-device with \(fallback.name).)_\n\n")
+                            provider = fallback
+                            self.setLastProvider(fallback)
+                            continue
+                        }
+                        continuation.finish(throwing: error)
+                        return
                     }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    /// Stream a response from the active provider.
+    func respond(prompt: String, context: String?) -> AsyncThrowingStream<String, Error> {
+        streamWithFailover(label: "respond(prompt)") { $0.respond(prompt: prompt, context: context) }
     }
 
     /// Whether the active **text** provider supports native tool calling — so the Chat panel knows to
@@ -596,52 +668,18 @@ final class IntelligenceCoordinator {
     /// answers without them.
     func respond(messages: [ChatTurn], tools: [ChatTool],
                  execute: @escaping ToolExecutor) -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task { [weak self] in
-                guard let self else { continuation.finish(); return }
-                let provider = await self.activeProvider()
-                self.lastProviderName = provider.name
-                self.lastProviderIsAppleOnDevice = provider.isAppleOnDevice
-                self.lastProviderIsLocal = provider.isLocal
-                if !provider.isLocal { self.usedOffDeviceThisSession = true }
-                let stream = provider.supportsTools
-                    ? provider.respond(messages: messages, tools: tools, execute: execute)
-                    : provider.respond(messages: messages)
-                do {
-                    for try await delta in stream { continuation.yield(delta) }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in task.cancel() }
+        // The failover target (on-device) has no tool loop, so `supportsTools` is re-checked per
+        // provider: the fallback transparently answers without tools.
+        streamWithFailover(label: "respond(tools)") { provider in
+            provider.supportsTools
+                ? provider.respond(messages: messages, tools: tools, execute: execute)
+                : provider.respond(messages: messages)
         }
     }
 
     /// Stream a response to a multi-turn conversation from the active provider (the Chat panel).
     func respond(messages: [ChatTurn]) -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task { [weak self] in
-                guard let self else { continuation.finish(); return }
-                let t0 = Date()
-                Log.chat.notice("coordinator.respond · resolving active provider…")
-                let provider = await self.activeProvider()
-                Log.chat.notice("coordinator.respond · provider=\(provider.name, privacy: .public) local=\(provider.isLocal, privacy: .public) (+\(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public)ms)")
-                self.lastProviderName = provider.name
-                self.lastProviderIsAppleOnDevice = provider.isAppleOnDevice
-                self.lastProviderIsLocal = provider.isLocal
-                if !provider.isLocal { self.usedOffDeviceThisSession = true }
-                do {
-                    for try await delta in provider.respond(messages: messages) {
-                        continuation.yield(delta)
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in task.cancel() }
-        }
+        streamWithFailover(label: "respond(messages)") { $0.respond(messages: messages) }
     }
 
     /// Whether the active **text** model can natively accept an image in a chat message. Drives the
