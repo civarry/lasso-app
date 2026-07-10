@@ -46,16 +46,9 @@ struct ChatView: View {
     private var header: some View {
         HStack(spacing: 8) {
             Image(systemName: "lasso").foregroundStyle(.tint)
-            Text("Chat").font(.headline)
+            conversationsMenu
             Spacer()
             modelChip
-            Button { chat.newChat(); inputFocused = true } label: {
-                Image(systemName: "square.and.pencil")
-            }
-            .buttonStyle(IconButtonStyle())
-            .help("New chat — clears the conversation")
-            .disabled(!chat.canClear)
-
             Button { ChatPanelController.shared.close() } label: { Image(systemName: "xmark") }
                 .buttonStyle(IconButtonStyle()).help("Close — ⌥⌘A or Esc")
         }
@@ -64,6 +57,36 @@ struct ChatView: View {
         // Drag the window by its header (the panel is no longer movable-by-background, so body
         // controls stay clickable). Sits behind the buttons, which capture their own clicks.
         .background(WindowDragArea())
+    }
+
+    /// Title of the active conversation + a menu to switch between open conversations or start a new
+    /// one — so "Continue in chat" / selection threads no longer replace the chat you were in.
+    private var conversationsMenu: some View {
+        Menu {
+            ForEach(chat.sessionSummaries, id: \.id) { s in
+                Button {
+                    chat.switchTo(s.id); inputFocused = true
+                } label: {
+                    if s.isActive { Label(s.title, systemImage: "checkmark") } else { Text(s.title) }
+                }
+                .disabled(s.isActive || chat.active.isStreaming)
+            }
+            Divider()
+            Button { chat.newChat(); inputFocused = true } label: {
+                Label("New chat", systemImage: "square.and.pencil")
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Text(chat.sessions.count > 1 ? chat.active.title : "Chat")
+                    .font(.headline).lineLimit(1)
+                Image(systemName: "chevron.down").font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help("Conversations — switch or start a new one")
     }
 
     /// Compact model indicator that doubles as a quick switcher — pick any model you've already set
@@ -279,7 +302,8 @@ struct ChatView: View {
                               : "Web grounding OFF — tap to ground answers with your connectors")
                 }
 
-                TextField("Message…", text: $chat.input)
+                TextField("Message…", text: Binding(
+                    get: { chat.active.input }, set: { chat.active.input = $0 }))
                     .textFieldStyle(.plain)
                     .lineLimit(1)
                     .focused($inputFocused)

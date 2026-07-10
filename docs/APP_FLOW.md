@@ -201,6 +201,11 @@ Primitives in `UI/Theme.swift`:
 ---
 
 ## Change log
+- Chat **multiple conversations**: `Conversation` holds one chat's state (messages, two-track memory,
+  semantic index, attachments); `ChatController` is now a manager (`sessions: [Conversation]` + `active`,
+  forwarding facade). "Continue in chat" / Ask AI / capture seed **spawn a new conversation instead of
+  wiping** the current one; header conversations menu switches between them (in-session, cap 12).
+  Background summary/index tasks capture their conversation so switching never crosses streams.
 - Chat **multi-image per turn** (Phase 2): `Attachment` model, `ChatTurn.imageBase64s` + array encoders
   in all providers, `runTurn` OCRs/encodes/describes each image (labeled), composer thumbnail row +
   multi-image bubble. Cap `maxAttachments=5`.

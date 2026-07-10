@@ -18,57 +18,52 @@ final class ChatController {
     private let intelligence = IntelligenceCoordinator.shared
     private let ocr = OCREngine()
 
-    /// Visible conversation (user + assistant bubbles).
-    private(set) var messages: [ChatMessage] = []
-    /// Composer text.
-    var input = ""
-    /// Images attached in the composer but not yet sent (rendered as thumbnail chips).
-    private(set) var pendingAttachments: [Attachment] = []
+    // MARK: - Sessions (the panel holds several conversations; one is `active`)
+
+    /// All open conversations, oldest-first. Bounded by `maxSessions`.
+    private(set) var sessions: [Conversation]
+    /// The conversation currently shown in the panel — all the send/memory logic drives this one.
+    private(set) var active: Conversation
+    /// Cap on retained in-session conversations (bounds memory: each holds messages + a semantic index).
+    static let maxSessions = 12
     /// Max images per turn — keeps context/token cost bounded.
     static let maxAttachments = 5
-    /// Text carried in from a capture ("Continue in chat"), shown as a removable context chip.
-    private(set) var seededContext: String?
 
-    private(set) var isStreaming = false
-    /// True once the context budget started dropping older turns (shown as a subtle note).
-    private(set) var trimmedNotice = false
+    // Per-conversation state forwards to the active session, so the existing send/runTurn/memory logic
+    // works unchanged while the panel can hold several conversations. Background tasks capture their
+    // own session (see `scheduleIndex` / `scheduleSummaryUpdate`), so switching never crosses streams.
+    var messages: [ChatMessage] { get { active.messages } set { active.messages = newValue } }
+    var input: String { get { active.input } set { active.input = newValue } }
+    var pendingAttachments: [Attachment] { get { active.pendingAttachments } set { active.pendingAttachments = newValue } }
+    var seededContext: String? { get { active.seededContext } set { active.seededContext = newValue } }
+    var isStreaming: Bool { get { active.isStreaming } set { active.isStreaming = newValue } }
+    var trimmedNotice: Bool { get { active.trimmedNotice } set { active.trimmedNotice = newValue } }
+    private var streamTask: Task<Void, Never>? { get { active.streamTask } set { active.streamTask = newValue } }
+    private var memory: ConversationMemory { get { active.memory } set { active.memory = newValue } }
+    private var summarizedTurnCount: Int { get { active.summarizedTurnCount } set { active.summarizedTurnCount = newValue } }
+    private var summaryTask: Task<Void, Never>? { get { active.summaryTask } set { active.summaryTask = newValue } }
+    private var memoryIndex: ChatMemoryIndex { active.memoryIndex }
+    private var indexTask: Task<Void, Never>? { get { active.indexTask } set { active.indexTask = newValue } }
+
+    // MARK: - Global capabilities / preferences (shared across all sessions)
+
     /// Whether attaching an image can do anything useful right now (native vision or a vision provider).
     private(set) var imageInputAvailable = false
-    /// Whether any web / reverse-image connector is configured (drives the globe toggle's visibility).
+    /// Whether any web-search connector is configured (drives the globe toggle's visibility).
     private(set) var webConnectorsAvailable = false
-    /// User-facing toggle: ground answers with web/connector evidence. Persisted across launches and
-    /// **defaults off** — the user opts in by tapping the globe, and that choice sticks until changed.
+    /// User-facing toggle: ground answers with web/connector evidence. Persisted, defaults off.
     var webSearchOn: Bool {
         didSet { UserDefaults.standard.set(webSearchOn, forKey: Self.webSearchKey) }
     }
     private static let webSearchKey = "chat.webSearchOn"
 
-    private var streamTask: Task<Void, Never>?
-
-    // MARK: - Rolling conversation summary (long-session memory)
-
-    /// Two-track recap of everything that has scrolled out of the recent verbatim window: durable
-    /// facts about the user (protected) + a churning topic trace. Injected by `buildTurns` so the
-    /// model still "remembers" earlier context instead of losing it to a hard drop. Reset in
-    /// `newChat()`. Built off the send path (see `scheduleSummaryUpdate`).
-    private var memory = ConversationMemory()
-    /// The number of overflow turns the current `memory` already covers — so an incremental
-    /// update only folds in turns that aren't represented yet (cheap, and avoids re-summarizing).
-    private var summarizedTurnCount = 0
-    /// In-flight background summarization, cancelled on a new update or `newChat()`. Never on the
-    /// user's `send` path, so it can't block a reply.
-    private var summaryTask: Task<Void, Never>?
-    /// The budgeted assembler — char-based, provider-agnostic. Tunable here if a model needs a
-    /// tighter window later (the same pipeline serves tiny local → large cloud).
+    /// The budgeted assembler — char-based, provider-agnostic. Shared (stateless) across sessions.
     private let contextBuilder = ChatContextBuilder()
 
-    /// In-session semantic memory: embeds completed exchanges and retrieves the relevant older ones
-    /// verbatim so specifics the summary compressed away can be recalled. Reset in `newChat()`.
-    private let memoryIndex = ChatMemoryIndex()
-    /// In-flight background indexing of completed exchanges. Never on the send path.
-    private var indexTask: Task<Void, Never>?
-
     private init() {
+        let first = Conversation()
+        sessions = [first]
+        active = first
         // Default off; restore the user's last choice if they ever set it.
         webSearchOn = UserDefaults.standard.object(forKey: Self.webSearchKey) as? Bool ?? false
     }
@@ -163,51 +158,82 @@ final class ChatController {
         return nil
     }
 
-    var hasMessages: Bool { !messages.isEmpty }
-    /// Whether there's anything to clear (drives the "New chat" button's enabled state).
-    var canClear: Bool {
-        !messages.isEmpty || !input.isEmpty || !pendingAttachments.isEmpty || seededContext != nil
+    var hasMessages: Bool { active.hasMessages }
+    /// Whether the active conversation has anything to clear (drives the New chat affordance).
+    var canClear: Bool { active.canClear }
+
+    // MARK: - Session management
+
+    /// Recents-menu rows (id, title, active flag), most-recent first.
+    var sessionSummaries: [(id: UUID, title: String, isActive: Bool)] {
+        sessions.reversed().map { ($0.id, $0.title, $0.id == active.id) }
     }
 
-    /// Open a fresh chat seeded with a prior one-shot exchange (e.g. from Ask AI), so the user can
-    /// keep going with the same on-screen context. The selection text rides on the user turn's
-    /// promptText so follow-ups stay grounded.
+    /// Start a brand-new empty conversation — keeps the current ones (no longer wipes).
+    func newChat() { startSession(Conversation()) }
+
+    /// Switch the panel to another open conversation. Blocked mid-stream so a running turn keeps
+    /// updating the session that started it.
+    func switchTo(_ id: UUID) {
+        guard !active.isStreaming, id != active.id,
+              let target = sessions.first(where: { $0.id == id }) else { return }
+        active = target
+    }
+
+    /// Open a *new* conversation seeded with a prior one-shot exchange (Ask AI's "Continue in chat") —
+    /// the conversation you were in is preserved and reachable from the recents menu.
     func continueWith(question: String, answer: String, context: String?, image: CGImage?) {
-        newChat()
+        let s = Conversation()
+        s.originLabel = "Ask AI"
         let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
         var user = ChatMessage(role: .user, text: q.isEmpty ? "About this" : q,
                                attachments: image.map { [Attachment(image: $0)] } ?? [])
         if let context, !context.isEmpty {
             user.promptText = "Context — from my screen:\n\(context)\n\n\(q.isEmpty ? "About this" : q)"
         }
-        messages.append(user)
-        messages.append(ChatMessage(role: .assistant, text: answer))
+        s.messages.append(user)
+        s.messages.append(ChatMessage(role: .assistant, text: answer))
+        startSession(s)
     }
 
-    /// Seed a fresh chat from a capture: pre-fill the selection's text and/or image as context.
+    /// Open a *new* conversation seeded from a capture (selection text and/or image) — preserves the
+    /// current conversation.
     func seed(text: String?, image: CGImage?) {
-        newChat()
+        let s = Conversation()
+        s.originLabel = image != nil ? "Image" : "Selection"
         let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines)
-        seededContext = (trimmed?.isEmpty == false) ? trimmed : nil
-        pendingAttachments = image.map { [Attachment(image: $0)] } ?? []
+        s.seededContext = (trimmed?.isEmpty == false) ? trimmed : nil
+        if let image { s.pendingAttachments = [Attachment(image: image)] }
+        startSession(s)
     }
 
-    func newChat() {
-        streamTask?.cancel()
-        streamTask = nil
-        summaryTask?.cancel()
-        summaryTask = nil
-        indexTask?.cancel()
-        indexTask = nil
-        memoryIndex.reset()
-        memory = ConversationMemory()
-        summarizedTurnCount = 0
-        messages.removeAll()
-        input = ""
-        pendingAttachments = []
-        seededContext = nil
-        isStreaming = false
-        trimmedNotice = false
+    /// Reset the ACTIVE conversation in place (`/clear`) — scoped to the current chat, not the others.
+    func clearActive() {
+        active.cancelWork()
+        active.memoryIndex.reset()
+        active.memory = ConversationMemory()
+        active.summarizedTurnCount = 0
+        active.messages.removeAll()
+        active.input = ""
+        active.pendingAttachments = []
+        active.seededContext = nil
+        active.isStreaming = false
+        active.trimmedNotice = false
+    }
+
+    /// Append a session, make it active, and enforce the cap (drop the oldest non-active sessions).
+    private func startSession(_ s: Conversation) {
+        // If the outgoing conversation is mid-stream, stop it cleanly first — its streaming task writes
+        // via the active-forwarding path, so it must be finalized before `active` moves.
+        if active.isStreaming { cancelStreaming() }
+        sessions.append(s)
+        active = s
+        var overflow = sessions.count - Self.maxSessions
+        guard overflow > 0 else { return }
+        sessions.removeAll { session in
+            guard overflow > 0, session.id != active.id else { return false }
+            session.cancelWork(); overflow -= 1; return true
+        }
     }
 
     func cancelStreaming() {
@@ -389,8 +415,8 @@ final class ChatController {
         // Slash commands typed in the composer act on the session, not the model. `/clear` resets to
         // a fresh chat (history, attachment, seeded context) — intercepted before any turn is built.
         if Self.isClearCommand(typed) {
-            Log.chat.notice("send: /clear — resetting session")
-            newChat()
+            Log.chat.notice("send: /clear — resetting active session")
+            clearActive()
             return
         }
 
@@ -829,14 +855,17 @@ final class ChatController {
     /// Incremental: only the overflow turns not yet covered are summarized, so steady-state sends do
     /// no extra work.
     private func scheduleSummaryUpdate(overflow: [ChatContextBuilder.HistoryTurn]) {
+        // Capture the session so this background work commits to the conversation it belongs to, even
+        // if the user switches to another session before it finishes.
+        let session = active
         // Only the overflow turns we haven't already summarized.
-        guard overflow.count > summarizedTurnCount else { return }
-        let newTurns = Array(overflow.suffix(from: summarizedTurnCount))
-        let priorMemory = memory
+        guard overflow.count > session.summarizedTurnCount else { return }
+        let newTurns = Array(overflow.suffix(from: session.summarizedTurnCount))
+        let priorMemory = session.memory
         let coveredCount = overflow.count
 
-        summaryTask?.cancel()
-        summaryTask = Task { [weak self] in
+        session.summaryTask?.cancel()
+        session.summaryTask = Task { [weak self] in
             guard let self else { return }
             let transcript = Self.transcript(of: newTurns)
             guard !transcript.isEmpty else { return }
@@ -859,11 +888,10 @@ final class ChatController {
             // small-model response (never loses prior facts, never crashes).
             let updated = Self.parseMemory(from: cleaned, prior: priorMemory)
             guard !updated.isEmpty else { return }
-            // Commit on the main actor; guard against a `newChat()` having raced in (count reset to 0
-            // with a shorter overflow than we computed against).
-            guard coveredCount >= self.summarizedTurnCount else { return }
-            self.memory = updated
-            self.summarizedTurnCount = coveredCount
+            // Commit to the session; guard against a `/clear` having raced in (count reset shorter).
+            guard coveredCount >= session.summarizedTurnCount else { return }
+            session.memory = updated
+            session.summarizedTurnCount = coveredCount
             Log.chat.notice("memory updated: covers \(coveredCount, privacy: .public) turns, facts=\(updated.durableFacts.count, privacy: .public) topics=\(updated.topicTrace.count, privacy: .public) chars")
         }
     }
@@ -1058,12 +1086,12 @@ final class ChatController {
     /// Embed newly-completed exchanges into the in-session memory index — off the send path, so it
     /// never blocks a reply. Incremental (only new exchanges are embedded).
     private func scheduleIndex() {
-        let exchanges = Self.exchanges(from: messages)
+        // Capture the session so indexing commits to the conversation it belongs to, even after a switch.
+        let session = active
+        let exchanges = Self.exchanges(from: session.messages)
         guard !exchanges.isEmpty else { return }
-        indexTask?.cancel()
-        indexTask = Task { [weak self] in
-            await self?.memoryIndex.index(exchanges)
-        }
+        session.indexTask?.cancel()
+        session.indexTask = Task { await session.memoryIndex.index(exchanges) }
     }
 
     /// Pair the visible conversation into (user + assistant) exchanges — the retrieval unit, so a
