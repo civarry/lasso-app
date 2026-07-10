@@ -282,10 +282,10 @@ final class ChatController {
         return text.isEmpty ? nil : text
     }
 
-    /// Any web or reverse-image connector active (respecting local-only mode).
+    /// Any web-search connector active (respecting local-only mode).
     static func computeWebAvailable() -> Bool {
         Connectors.webSearch.isActive() || Connectors.tavily.isActive()
-            || Connectors.serpApi.isActive() || Connectors.googleVision.isActive()
+            || Connectors.serpApi.isActive()
     }
 
     // MARK: - Slash commands
@@ -627,29 +627,22 @@ final class ChatController {
 
     // MARK: - Web / connector grounding
 
-    /// Gather evidence from the active connectors: reverse-image (Google Vision) for image turns to
-    /// get a best-guess identity, then a text web lookup (Wikipedia / DuckDuckGo / Tavily / SerpApi)
-    /// on the strongest query. Returns nil when nothing usable was found.
+    /// Gather evidence from the active connectors: a text web lookup (Wikipedia / DuckDuckGo / Reddit,
+    /// plus optional Tavily / SerpApi) on the strongest query built from any typed question and
+    /// on-screen text. Returns nil when nothing usable was found. (Reverse-image lives in the Lens
+    /// panel now — it's a one-tap escalation, not a silent per-turn API call.)
     private func gatherEvidence(typed: String, boxed: UncheckedImage?, ocrText: String?,
                                 enabled: Bool) async -> Evidence? {
         guard enabled, !PrivacyMode.localOnly else { return nil }
-        let image = boxed?.cg
         let webActive = Connectors.webSearch.isActive() || Connectors.tavily.isActive()
             || Connectors.serpApi.isActive()
-        let reverseActive = image != nil && Connectors.googleVision.isActive()
-        guard webActive || reverseActive else { return nil }
+        guard webActive else { return nil }
 
         var evidence = Evidence()
-        if reverseActive, let image {
-            evidence.merge(await GoogleVisionSource().gather(image: image, query: typed, ocrText: ocrText))
-        }
-        if webActive {
-            let query = Self.searchQuery(bestGuess: evidence.bestGuess, entity: evidence.entities.first,
-                                         typed: typed, ocrText: ocrText)
-            if !query.isEmpty {
-                let result = await WebSourcesProvider().lookup(query)
-                evidence.merge(Evidence(abstract: result.abstract, hits: result.hits))
-            }
+        let query = Self.searchQuery(bestGuess: nil, entity: nil, typed: typed, ocrText: ocrText)
+        if !query.isEmpty {
+            let result = await WebSourcesProvider().lookup(query)
+            evidence.merge(Evidence(abstract: result.abstract, hits: result.hits))
         }
         return evidence.isEmpty ? nil : evidence
     }

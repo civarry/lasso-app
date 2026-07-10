@@ -277,32 +277,32 @@ struct SettingsView: View {
                 }
             }
             Section {
-                connectorList(Connectors.all.filter { $0.usesImage })
+                connectorList([Connectors.webSearch])
             } header: {
-                Text("Looks at the image")
+                Text("Web context (on by default, no setup)")
             } footer: {
-                caption("Reverse-image search — identifies what's actually in the picture.")
+                caption("Free public text search (Wikipedia, DuckDuckGo, Reddit) over plain HTTP — used to "
+                        + "ground Identify and Chat. No account, no key.")
             }
 
             Section {
-                connectorList(Connectors.all.filter { !$0.usesImage })
-            } header: {
-                Text("Adds web context (text search)")
+                DisclosureGroup("Advanced — bring your own search key") {
+                    connectorList(Connectors.advanced)
+                }
             } footer: {
-                caption("These search the web by text — from the subject Identify reads in the image, "
-                        + "or your question in Chat. They don't see the picture itself, so they help "
-                        + "once there's a clear thing to search for.")
+                caption("Optional: paste a Tavily or SerpApi key for stronger, ranked web results. "
+                        + "Most people never need these — the free web search above already grounds answers.")
             }
 
             Section {
-                Label("Connectors power both Identify and Chat. Identify reads the image with a vision "
-                      + "model first, so it needs one set up under Intelligence ▸ Image model (install Ollama "
-                      + "or add a cloud image model); Chat grounds answers from your question.",
-                      systemImage: "eye")
+                Label("To identify what's in a photo, use Search with Google Lens (a one-tap button in "
+                      + "the Identify card). Turn it on under General ▸ Privacy — it's opt-in because it "
+                      + "uploads the image to Google.",
+                      systemImage: "photo.badge.magnifyingglass")
                     .font(.caption).foregroundStyle(.secondary)
-                caption("Each connector is optional and independent — Lasso works with none connected: "
-                        + "Apple Intelligence, OCR and Translate run on-device. Your AI model is chosen "
-                        + "on the Intelligence tab; your keys are stored in the Keychain.")
+                caption("Everything here is optional — Lasso works with nothing connected: Apple "
+                        + "Intelligence, OCR and Translate run on-device. Your AI model is chosen on the "
+                        + "Intelligence tab; keys are stored in the Keychain.")
             }
         }
         .formStyle(.grouped)

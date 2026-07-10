@@ -1,5 +1,4 @@
 import Foundation
-import CoreGraphics
 
 /// A "bring your own tool" add-on service the user can connect — the building blocks of the
 /// Connectors store. Each connector is self-describing (name, summary, setup guide) and
@@ -77,7 +76,11 @@ extension Connector {
 
 /// The catalog. Add an integration here and it appears in the store automatically.
 enum Connectors {
-    static let all: [Connector] = [webSearch, tavily, serpApi, googleVision]
+    static let all: [Connector] = [webSearch, tavily, serpApi]
+
+    /// The optional, bring-your-own-key connectors — shown under a collapsed "Advanced" section so the
+    /// default surface stays zero-setup. Keyless Web search is intentionally excluded (it's the default).
+    static let advanced: [Connector] = [tavily, serpApi]
 
     static func by(id: String) -> Connector? { all.first { $0.id == id } }
 
@@ -92,11 +95,11 @@ enum Connectors {
         summary: "Text web search (Wikipedia, DuckDuckGo, Reddit) for context — no account needed.",
         leavesDevice: true,
         enabledKey: "imageSearch.enabled",
-        defaultEnabled: false,
+        defaultEnabled: true,
         keyAccount: nil,
         guide: SetupGuide([
-            .init("Just turn it on — it uses free public sources over plain HTTP (no embedded browser)."),
-            .init("Optional: connect Tavily or SerpApi below for stronger, ranked web results."),
+            .init("On by default — it uses free public sources over plain HTTP (no embedded browser)."),
+            .init("Optional: connect Tavily or SerpApi under Advanced for stronger, ranked web results."),
         ], note: "Leaves your Mac. Paused automatically in local-only mode."),
         test: { _ in
             await ConnectorTests.get(
@@ -159,56 +162,11 @@ enum Connectors {
                 okNote: "Account reachable",
                 unauthorizedNote: "Check the API key.")
         })
-
-    // MARK: Google Vision — reverse image (BYO key)
-
-    static let googleVision = Connector(
-        id: "googleVision",
-        name: "Reverse image (Google Vision)",
-        icon: "photo.on.rectangle.angled",
-        iconDomain: "cloud.google.com",
-        usesImage: true,
-        summary: "Analyses the picture itself — matches the image across the web — best for products, "
-            + "landmarks, logos, artwork and memes.",
-        leavesDevice: true,
-        enabledKey: "identify.source.googleVision.enabled",
-        defaultEnabled: false,
-        keyAccount: "googleVision.apiKey",
-        guide: SetupGuide([
-            .init("Open the Google Cloud Console and pick (or create) a project.",
-                  link: "https://console.cloud.google.com/", linkLabel: "Open Console"),
-            .init("Enable the Cloud Vision API for that project.",
-                  link: "https://console.cloud.google.com/apis/library/vision.googleapis.com",
-                  linkLabel: "Enable Vision API"),
-            .init("Link a billing account (required even for the free tier).",
-                  link: "https://console.cloud.google.com/billing", linkLabel: "Billing"),
-            .init("Create an API key, then restrict it to the Cloud Vision API.",
-                  link: "https://console.cloud.google.com/apis/credentials", linkLabel: "Credentials"),
-            .init("Paste the key (starts with “AIza”) below."),
-        ], note: "Free tier ≈ 1,000 Web Detection calls/month, then ~$3.50/1,000. Leaves your Mac."),
-        test: { key in
-            guard !key.isEmpty else { return .failure("Enter an API key.") }
-            return await ConnectorTests.googleVision(key: key)
-        })
 }
 
 // MARK: - Test helpers (lightweight URLSession probes; reused by the catalog's `test` closures)
 
 enum ConnectorTests {
-    /// A small real JPEG (16×16 grey), generated at runtime — a hard-coded 1×1 pixel gets rejected by
-    /// Vision as "Bad image data", so we make a genuine image the decoder accepts.
-    private static func probeImageBase64() -> String? {
-        let side = 16
-        guard let context = CGContext(
-            data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        context.setFillColor(CGColor(red: 0.5, green: 0.5, blue: 0.5, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: side, height: side))
-        guard let image = context.makeImage() else { return nil }
-        return ImageEncoder.jpegBase64(image, maxEdge: side, quality: 0.8)
-    }
-
     private static func ms(since start: Date) -> Int { max(1, Int(Date().timeIntervalSince(start) * 1000)) }
 
     static func get(_ urlString: String, userAgent: String? = nil,
@@ -248,37 +206,5 @@ enum ConnectorTests {
         case 401, 403: return .failure("Check the API key.")
         default: return .failure("HTTP \(http.statusCode).")
         }
-    }
-
-    /// Runs a real Web Detection on a 1×1 image so the test surfaces Google's own error message
-    /// (the billing/permission diagnostic). Costs ~1 unit; only ever called from a manual Test tap.
-    static func googleVision(key: String) async -> ConnectionTest.Outcome {
-        guard let encoded = key.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://vision.googleapis.com/v1/images:annotate?key=\(encoded)")
-        else { return .failure("Invalid API key.") }
-        guard let probe = probeImageBase64() else { return .failure("Couldn't build a test image.") }
-        let start = Date()
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 12
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "requests": [["image": ["content": probe],
-                          "features": [["type": "WEB_DETECTION", "maxResults": 1]]]],
-        ])
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse else {
-            return .failure("Couldn't reach Google Vision.")
-        }
-        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        if http.statusCode == 200,
-           let inner = ((json?["responses"] as? [[String: Any]])?.first?["error"] as? [String: Any])?["message"] as? String {
-            return .failure(inner)   // a per-image error can ride inside a 200
-        }
-        guard http.statusCode == 200 else {
-            let message = ((json?["error"] as? [String: Any])?["message"] as? String) ?? "HTTP \(http.statusCode)"
-            return .failure(message)
-        }
-        return .ok(ms(since: start))
     }
 }

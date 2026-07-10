@@ -33,6 +33,8 @@ struct IdentifyView: View {
     @State private var sourceError: String?                     // a configured source that failed
 
     @State private var summary = ""
+    @State private var textMode = false          // text-heavy capture → inline actions, not a refusal
+    @State private var forceVisual = false       // "Identify anyway" — a photo that also carries text
     @State private var intent: IdentifyIntent = .unknown
     @State private var pipelineStart = Date()
     @State private var showVisual = false
@@ -50,6 +52,26 @@ struct IdentifyView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
+            if textMode {
+                // Text-heavy capture: never dead-end — offer the actions that fit text, plus an
+                // escape hatch (Lens / Identify anyway) in case it's actually a photo carrying text.
+                TextActionsView(image: image, ocrText: ocrText, intelligence: intelligence,
+                                lensAvailable: lensAvailable, onLens: openLens,
+                                onIdentifyAnyway: identifyAnyway)
+            } else {
+                identifyContent
+            }
+        }
+        .padding(18)
+        .frame(width: 500)
+        .liquidGlassPanel()
+        .task { await runPipeline() }
+        .onDisappear { synthTask?.cancel() }
+    }
+
+    @ViewBuilder
+    private var identifyContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
             statusLine
 
             if !summary.isEmpty {
@@ -65,6 +87,16 @@ struct IdentifyView: View {
             } else if let synthError {
                 Label(synthError, systemImage: "exclamationmark.triangle")
                     .font(.callout).foregroundStyle(.orange)
+            }
+
+            if lensAvailable {
+                Button(action: openLens) {
+                    Label("Search with Google Lens", systemImage: "photo.badge.magnifyingglass")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+                .help("Open Google Lens for a full reverse-image search of this selection")
             }
 
             if !visionText.isEmpty {
@@ -112,13 +144,32 @@ struct IdentifyView: View {
                     .font(.caption2).foregroundStyle(.tertiary)
             }
         }
-        .padding(18)
-        .frame(width: 500)
-        .background(RoundedRectangle(cornerRadius: 16).fill(Color(nsColor: .windowBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.10)))
-        .shadow(color: .black.opacity(0.4), radius: 20, y: 8)
-        .task { await runPipeline() }
-        .onDisappear { synthTask?.cancel() }
+    }
+
+    /// Whether the one-tap Google Lens escalation is available (opt-in + not local-only).
+    private var lensAvailable: Bool {
+        UserDefaults.standard.bool(forKey: LensSearchAction.enabledKey) && !PrivacyMode.localOnly
+    }
+
+    /// Hand off to the full Google Lens reverse-image search, closing this card.
+    private func openLens() {
+        let anchor = CaptureCoordinator.shared.activeSelectionScreenRect()
+        FloatingPanelController.shared.close()
+        LensPanelController.shared.present(image: image, anchor: anchor)
+    }
+
+    /// Escape hatch from text mode: this capture is a photo that also carries text, so run the full
+    /// on-device visual pipeline (vision model + web) instead of treating it as a document.
+    private func identifyAnyway() {
+        forceVisual = true
+        textMode = false
+        synthStarted = false
+        synthesizing = false
+        summary = ""
+        visionText = ""
+        vision = .running
+        sources = .running
+        Task { await runPipeline() }
     }
 
     private var header: some View {
@@ -209,9 +260,9 @@ struct IdentifyView: View {
         }
         cacheKey = key
 
-        // Text-heavy captures (code/article) don't benefit from reverse-image or web — decide routing
-        // from the cheap OCR signal, so the visual work can start in parallel with the vision model.
-        let textHeavy = hasStrongText
+        // Text-heavy captures (code/article) default to text mode — but a photo can *also* carry text
+        // (a product, sign, poster…), so "Identify anyway" flips `forceVisual` to run the visual path.
+        let textHeavy = hasStrongText && !forceVisual
         let visualSources = textHeavy ? [] : activeSources.filter { $0.kind == .visual }
         let textSources = textHeavy ? [] : activeSources.filter { $0.kind == .textual }
 
@@ -237,7 +288,8 @@ struct IdentifyView: View {
         if let guess = merged.bestGuess, !guess.isEmpty { query = guess }
 
         // Intent (sharpens the synthesis prompt; routing was already decided from the OCR signal).
-        intent = IntentDetector.detect(visionText: visionText, ocrText: ocrText, hasStrongText: hasStrongText)
+        // Use `textHeavy`, not raw `hasStrongText`, so "Identify anyway" doesn't re-route back to text.
+        intent = IntentDetector.detect(visionText: visionText, ocrText: ocrText, hasStrongText: textHeavy)
         Log.intelligence.notice("⏱ intent \(intent.rawValue, privacy: .public) → sources: [\((visualSources + textSources).map(\.id).joined(separator: ", "), privacy: .public)]")
 
         // Text sources need the (now sharpened) query, so they run after vision/reverse-image.
@@ -326,7 +378,8 @@ struct IdentifyView: View {
 
     private func runVision() async {
         // OCR-first: strong on-screen text → skip the vision model, use the text as identity.
-        if hasStrongText {
+        // Unless the user asked to "Identify anyway" (a photo that also carries text).
+        if hasStrongText && !forceVisual {
             vision = .skipped
             return
         }
@@ -356,11 +409,11 @@ struct IdentifyView: View {
     private func maybeSynthesize() {
         guard vision.settled, sources.settled, !synthStarted else { return }
         synthStarted = true
-        // Code / text / UI captures have no photo subject to identify — point the user to the right
-        // tool instead of returning a weak "no subject" answer.
-        if let redirect = Self.redirectMessage(for: intent) {
-            summary = redirect
-            Log.intelligence.notice("⏱ identify redirect (\(intent.rawValue, privacy: .public))")
+        // Code / text / UI captures have no photo subject to identify — instead of a dead-end refusal,
+        // switch the card to text mode (Copy / Translate / Ask AI / Chat) so it's always useful.
+        if intent.suppressesSources {
+            textMode = true
+            Log.intelligence.notice("⏱ identify text mode (\(intent.rawValue, privacy: .public))")
             return
         }
         Task {
@@ -369,20 +422,6 @@ struct IdentifyView: View {
             Log.intelligence.notice("⏱ rank: \(Self.ms(tRank), privacy: .public)")
             await startSynthesis()
         }
-    }
-
-    /// For non-subject captures (code / plain text / app UI) Identify isn't the right tool — guide the
-    /// user to the actions that are. Returns nil for everything else (normal identification).
-    private static func redirectMessage(for intent: IdentifyIntent) -> String? {
-        let kind: String
-        switch intent {
-        case .code: kind = "code"
-        case .ui:   kind = "an app screenshot"
-        case .text: kind = "mostly text"
-        default:    return nil
-        }
-        return "This looks like \(kind), not a photo to identify. To work with it, use **Copy text**, "
-            + "**Ask AI**, **Summarize**, or **Continue in chat** on the selection."
     }
 
     private func startSynthesis() async {
@@ -545,6 +584,241 @@ struct IdentifyView: View {
         Related web/community results:
         \(related.isEmpty ? "(none)" : related)
         """
+    }
+}
+
+/// Text mode for the Identify card. When the capture is mostly text there's no photo subject to
+/// identify — but the capture is still useful, so we surface the actions that fit text (the same
+/// behaviour Google Lens has for on-screen text) instead of a dead-end "this is text" message:
+/// Copy, Translate (on-device), Ask AI (one-shot inline), and Continue in chat.
+private struct TextActionsView: View {
+    let image: CGImage
+    let ocrText: String?
+    let intelligence: IntelligenceCoordinator
+    let lensAvailable: Bool
+    let onLens: () -> Void
+    let onIdentifyAnyway: () -> Void
+
+    private enum Mode { case none, translate, ask, clean }
+    @State private var mode: Mode = .none
+    @State private var copied = false
+    @State private var cleaned = ""
+    @State private var cleaning = false
+    @State private var cleanTask: Task<Void, Never>?
+
+    private var text: String { ocrText ?? "" }
+    private var wordCount: Int {
+        text.split { $0 == " " || $0.isNewline }.filter { !$0.isEmpty }.count
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Detected text — context to verify, not the hero. Sits in a recessed dark well (not
+            // glass) so noisy OCR doesn't dominate and glass is never stacked on content.
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Detected text · \(wordCount) word\(wordCount == 1 ? "" : "s")")
+                    .font(.system(size: 11)).foregroundStyle(.primary.opacity(0.45))
+                ScrollView {
+                    Text(text)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.primary.opacity(0.85))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 96)
+                .padding(12)
+                .glassWell()
+            }
+
+            // Primary actions — compact inline pills (icon + label side by side), equal-width; the
+            // active tool gets a solid accent fill.
+            HStack(spacing: 6) {
+                pill(copied ? "Copied" : "Copy", copied ? "checkmark" : "doc.on.doc") {
+                    Pasteboard.copy(text)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+                }
+                pill("Translate", "translate", active: mode == .translate) { toggle(.translate) }
+                pill("Ask AI", "sparkles", active: mode == .ask) { toggle(.ask) }
+                pill("Chat", "bubble.left.and.bubble.right") {
+                    ChatPanelController.shared.open(seedText: text, seedImage: image)
+                    FloatingPanelController.shared.close()
+                }
+            }
+
+            // Optional AI cleanup — explicitly a *derived* version (fixes OCR misreads), kept separate
+            // from the verbatim box above so nothing the user copies is ever silently rewritten.
+            Button {
+                toggle(.clean)
+                startCleanupIfNeeded()
+            } label: {
+                Label(mode == .clean ? "Hide AI cleanup" : "Clean up misreads with AI", systemImage: "sparkles")
+                    .font(.caption)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(mode == .clean ? Color.accentColor : .secondary)
+
+            if mode == .translate {
+                TranslationResultView(source: text)
+            } else if mode == .ask {
+                AskAIView(intelligence: intelligence, image: image, ocrText: ocrText)
+            } else if mode == .clean {
+                cleanupView
+            }
+
+            // Quiet escape hatch — a text-heavy capture can still be a photo (product, sign, poster).
+            // Deliberately subordinate to the primary actions: one muted line, link-style.
+            HStack(spacing: 6) {
+                Text("Not a document?").foregroundStyle(.tertiary)
+                if lensAvailable {
+                    Button("Search with Google Lens", action: onLens).buttonStyle(.link)
+                    Text("·").foregroundStyle(.tertiary)
+                }
+                Button("Identify as a photo", action: onIdentifyAnyway).buttonStyle(.link)
+                Spacer(minLength: 0)
+            }
+            .font(.caption)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onDisappear { cleanTask?.cancel() }
+    }
+
+    @ViewBuilder
+    private var cleanupView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("AI-cleaned — corrected lines highlighted (compare with the source above)",
+                  systemImage: "sparkles")
+                .font(.caption2).foregroundStyle(.secondary)
+            if cleaning && cleaned.isEmpty {
+                HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Cleaning up…") }
+                    .font(.callout).foregroundStyle(.secondary)
+            } else if cleaning {
+                // Still streaming — plain accumulating text; the highlighted view renders once settled.
+                ScrollView {
+                    Text(cleaned).font(.callout).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 140)
+                .padding(10)
+                .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+            } else if !cleaned.isEmpty {
+                OCRCleanedView(lines: OCRDiff.changedLines(original: text, cleaned: cleaned))
+                Button("Copy cleaned text") { Pasteboard.copy(cleaned) }
+                    .controlSize(.small)
+            }
+        }
+    }
+
+    private func toggle(_ m: Mode) { mode = (mode == m) ? .none : m }
+
+    /// Stream an OCR-cleanup pass on demand (only once; cached in `cleaned` after the first run).
+    private func startCleanupIfNeeded() {
+        guard mode == .clean, cleaned.isEmpty, !cleaning else { return }
+        cleaning = true
+        cleanTask = Task {
+            do {
+                for try await delta in intelligence.respond(prompt: Self.cleanupPrompt(text), context: nil) {
+                    if Task.isCancelled { break }
+                    cleaned += delta
+                }
+            } catch {
+                cleaned = "Couldn't clean up: \(error.localizedDescription)"
+            }
+            cleaning = false
+        }
+    }
+
+    /// A tight, non-creative prompt: fix scan artifacts only, never paraphrase/translate/summarize,
+    /// preserve intentional spelling — so the cleanup can't invent or "correct" real content.
+    private static func cleanupPrompt(_ raw: String) -> String {
+        """
+        The text below was extracted from a screenshot by OCR and may contain scanning errors: \
+        garbled words, a misread logo, wrong reading order across columns, or split/merged lines. \
+        Rewrite it into the correct reading order and fix only obvious OCR scan mistakes.
+
+        Rules:
+        - Preserve the original wording, language, numbers, and any intentional spelling or typos \
+        that are clearly part of the content. Do NOT paraphrase, translate, summarize, or add anything.
+        - Only fix artifacts that are clearly scanning mistakes.
+        - Output ONLY the corrected text, nothing else.
+
+        Text:
+        \(raw)
+        """
+    }
+
+    /// A compact inline pill: icon + label side by side, centered as one unit. Equal width across the
+    /// row (flex 1). Inactive = translucent white fill; active tool = solid accent fill, white content.
+    private func pill(_ title: String, _ icon: String, active: Bool = false,
+                      action: @escaping () -> Void) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        return Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: icon).font(.system(size: 14, weight: .medium))
+                Text(title).font(.system(size: 11.5, weight: .medium))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8).padding(.horizontal, 6)
+            .foregroundStyle(active ? Color.white : .primary.opacity(0.9))
+            .background(active ? AnyShapeStyle(Color.accentColor)
+                               : AnyShapeStyle(Color.white.opacity(0.10)), in: shape)
+            .contentShape(shape)
+        }
+        .buttonStyle(PressableStyle())
+    }
+}
+
+// MARK: - OCR cleanup (single Cleaned column, changes highlighted)
+
+/// One line of the cleaned output plus whether it differs from the source (a fix) or is unchanged.
+private struct OCRCleanedLine: Identifiable {
+    let id = UUID()
+    let text: String
+    let changed: Bool
+}
+
+private enum OCRDiff {
+    /// The cleaned text, line by line, each flagged as changed (added/corrected) or unchanged —
+    /// derived from an LCS diff against the original. Only the *cleaned* side is returned: the
+    /// original already lives in the verbatim box above, so we never repeat it here.
+    static func changedLines(original: String, cleaned: String) -> [OCRCleanedLine] {
+        let a = lines(original)
+        let b = lines(cleaned)
+        var inserted = Set<Int>()
+        for change in b.difference(from: a) {
+            if case .insert(let offset, _, _) = change { inserted.insert(offset) }
+        }
+        return b.enumerated().map { OCRCleanedLine(text: $1, changed: inserted.contains($0)) }
+    }
+
+    private static func lines(_ s: String) -> [String] {
+        s.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+}
+
+/// The cleaned result as a single column — corrected/added lines tinted green, unchanged lines muted.
+/// The source stays in the verbatim box above, so there's no duplicated "Original" column.
+private struct OCRCleanedView: View {
+    let lines: [OCRCleanedLine]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(lines) { line in
+                    Text(line.text.isEmpty ? " " : line.text)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(line.changed ? Color.green : .primary.opacity(0.85))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(line.changed ? Color.green.opacity(0.16) : .clear)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+        .frame(maxHeight: 200)
+        .glassWell()
+        .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
     }
 }
 
