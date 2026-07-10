@@ -55,7 +55,7 @@ struct MLXProvider: IntelligenceProvider {
                     let history = Self.history(from: messages)
                     let session = ChatSession(
                         model,
-                        instructions: Self.systemPrompt,
+                        instructions: history.instructions,
                         history: history.prior,
                         generateParameters: .init(maxTokens: 1024, temperature: 0.2))
                     // If the turn carries an image (and this is a VLM), pass it natively so one VLM
@@ -81,9 +81,18 @@ struct MLXProvider: IntelligenceProvider {
     accurate. When on-screen text is provided, ground your answer in it.
     """
 
-    private static func history(from turns: [ChatTurn]) -> (prior: [Chat.Message], prompt: String, role: Chat.Message.Role) {
+    private static func history(from turns: [ChatTurn]) -> (instructions: String, prior: [Chat.Message], prompt: String, role: Chat.Message.Role) {
         let visible = turns.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         let last = visible.last ?? ChatTurn(role: .user, text: "")
+        // System turns (the app's chat system prompt + the injected conversation-memory and
+        // semantic-retrieval blocks) become the ChatSession instructions. Previously they were dropped
+        // here, which silently discarded ALL of that background context — the model only ever saw the
+        // recent verbatim turns. Fall back to the built-in prompt if there are no system turns.
+        let systemText = visible.dropLast()
+            .filter { $0.role == .system }
+            .map(\.text)
+            .joined(separator: "\n\n")
+        let instructions = systemText.isEmpty ? Self.systemPrompt : systemText
         let prior = visible.dropLast().compactMap { turn -> Chat.Message? in
             switch turn.role {
             case .system:
@@ -94,7 +103,7 @@ struct MLXProvider: IntelligenceProvider {
                 return .assistant(turn.text)
             }
         }
-        return (Array(prior), last.text, mlxRole(for: last.role))
+        return (instructions, Array(prior), last.text, mlxRole(for: last.role))
     }
 
     /// The image attached to the latest user turn (if any), as an MLX vision input.

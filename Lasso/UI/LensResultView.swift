@@ -36,9 +36,7 @@ struct LensResultView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(RoundedRectangle(cornerRadius: 16).fill(Color(nsColor: .windowBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.10)))
-        .shadow(color: .black.opacity(0.4), radius: 20, y: 8)
+        .liquidGlassPanel()
     }
 }
 

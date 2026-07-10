@@ -17,12 +17,11 @@ struct ChatView: View {
             composer
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
             .strokeBorder(isDropTarget ? Color.accentColor : .white.opacity(0.10),
                           lineWidth: isDropTarget ? 2 : 1))
-        .shadow(color: .black.opacity(0.4), radius: 20, y: 8)
         .onAppear { DispatchQueue.main.async { inputFocused = true } }
         // Drag-and-drop an image (from Finder or another app) onto the panel to attach it.
         .onDrop(of: [.image, .fileURL], isTargeted: $isDropTarget) { providers in

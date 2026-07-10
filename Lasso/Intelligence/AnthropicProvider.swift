@@ -65,7 +65,15 @@ struct AnthropicProvider: IntelligenceProvider {
             }
             return ["role": turn.role.rawValue, "content": turn.text]
         }
-        return stream(messages: wire)
+        return stream(messages: wire, system: Self.mergedSystem(from: messages))
+    }
+
+    /// Combine every system-role turn (base prompt + the conversation-memory & semantic-retrieval
+    /// blocks injected by `ChatContextBuilder`) into Anthropic's top-level `system`. Using only the
+    /// first system turn silently dropped that memory/recall context.
+    private static func mergedSystem(from messages: [ChatTurn]) -> String {
+        let systems = messages.filter { $0.role == .system && !$0.text.isEmpty }.map(\.text)
+        return systems.isEmpty ? systemPrompt : systems.joined(separator: "\n\n")
     }
 
     // MARK: - Tool calling (industry-standard function calling)
@@ -88,7 +96,7 @@ struct AnthropicProvider: IntelligenceProvider {
 
     func respond(messages: [ChatTurn], tools: [ChatTool],
                  execute: @escaping ToolExecutor) -> AsyncThrowingStream<String, Error> {
-        let system = messages.first(where: { $0.role == .system })?.text ?? Self.systemPrompt
+        let system = Self.mergedSystem(from: messages)
         // Build the (non-Sendable) wire dictionaries *inside* the Task from the Sendable inputs, so
         // nothing non-Sendable crosses the task boundary.
         return AsyncThrowingStream { continuation in
@@ -213,11 +221,11 @@ struct AnthropicProvider: IntelligenceProvider {
         }
     }
 
-    private func stream(messages: [[String: Any]]) -> AsyncThrowingStream<String, Error> {
+    private func stream(messages: [[String: Any]], system: String = systemPrompt) -> AsyncThrowingStream<String, Error> {
         // Encode up front so the (non-Sendable) message dictionaries don't cross into the Task closure.
         let body = try? JSONSerialization.data(withJSONObject: [
             "model": model, "max_tokens": 1024, "stream": true,
-            "system": Self.systemPrompt,
+            "system": system,
             "messages": messages,
         ])
         return AsyncThrowingStream { continuation in

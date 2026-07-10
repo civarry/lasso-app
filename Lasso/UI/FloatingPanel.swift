@@ -51,7 +51,10 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         panel.level = .floating
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = false
+        // Native window shadow: the WindowServer draws it from the card's actual rounded-material
+        // silhouette (outside it, never *through* the translucent glass), so there's no dark halo
+        // bleeding through the corners like a SwiftUI `.shadow` on a frosted panel does.
+        panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.isMovableByWindowBackground = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]

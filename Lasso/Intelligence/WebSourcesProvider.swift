@@ -349,7 +349,7 @@ extension IdentifySource {
 enum IdentifySources {
     /// Display/run order. Built-ins first, then bring-your-own-key tools.
     static func all() -> [IdentifySource] {
-        [WebSearchSource(), GoogleVisionSource()]
+        [WebSearchSource()]
     }
 
     static func isEnabled(_ source: IdentifySource) -> Bool {
@@ -390,118 +390,6 @@ struct WebSearchSource: IdentifySource {
         guard !query.isEmpty else { return Evidence() }
         let result = await WebSourcesProvider().lookup(query)
         return Evidence(abstract: result.abstract, hits: result.hits)
-    }
-}
-
-/// Bring-your-own-key source: Google Cloud Vision "Web Detection". POSTs the image bytes to Google
-/// with the user's own API key and returns a best-guess identity label, recognized entities, and
-/// pages that carry the same image — the reverse-image signal, with no embedded browser. Off by
-/// default; disabled in local-only mode.
-struct GoogleVisionSource: IdentifySource {
-    let id = "googleVision"
-    let title = "Reverse image (Google Vision)"
-    let detail = "Identifies the subject by matching the image across the web. Uses your Google Cloud Vision API key (free tier ~1,000/mo)."
-    let kind = SourceKind.visual
-    let leavesDevice = true
-    let requiresKey = true
-    let enabledKey = "identify.source.googleVision.enabled"
-    let defaultEnabled = false
-
-    static let keyAccount = "googleVision.apiKey"
-
-    func isConfigured() -> Bool {
-        !(Keychain.getMigrating(Self.keyAccount, legacyDefaultsKey: Self.keyAccount) ?? "").isEmpty
-    }
-
-    func gather(image: CGImage, query: String, ocrText: String?) async -> Evidence {
-        guard let key = Keychain.get(Self.keyAccount), !key.isEmpty,
-              let base64 = ImageEncoder.jpegBase64(image, maxEdge: 1024),
-              let encodedKey = key.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://vision.googleapis.com/v1/images:annotate?key=\(encodedKey)")
-        else { return Evidence() }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 12
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "requests": [[
-                "image": ["content": base64],
-                "features": [["type": "WEB_DETECTION", "maxResults": 10]],
-            ]],
-        ])
-
-        guard let (data, response) = try? await URLSession.shared.data(for: request) else {
-            return Evidence(error: "Google Vision: couldn't reach the API (network).")
-        }
-        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        guard status == 200 else {
-            // Google returns { "error": { "message": "…" } } — surface its own words.
-            let apiMessage = ((json?["error"] as? [String: Any])?["message"] as? String)
-                ?? "HTTP \(status)"
-            Log.intelligence.error("Google Vision failed (\(status, privacy: .public)): \(apiMessage, privacy: .public)")
-            return Evidence(error: "Google Vision: \(apiMessage)")
-        }
-        guard let responses = json?["responses"] as? [[String: Any]] else { return Evidence() }
-        // A per-image error can ride inside a 200 response too.
-        if let inner = (responses.first?["error"] as? [String: Any])?["message"] as? String {
-            return Evidence(error: "Google Vision: \(inner)")
-        }
-        guard let web = responses.first?["webDetection"] as? [String: Any] else {
-            return Evidence()   // succeeded, just no web matches for this image
-        }
-
-        // A best-guess only counts as an *identification* if it's specific. Web Detection falls back
-        // to generic content labels ("Human", "Photograph") when the exact image isn't indexed —
-        // those must NOT drive the query or be presented as an answer, or Identify "confidently"
-        // describes the generic category instead of admitting it couldn't identify the subject.
-        let rawLabel = (web["bestGuessLabels"] as? [[String: Any]])?
-            .first?["label"] as? String ?? ""
-        let identified = !rawLabel.isEmpty && !Self.isGeneric(rawLabel)
-
-        var evidence = Evidence()
-        if identified {
-            evidence.bestGuess = rawLabel
-            if let entities = web["webEntities"] as? [[String: Any]] {
-                evidence.entities = entities
-                    .compactMap { $0["description"] as? String }
-                    .filter { !$0.isEmpty && !Self.isGeneric($0) }
-                    .prefix(6).map { $0 }
-            }
-        }
-        if let pages = web["pagesWithMatchingImages"] as? [[String: Any]] {
-            evidence.hits = pages.prefix(8).compactMap { page -> WebSourcesProvider.Hit? in
-                guard let urlString = page["url"] as? String, let pageURL = URL(string: urlString)
-                else { return nil }
-                if let host = pageURL.host, DomainNoise.isNoise(host) { return nil }
-                let title = (page["pageTitle"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-                    ?? pageURL.host ?? urlString
-                // When unidentified, drop generic "Human – Wikipedia"-style pages too.
-                if !identified, Self.isGeneric(title) { return nil }
-                return WebSourcesProvider.Hit(title: title, url: pageURL,
-                                              source: pageURL.host ?? "web")
-            }
-        }
-        return evidence
-    }
-
-    /// Non-identifying content labels Google returns when it can't match the exact image. Treated as
-    /// "no identification" so they don't pollute the query or the answer.
-    private static let genericTerms: Set<String> = [
-        "human", "person", "people", "man", "woman", "boy", "girl", "child", "adult",
-        "face", "head", "neck", "chin", "forehead", "jaw", "cheek", "nose", "eyebrow",
-        "hair", "hairstyle", "facial hair", "beard", "moustache", "mustache", "skin",
-        "photograph", "photography", "portrait", "portrait photography", "photo", "picture",
-        "image", "selfie", "snapshot", "smile", "glasses", "eyewear",
-    ]
-
-    static func isGeneric(_ text: String) -> Bool {
-        let t = text.lowercased().trimmingCharacters(in: .whitespaces)
-        if genericTerms.contains(t) { return true }
-        // "Human", "Human - Wikipedia", "Human | NOVA", "Modern humans …" → generic.
-        let head = t.split(whereSeparator: { " -|:–—".contains($0) }).first.map(String.init) ?? t
-        return genericTerms.contains(head)
     }
 }
 

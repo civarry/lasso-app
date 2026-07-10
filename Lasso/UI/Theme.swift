@@ -7,6 +7,46 @@ enum Theme {
     static let spacing: CGFloat = 8
 
     static let panelMaterial: Material = .ultraThinMaterial
+
+    // Liquid Glass (Tahoe): continuous "squircle" radii — big on the panel, smaller on nested wells.
+    static let panelRadius: CGFloat = 26
+    static let wellRadius: CGFloat = 16
+    static let glassPillRadius: CGFloat = 16
+}
+
+extension View {
+    /// The floating panel's Liquid Glass surface. Continuous corners; casts a soft shadow. Falls back
+    /// to a solid material when Reduce Transparency is on (Apple expects apps to do this). Glass is
+    /// reserved for the panel + controls — never stacked on content blocks.
+    func liquidGlassPanel(cornerRadius: CGFloat = Theme.panelRadius) -> some View {
+        modifier(LiquidGlassPanel(radius: cornerRadius))
+    }
+
+    /// A recessed content "well" — a plain dark tint, deliberately NOT glass (Apple: don't sample
+    /// glass with glass). Used for the detected-text / translation / cleaned blocks.
+    func glassWell(cornerRadius: CGFloat = Theme.wellRadius) -> some View {
+        background(Color.black.opacity(0.18),
+                   in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    }
+}
+
+private struct LiquidGlassPanel: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    let radius: CGFloat
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        // Frosted material surface hard-clipped to the rounded shape (so the material can never bleed a
+        // square corner), with a hairline rim. NO SwiftUI drop shadow — the panel window uses the native
+        // macOS shadow, which is cast outside the card's real silhouette instead of showing *through*
+        // the translucent glass at the corners. Glass stays on the control pills; material is more
+        // opaque under Reduce Transparency.
+        content
+            .background(reduceTransparency ? AnyShapeStyle(.regularMaterial)
+                                           : AnyShapeStyle(.ultraThinMaterial), in: shape)
+            .overlay(shape.strokeBorder(.white.opacity(0.10), lineWidth: 1))
+            .clipShape(shape)
+    }
 }
 
 /// Grip used to drag the floating bar/result panel around the screen. Writes a live offset to the

@@ -26,7 +26,9 @@ struct AskAIAction: CaptureAction {
     }
 }
 
-private struct AskAIView: View {
+/// The Ask-AI input + streamed answer. Presented by `AskAIAction`, and embedded inline by the
+/// Identify card's text mode so a text-heavy capture can ask a one-shot question without leaving.
+struct AskAIView: View {
     let intelligence: IntelligenceCoordinator
     let image: CGImage
     let ocrText: String?
