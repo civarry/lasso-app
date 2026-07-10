@@ -55,18 +55,57 @@ final class ChatMemoryIndex {
         indexedExchanges = exchanges.count
     }
 
-    /// Up to `k` exchanges most relevant to `query`, excluding any that cover a message already in the
-    /// recent verbatim window (`excluding`). Returns verbatim chunk texts, most-relevant first, or [].
-    func retrieve(query: String, excluding: Set<UUID>, k: Int = 3, threshold: Double = 0.16) async -> [String] {
-        guard !chunks.isEmpty, !query.isEmpty,
+    /// Retrieval relevance tuning. NLEmbedding cosines cluster high, so a flat threshold over-fires
+    /// (retrieves noise on unrelated turns). Relevance is judged *relatively* — a chunk must stand out
+    /// above the candidate set (mean + σ·`relevanceSigma`) — plus an absolute floor as a small-N
+    /// backstop. Calibrate both from the `retrieve · score=…` debug logs on a real conversation.
+    private static let relevanceSigma = 1.0
+    private static let scoreFloor = 0.30
+    /// Weight of the current question vs. the recent-context blend (helps follow-ups without letting
+    /// off-topic recent turns dilute an explicit question).
+    private static let questionWeight = 0.7
+
+    /// Retrieve up to `k` older exchanges relevant to the current turn, excluding any already in the
+    /// recent verbatim window. Scores blend the question (primary) with recent context (tiebreaker),
+    /// then a relevance gate keeps only clear standouts — so an unrelated turn retrieves NOTHING.
+    func retrieve(question: String, context: String, excluding: Set<UUID>, k: Int = 2) async -> [String] {
+        let candidates = chunks.filter { $0.messageIDs.isDisjoint(with: excluding) }
+        guard !candidates.isEmpty, !question.isEmpty,
               let embedder = await resolveEmbedder(),
-              let qv = await embedder.embed([query])?.first else { return [] }
-        let ranked = chunks
-            .filter { $0.messageIDs.isDisjoint(with: excluding) }
-            .map { (text: $0.text, score: OllamaEmbeddings.cosine(qv, $0.vector) * (0.6 + 0.4 * $0.importance)) }
-            .filter { $0.score >= threshold }
-            .sorted { $0.score > $1.score }
-        return ranked.prefix(k).map(\.text)
+              let qs = await embedder.embed([question, context]), qs.count == 2 else { return [] }
+        let qMain = qs[0]
+        let qCtx = qs[1]
+
+        // Blend the question (primary) with the recent-context vector, nudged by importance.
+        var scored: [(text: String, score: Double)] = []
+        scored.reserveCapacity(candidates.count)
+        for c in candidates {
+            let main = OllamaEmbeddings.cosine(qMain, c.vector)
+            let ctxSim = OllamaEmbeddings.cosine(qCtx, c.vector)
+            let sim = Self.questionWeight * main + (1.0 - Self.questionWeight) * ctxSim
+            scored.append((c.text, sim * (0.85 + 0.15 * c.importance)))
+        }
+        scored.sort { $0.score > $1.score }
+
+        // Relevance gate: a chunk must stand clearly above the candidate mean (outlier), plus a floor.
+        let n = Double(scored.count)
+        var sum = 0.0
+        for s in scored { sum += s.score }
+        let mean = sum / n
+        var varAcc = 0.0
+        for s in scored { let d = s.score - mean; varAcc += d * d }
+        let sd = (varAcc / n).squareRoot()
+        let bar = mean + Self.relevanceSigma * sd
+
+        for s in scored.prefix(5) {
+            Log.chat.debug("retrieve · score=\(String(format: "%.3f", s.score), privacy: .public) bar=\(String(format: "%.3f", bar), privacy: .public) · \(String(s.text.prefix(48)), privacy: .public)")
+        }
+
+        var kept: [String] = []
+        for s in scored where s.score >= bar && s.score >= Self.scoreFloor && kept.count < k {
+            kept.append(s.text)
+        }
+        return kept
     }
 
     // MARK: - Embedder ladder

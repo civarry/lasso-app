@@ -1072,8 +1072,10 @@ final class ChatController {
         let recentWindow = history.suffix(contextBuilder.budget.recentTurns)
         let recentIDs = Set(recentWindow.map(\.id))
         let recentContext = history.suffix(2).map { $0.promptText ?? $0.text }
-        let query = (recentContext + [currentUserText]).joined(separator: "\n")
-        return await memoryIndex.retrieve(query: query, excluding: recentIDs)
+        // Question = the explicit current text (primary signal); context adds the last couple of turns
+        // so pronoun-y follow-ups ("continue that") still match, without diluting an explicit question.
+        let context = (recentContext + [currentUserText]).joined(separator: "\n")
+        return await memoryIndex.retrieve(question: currentUserText, context: context, excluding: recentIDs)
     }
 
     private func finishError(_ id: UUID, _ message: String) {

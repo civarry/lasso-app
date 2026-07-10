@@ -10,8 +10,11 @@ retrieval reserve). Companion to `CHAT_MEMORY_DESIGN.md`.
    - `memory index embedder: …` — which backend resolved (`Apple NLEmbedding`, `Ollama nomic-embed-text`, or `none`).
    - `runTurn · retrieved N memory chunk(s)` — retrieval fired this turn.
    - `runTurn ·   retrieved[i]: …` — **what** was pulled in (a 140-char preview of each chunk).
-     This is a `.debug` line, so enable debug output: in Xcode it shows by default; in Console.app turn
-     on "Include Debug Messages" (Action menu). Use it to confirm the *right* exchange was retrieved.
+   - `retrieve · score=… bar=… · <preview>` — every candidate's blended score and the relevance `bar`
+     (a chunk is kept only if `score ≥ bar` and `score ≥ floor`). Use this to calibrate `relevanceSigma`
+     / `scoreFloor` in `ChatMemoryIndex`.
+   These are `.debug` lines: in Xcode they show by default; in Console.app turn on "Include Debug
+   Messages" (Action menu).
 4. Send each message below in order; let each reply finish before the next.
 
 > Recent verbatim window = 6 messages (3 exchanges). The two facts you plant at the start scroll out of
@@ -29,7 +32,7 @@ retrieval reserve). Companion to `CHAT_MEMORY_DESIGN.md`.
 | 6 | `What's the capital of Australia?` | Canberra | — |
 | 7 | `What was the error code on my staging server, and its IP?` | **TX-8841** on **10.4.19.7** | `runTurn · retrieved …` |
 | 8 | `Remind me the migration script's filename and when it runs.` | **rollup_v3.py** at **02:00 UTC** | `runTurn · retrieved …` |
-| 9 | `Give me a fun fact about octopuses.` | octopus fact | ideally **no** `retrieved` line |
+| 9 | `Give me a fun fact about octopuses.` | octopus fact | **no** `retrieved` line (relevance gate) |
 
 ## What each step proves
 - **7 & 8 = the core win.** Those exact tokens (`TX-8841`, `10.4.19.7`, `rollup_v3.py`, `02:00 UTC`)
@@ -57,7 +60,12 @@ retrieval reserve). Companion to `CHAT_MEMORY_DESIGN.md`.
 - **Short chat** (2–3 messages): no `retrieved` line, normal replies, zero overhead.
 - **`/clear`:** index resets — the planted fact can no longer be recalled afterward.
 
-## Known looseness (tune after core works)
-- With **Apple NLEmbedding**, cosine scores run broadly high, so the `0.16` threshold can let a weak
-  match through (e.g. a `retrieved 1` on the "boil an egg" turn). Harmless, but if precision matters we
-  can raise the threshold or make it relative (keep top-K only when clearly above the batch mean).
+## Relevance gate (calibration)
+NLEmbedding cosines cluster high, so retrieval uses a **relative** gate, not a flat threshold: a chunk
+is kept only if its score is a clear outlier above the candidate mean (`mean + relevanceSigma·σ`) AND
+above `scoreFloor`. Scoring weights the current question (`questionWeight`) over recent context. Tune
+the three constants at the top of `ChatMemoryIndex` from the `retrieve · score=… bar=…` logs:
+- **Unrelated turns (5 "egg", 9 "octopus") still retrieve** → raise `relevanceSigma` and/or `scoreFloor`.
+- **A genuine recall (7, 8) retrieves nothing** → lower them (or lower `questionWeight` if the recent
+  context should count more).
+- Expected after tuning: **7 & 8 retrieve the right exchange; 5 & 9 retrieve nothing.**
