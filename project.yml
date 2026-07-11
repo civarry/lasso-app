@@ -8,11 +8,12 @@ options:
   groupSortPosition: top
   generateEmptyDirectories: true
 
-# Marks the project as up to date for Xcode 26.5 so the "Update to recommended settings" banner
+# Marks the project as up to date for Xcode 26.6 so the "Update to recommended settings" banner
 # stops appearing. The recommended build settings themselves are encoded under `settings.base`
-# below — never via the .xcodeproj, which XcodeGen regenerates.
+# below — never via the .xcodeproj, which XcodeGen regenerates (clicking "Perform Changes" in Xcode
+# would be wiped on the next `xcodegen generate`).
 attributes:
-  LastUpgradeCheck: "2650"
+  LastUpgradeCheck: "2660"
 
 settings:
   base:
@@ -34,6 +35,7 @@ settings:
     DEAD_CODE_STRIPPING: YES
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+    STRING_CATALOG_GENERATE_SYMBOLS: YES
     MARKETING_VERSION: "0.6.1"
     CURRENT_PROJECT_VERSION: "18"
 
