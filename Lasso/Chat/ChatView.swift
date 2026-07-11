@@ -440,9 +440,10 @@ private struct MessageBubble: View {
                         Text("Thinking…").font(.caption).foregroundStyle(.secondary)
                     }
                 } else if !message.text.isEmpty {
-                    // Not drag-selectable: selectable text in the scroll view intercepts clicks meant for the
-                    // Activity disclosure. A Copy button replaces highlight-to-copy on assistant turns.
-                    MarkdownView(text: message.text, fontSize: fontSize, selectable: false)
+                    // Drag-selectable like any chat app (⌘C to copy the highlight); the Copy button
+                    // remains for one-tap whole-message copy. The Activity disclosure is a separate view,
+                    // so enabling selection on the body doesn't affect its toggle.
+                    MarkdownView(text: message.text, fontSize: fontSize, selectable: true)
                         .foregroundStyle(message.isError ? Color.orange : Color.primary)
                         .fixedSize(horizontal: false, vertical: true)
                     if !isUser, !message.isStreaming, !message.isError {

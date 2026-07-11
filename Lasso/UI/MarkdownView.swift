@@ -17,6 +17,8 @@ struct MarkdownView: View {
                 view(for: block)
             }
         }
+        // Propagate selection to every text block (paragraphs, lists, tables, code) — not just code.
+        .textSelectable(selectable)
     }
 
     @ViewBuilder
