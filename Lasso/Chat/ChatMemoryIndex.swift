@@ -242,6 +242,16 @@ struct OllamaChatEmbedder: ChatEmbedder {
     }
 }
 
+/// Local MLX embeddings (Apple-Silicon accelerated) — bge / e5 / nomic / MiniLM encoders downloaded
+/// in-app. Returns nil when the model isn't downloaded/loadable, so resolution falls back to Apple.
+struct MLXChatEmbedder: ChatEmbedder {
+    let model: String
+    var label: String { "MLX · \(model.components(separatedBy: "/").last ?? model)" }
+    func embed(_ texts: [String]) async -> [[Double]]? {
+        await MLXEmbeddings.embed(texts, modelID: model)
+    }
+}
+
 /// Cloud embeddings via an OpenAI-compatible `/embeddings` endpoint (e.g. text-embedding-3-small /
 /// -large). Reuses the Language model's endpoint + key. **Sends conversation text off-device** — only
 /// resolved when NOT in local-only mode (enforced by `effectiveEmbeddingProvider`).

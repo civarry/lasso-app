@@ -68,6 +68,8 @@ targets:
       - package: MLXSwiftLM
         product: MLXLMCommon
       - package: MLXSwiftLM
+        product: MLXEmbedders
+      - package: MLXSwiftLM
         product: MLXHuggingFace
       - package: SwiftHuggingFace
         product: HuggingFace

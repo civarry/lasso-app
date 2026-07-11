@@ -127,6 +127,7 @@ enum EmbeddingProviderKind: String, CaseIterable, Identifiable, Sendable {
     case automatic          // Ollama nomic-embed-text if installed, else Apple on-device, else none
     case apple              // force Apple NLEmbedding (built into macOS, zero download)
     case ollama             // a local Ollama embedding model
+    case mlx                // a local MLX embedding model (bge / e5 / nomic …), downloaded in-app
     case openAICompatible   // cloud embeddings (reuses the Language model's endpoint + key)
 
     var id: String { rawValue }
@@ -138,6 +139,7 @@ enum EmbeddingProviderKind: String, CaseIterable, Identifiable, Sendable {
         case .automatic: "Automatic"
         case .apple: "Apple"
         case .ollama: "Ollama (local)"
+        case .mlx: "MLX (local)"
         case .openAICompatible: "OpenAI-compatible"
         }
     }
@@ -219,6 +221,10 @@ final class IntelligenceCoordinator {
     var embeddingOllamaModel: String {
         didSet { UserDefaults.standard.set(embeddingOllamaModel, forKey: "intelligence.embedding.ollamaModel") }
     }
+    /// Local MLX embedding model id (when `embeddingProvider == .mlx`).
+    var embeddingMLXModel: String {
+        didSet { UserDefaults.standard.set(embeddingMLXModel, forKey: "intelligence.embedding.mlxModel") }
+    }
     /// Cloud embedding model name (when `embeddingProvider == .openAICompatible`). Embedding has its own
     /// independent OpenAI-compatible service/endpoint (like the Image model), so it can point at a
     /// provider that serves `/embeddings` even when the Language model uses one that doesn't.
@@ -261,6 +267,7 @@ final class IntelligenceCoordinator {
         self.embeddingProvider = defaults.string(forKey: "intelligence.embedding.provider")
             .flatMap(EmbeddingProviderKind.init(rawValue:)) ?? .automatic
         self.embeddingOllamaModel = defaults.string(forKey: "intelligence.embedding.ollamaModel") ?? ""
+        self.embeddingMLXModel = defaults.string(forKey: "intelligence.embedding.mlxModel") ?? MLXEmbeddings.defaultModelID
         // "" = use the text-embedding-3-small default; an empty field shows a placeholder (so it reads
         // as an editable text input, like the Language model's Model row) instead of a fixed label.
         self.embeddingOpenAIModel = defaults.string(forKey: "intelligence.embedding.openAIModel") ?? ""
@@ -382,6 +389,7 @@ final class IntelligenceCoordinator {
         case .automatic: return "Automatic (Apple / Ollama)"
         case .apple: return "Apple (on-device)"
         case .ollama: return "Ollama · \(embeddingOllamaModel.isEmpty ? "auto" : embeddingOllamaModel)"
+        case .mlx: return "MLX · \((embeddingMLXModel.isEmpty ? MLXEmbeddings.defaultModelID : embeddingMLXModel).components(separatedBy: "/").last ?? "auto")"
         case .openAICompatible:
             let host = (URL(string: embeddingOpenAIBaseURL)?.host ?? "").lowercased()
             let name = host.contains("groq") ? "Groq" : host.contains("openrouter") ? "OpenRouter"
@@ -421,6 +429,17 @@ final class IntelligenceCoordinator {
                 if await probe(o) { Log.chat.notice("embedder: Ollama \(model, privacy: .public)"); return o }
             }
             Log.chat.notice("embedder: Ollama \(model, privacy: .public) unavailable → Apple"); return apple()
+
+        case .mlx:
+            let mlxModel = embeddingMLXModel.isEmpty ? MLXEmbeddings.defaultModelID : embeddingMLXModel
+            // Don't block the first reply on a fresh download — fall back to Apple until it's installed
+            // (Settings shows the download button). Once present, load + probe.
+            guard MLXEmbeddings.isDownloaded(mlxModel) else {
+                Log.chat.notice("embedder: MLX \(mlxModel, privacy: .public) not downloaded → Apple"); return apple()
+            }
+            let m = MLXChatEmbedder(model: mlxModel)
+            if await probe(m) { Log.chat.notice("embedder: MLX \(mlxModel, privacy: .public)"); return m }
+            Log.chat.notice("embedder: MLX \(mlxModel, privacy: .public) failed → Apple"); return apple()
 
         case .openAICompatible:
             // Embedding's own endpoint + key (independent of the Language model).

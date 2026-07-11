@@ -10,6 +10,10 @@ struct MLXModelManager: View {
     let suggestions: [(name: String, id: String)]
     let defaultID: String
     var localOnly: Bool
+    /// The loader to download with — defaults to the LLM/VLM path. Embedding models load via a different
+    /// MLX container, so the embedding picker injects `MLXEmbeddings.ensureDownloaded` instead.
+    var ensureDownloaded: @Sendable (String, @escaping @Sendable (Double) -> Void) async throws -> Void
+        = { try await MLXProvider.ensureDownloaded($0, progress: $1) }
 
     private enum Phase: Equatable { case idle, downloading, failed(String) }
     @State private var phase: Phase = .idle
@@ -182,7 +186,7 @@ struct MLXModelManager: View {
         downloadTask = Task {
             do {
                 // Real loader progress (fraction of bytes received) — moves as it downloads.
-                try await MLXProvider.ensureDownloaded(id) { frac in
+                try await ensureDownloaded(id) { frac in
                     Task { @MainActor in
                         progress = frac
                         if let total { downloadedBytes = Int64(frac * Double(total)) }

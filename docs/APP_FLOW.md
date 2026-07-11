@@ -299,6 +299,14 @@ the next frontier.**
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **MLX embedding backend**: a fourth Chat-memory embedder (`EmbeddingProviderKind.mlx`) via the
+  `MLXEmbedders` library (same package as the Language/Image MLX models). `MLXEmbeddings` +
+  `MLXEmbedderCache` (load-coalescing, memory-pressure eviction) load BERT-style encoders (bge / e5 /
+  nomic / MiniLM) and pool → normalized `[Double]`. Downloaded **in-app** via the reused `MLXModelManager`
+  (an injected `ensureDownloaded` closure routes to the embedder loader, since embedders aren't causal
+  LMs). Default `multilingual-e5-small` — a strong multilingual on-device option with no Ollama. Local
+  (safe in local-only, but download itself is gated like other MLX models). Symmetric embedding (no
+  query/passage prefixes yet — a future refinement). Status row + honest Apple fallback until downloaded.
 - **Slash-command palette**: typing `/` in the chat composer shows a filterable list of session commands
   (`/new`, `/clear`, `/copy`, `/web` when connectors exist). Arrow keys navigate, Enter/Tab runs, Esc
   dismisses, click/hover works too (`.onKeyPress` on the input; hidden once a space/non-slash text

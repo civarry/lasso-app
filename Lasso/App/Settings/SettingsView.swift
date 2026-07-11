@@ -36,6 +36,7 @@ struct SettingsView: View {
         // service/endpoint (like the Image model); the API key is shared per service via openAIKeyByService.
         var embeddingProvider: EmbeddingProviderKind = .automatic
         var embeddingOllamaModel = ""       // "" = Auto (best installed embed model)
+        var embeddingMLXModel = MLXEmbeddings.defaultModelID
         var embeddingOpenAIService = "openai"
         var embeddingOpenAICustomBaseURL = "https://api.openai.com/v1"
         var embeddingOpenAIModelByService: [String: String] = [:]   // "" = text-embedding-3-small default
@@ -312,13 +313,15 @@ struct SettingsView: View {
         let choice = draft.embeddingProvider
         let ollamaModel = draft.embeddingOllamaModel
         let openAIModel = draft.embeddingOpenAIModel
+        let mlxModel = draft.embeddingMLXModel
         embeddingStatusTask?.cancel()
         embeddingStatusTask = Task {
             // Debounce: while the user types a model name we don't want to hit the cloud /embeddings
             // endpoint (or re-probe Ollama) on every keystroke.
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
-            let status = await probeEmbedding(choice, ollamaModel: ollamaModel, openAIModel: openAIModel)
+            let status = await probeEmbedding(choice, ollamaModel: ollamaModel,
+                                              openAIModel: openAIModel, mlxModel: mlxModel)
             if !Task.isCancelled { embeddingStatus = status }
         }
     }
@@ -326,7 +329,7 @@ struct SettingsView: View {
     /// Probe the chosen backend and describe the *actual* outcome — including the always-Apple fallback,
     /// so the user knows exactly what their chat memory is doing.
     private func probeEmbedding(_ choice: EmbeddingProviderKind, ollamaModel: String,
-                                openAIModel: String) async -> (ok: Bool, text: String) {
+                                openAIModel: String, mlxModel: String) async -> (ok: Bool, text: String) {
         let apple = AppleSentenceEmbedder()
         let appleNote = "chat memory will use the running summary only (semantic recall off)"
 
@@ -358,6 +361,18 @@ struct SettingsView: View {
             return apple.isAvailable
                 ? (true, "Ollama \(model) not reachable — using Apple on-device instead.")
                 : (false, "Ollama \(model) not reachable and no on-device embedder — \(appleNote).")
+
+        case .mlx:
+            let model = mlxModel.isEmpty ? MLXEmbeddings.defaultModelID : mlxModel
+            let short = model.components(separatedBy: "/").last ?? model
+            if !MLXEmbeddings.isDownloaded(model) {
+                return (false, "MLX \(short) isn't downloaded yet — download it below (using Apple on-device until then).")
+            }
+            let ok = (await MLXEmbeddings.embed(["probe"], modelID: model))?.first?.isEmpty == false
+            if ok { return (true, "Active — MLX \(short) (local, on-device).") }
+            return apple.isAvailable
+                ? (true, "MLX \(short) couldn't run — using Apple on-device instead.")
+                : (false, "MLX \(short) couldn't run and no on-device embedder — \(appleNote).")
 
         case .openAICompatible:
             let key = draft.embeddingOpenAIKey   // the embedding service's (shared-per-service) key
@@ -396,7 +411,7 @@ struct SettingsView: View {
     /// Embedding backends offered — cloud hidden in local-only mode (keyed to the saved setting, like
     /// the text/image lists, so it only changes after Save & Apply).
     private var availableEmbeddingProviders: [EmbeddingProviderKind] {
-        saved.localOnly ? [.automatic, .apple, .ollama] : EmbeddingProviderKind.allCases
+        saved.localOnly ? [.automatic, .apple, .ollama, .mlx] : EmbeddingProviderKind.allCases
     }
 
     /// Per-backend config row for the Embedding model section — mirrors the Language/Image rows: a
@@ -408,6 +423,12 @@ struct SettingsView: View {
             EmptyView()
         case .ollama:
             embeddingOllamaPicker
+        case .mlx:
+            // Same downloadable picker as the Language/Image MLX models — but routed through the
+            // embedder loader (embedding models are BERT-style encoders, not causal LMs).
+            MLXModelManager(modelID: $draft.embeddingMLXModel, suggestions: MLXEmbeddings.suggestions,
+                            defaultID: MLXEmbeddings.defaultModelID, localOnly: draft.localOnly,
+                            ensureDownloaded: { try await MLXEmbeddings.ensureDownloaded($0, progress: $1) })
         case .openAICompatible:
             Picker("Service", selection: embeddingOpenAIServiceBinding) {
                 Text("OpenAI").tag("openai")
@@ -493,6 +514,10 @@ struct SettingsView: View {
             return "A local Ollama embedding model — higher quality and multilingual. Install once with "
                 + "`ollama pull \(draft.embeddingOllamaModel.isEmpty ? "nomic-embed-text" : draft.embeddingOllamaModel)` "
                 + "(~275 MB). Falls back to Apple on-device if it's unavailable."
+        case .mlx:
+            return "A local MLX embedding model (bge / e5 / nomic), Apple-Silicon accelerated and "
+                + "downloaded in-app — a strong, multilingual on-device option with no Ollama needed. "
+                + "Falls back to Apple on-device until it's downloaded."
         case .openAICompatible:
             return "Cloud embeddings from an OpenAI-compatible service of your choice (e.g. "
                 + "text-embedding-3-small or -large) — pick a service that serves /embeddings, which may "
@@ -1308,6 +1333,7 @@ struct SettingsView: View {
         d.colorfulActions = UserDefaults.standard.bool(forKey: Self.colorfulKey)
         d.embeddingProvider = intelligence.embeddingProvider
         d.embeddingOllamaModel = intelligence.embeddingOllamaModel
+        d.embeddingMLXModel = intelligence.embeddingMLXModel
         let eoaSvc = UserDefaults.standard.string(forKey: "intelligence.embedding.openai.service")
             ?? Self.openAIServiceID(forURL: intelligence.embeddingOpenAIBaseURL)
         d.embeddingOpenAIService = eoaSvc
@@ -1394,6 +1420,7 @@ struct SettingsView: View {
         // from a different embedder are incomparable, so the in-RAM indexes must rebuild).
         let embeddingChanged = draft.embeddingProvider != saved.embeddingProvider
             || draft.embeddingOllamaModel != saved.embeddingOllamaModel
+            || draft.embeddingMLXModel != saved.embeddingMLXModel
             || draft.embeddingOpenAIService != saved.embeddingOpenAIService
             || draft.embeddingOpenAICustomBaseURL != saved.embeddingOpenAICustomBaseURL
             || draft.embeddingOpenAIModelByService != saved.embeddingOpenAIModelByService
@@ -1401,6 +1428,7 @@ struct SettingsView: View {
                 && draft.openAIKeyByService != saved.openAIKeyByService)
         intelligence.embeddingProvider = draft.embeddingProvider
         intelligence.embeddingOllamaModel = draft.embeddingOllamaModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        intelligence.embeddingMLXModel = draft.embeddingMLXModel.trimmingCharacters(in: .whitespacesAndNewlines)
         // Embedding's own OpenAI-compatible service (independent endpoint; key shared per service).
         for s in Self.openAIServices {
             UserDefaults.standard.set(draft.embeddingOpenAIModelByService[s] ?? "", forKey: "intelligence.embedding.openai.svc.\(s).model")
