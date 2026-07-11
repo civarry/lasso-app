@@ -21,11 +21,13 @@ enum MLXEmbeddings {
     static let suggestions: [(name: String, id: String)] = [
         ("BGE small · English, cleanest", "BAAI/bge-small-en-v1.5"),
         ("MiniLM L6 · fast", "sentence-transformers/all-MiniLM-L6-v2"),
-        ("Multilingual E5 small · non-English", "intfloat/multilingual-e5-small"),
     ]
     // Excluded after testing:
     //   • Nomic v1/v1.5 — the MLXEmbedders NomicBert port expects a learned position-embedding weight
     //     that these rotary checkpoints don't ship → fails to load.
+    //   • E5-small — even WITH its trained "query:" prefix, cosines stay compressed (~0.85+ for *any*
+    //     pair), so it can't discriminate under the fixed-threshold gate (same calibration issue as
+    //     BGE-base). Multilingual returns when retrieval moves to Top-K + margin (docs "Future improvements").
     //   • BGE-base & GTE-tiny — NOT worse embedders, but poorly *calibrated* for our fixed-cosine gate:
     //     their scores cluster near ~0.9 for *any* pair (tiny spread), so a single `highSemanticBar`
     //     tuned for the others admits everything. Their ranking is still correct — so if retrieval ever
