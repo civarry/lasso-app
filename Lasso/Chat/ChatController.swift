@@ -536,6 +536,18 @@ final class ChatController {
         historyDidChange()
     }
 
+    /// Truncate the conversation from a message downward — remove it (from the start of its exchange)
+    /// and everything after. Complements the surgical `deleteMessage`.
+    func deleteFromHere(_ id: UUID) {
+        guard !active.isStreaming, let idx = active.messages.firstIndex(where: { $0.id == id }) else { return }
+        var start = idx
+        if active.messages[idx].role == .assistant, idx > 0, active.messages[idx - 1].role == .user {
+            start = idx - 1   // begin at the question this reply belongs to
+        }
+        active.messages.removeSubrange(start..<active.messages.count)
+        historyDidChange()
+    }
+
     /// Re-send a user message verbatim (a fresh turn → a new answer).
     func resendMessage(_ id: UUID) {
         guard !active.isStreaming,

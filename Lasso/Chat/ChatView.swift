@@ -415,6 +415,7 @@ private struct MessageBubble: View {
 
     @State private var hovering = false
     @State private var confirmDelete = false
+    @State private var confirmDeleteFrom = false
     private let chat = ChatController.shared
 
     /// Per-message actions, revealed on hover (folds Copy in, so there's no standalone Copy button).
@@ -432,6 +433,9 @@ private struct MessageBubble: View {
             }
             Divider()
             Button(role: .destructive) { confirmDelete = true } label: { Label("Delete", systemImage: "trash") }
+            Button(role: .destructive) { confirmDeleteFrom = true } label: {
+                Label("Delete from here", systemImage: "arrow.down.to.line")
+            }
         } label: {
             Image(systemName: "ellipsis")
                 .font(.caption2).foregroundStyle(.secondary)
@@ -444,6 +448,11 @@ private struct MessageBubble: View {
         .disabled(chat.active.isStreaming)
         .confirmationDialog("Delete this message?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) { chat.deleteMessage(message.id) }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Delete this message and everything after it?",
+                            isPresented: $confirmDeleteFrom, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) { chat.deleteFromHere(message.id) }
             Button("Cancel", role: .cancel) {}
         }
     }
