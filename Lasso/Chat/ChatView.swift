@@ -194,12 +194,6 @@ struct ChatView: View {
                         ForEach(chat.messages) { message in
                             MessageBubble(message: message, fontSize: resultTextBaseSize * textScale)
                         }
-                        if chat.trimmedNotice {
-                            Label("Earlier messages were trimmed to fit the model's context.",
-                                  systemImage: "scissors")
-                                .font(.caption2).foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity)
-                        }
                         Color.clear.frame(height: 1).id(Self.scrollBottomID)
                     }
                     .padding(12)

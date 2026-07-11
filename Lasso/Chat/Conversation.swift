@@ -62,7 +62,6 @@ final class Conversation: Identifiable {
     var pendingAttachments: [Attachment] = []
     var seededContext: String?
     var isStreaming = false
-    var trimmedNotice = false
     var streamTask: Task<Void, Never>?
 
     // MARK: Memory (two-track summary + in-session semantic retrieval) — per session

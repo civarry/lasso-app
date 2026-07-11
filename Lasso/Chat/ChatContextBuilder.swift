@@ -77,8 +77,8 @@ struct ChatContextBuilder: Sendable {
         /// represented (or pending representation) by the rolling summary. These are the inputs the
         /// caller hands to background summarization. Oldest-first.
         var overflow: [HistoryTurn]
-        /// True when the summary was injected and/or recent turns had to be shed — drives the
-        /// "earlier messages were trimmed/summarized" UI note.
+        /// True when the summary was injected and/or recent turns had to be shed. Not shown in the UI
+        /// (older turns aren't lost — they're summarized + retrievable); used only as a debug log signal.
         var didCompress: Bool
     }
 

@@ -37,7 +37,6 @@ final class ChatController {
     var pendingAttachments: [Attachment] { get { active.pendingAttachments } set { active.pendingAttachments = newValue } }
     var seededContext: String? { get { active.seededContext } set { active.seededContext = newValue } }
     var isStreaming: Bool { get { active.isStreaming } set { active.isStreaming = newValue } }
-    var trimmedNotice: Bool { get { active.trimmedNotice } set { active.trimmedNotice = newValue } }
     private var streamTask: Task<Void, Never>? { get { active.streamTask } set { active.streamTask = newValue } }
     private var memory: ConversationMemory { get { active.memory } set { active.memory = newValue } }
     private var summarizedTurnCount: Int { get { active.summarizedTurnCount } set { active.summarizedTurnCount = newValue } }
@@ -302,7 +301,6 @@ final class ChatController {
         active.pendingAttachments = []
         active.seededContext = nil
         active.isStreaming = false
-        active.trimmedNotice = false
         // The conversation is now empty — drop its persisted file and refresh the index.
         ConversationStore.delete(id: active.id)
         persist(active)
@@ -924,7 +922,9 @@ final class ChatController {
                                        retrieved: retrieved,
                                        currentUserText: newUserText,
                                        currentImageBase64s: imageBase64s)
-        trimmedNotice = out.didCompress
+        // Not surfaced in the UI anymore (older turns aren't lost — they're summarized + retrievable);
+        // kept as a dev-facing log signal.
+        if out.didCompress { Log.chat.notice("context compressed — older turns folded into summary/retrieval") }
 
         // Fold the now-out-of-window turns into the rolling summary off the send path. No-op when
         // everything's already represented, so steady-state turns cost nothing extra.
