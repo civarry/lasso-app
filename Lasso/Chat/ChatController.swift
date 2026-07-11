@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import KeyboardShortcuts
 import Observation
 import SwiftUI
 
@@ -142,14 +143,18 @@ final class ChatController {
 
     /// Factual description of Lasso, injected only when the user asks "What can you do?" (the starter
     /// chip) so the model explains the *real* app instead of guessing. Not a standing system prompt.
-    static let lassoCapabilities = """
+    /// Shortcuts are read live so the model never states a stale key combo after the user rebinds.
+    static var lassoCapabilities: String {
+        let capture = KeyboardShortcuts.Name.capture.displayString ?? "its Capture shortcut"
+        let chat = KeyboardShortcuts.Name.chat.displayString ?? "its Chat shortcut"
+        return """
     Context about Lasso — the macOS menu-bar app you are the assistant inside (answer questions about \
     what Lasso can do using only this):
-    • Capture: press ⌥⌘Space to select any region of the screen. On a selection you can Copy text \
+    • Capture: press \(capture) to select any region of the screen. On a selection you can Copy text \
     (OCR), Translate it (including in-place overlay), Summarize, Ask AI about it, Identify what it is, \
     open detected QR/barcodes, pick a color, copy or save the image, or “Continue in chat”. Detected \
     links, phone numbers, emails and dates appear as quick action chips.
-    • Chat (this panel): press ⌥⌘A. Multi-turn conversation, attach images (button, ⌘V paste, or \
+    • Chat (this panel): press \(chat). Multi-turn conversation, attach images (button, ⌘V paste, or \
     drag-and-drop), and optional web grounding.
     • Models: choose a Language model and a separate Image (vision) model independently — Apple \
     Intelligence, local Ollama, local MLX, or a cloud model (OpenAI-compatible / Anthropic). \
@@ -159,6 +164,7 @@ final class ChatController {
     Identify, via Google Lens.)
     Be concise and accurate; don’t invent features not listed here.
     """
+    }
 
     // MARK: - Composer state
 

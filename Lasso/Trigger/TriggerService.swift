@@ -58,6 +58,11 @@ final class TriggerService {
 }
 
 extension KeyboardShortcuts.Name {
+    /// Human display for the effective shortcut — the user's custom binding if set, else the default —
+    /// e.g. "⌃⇧C". `nil` only when there's neither (an unassigned action). Read this instead of
+    /// hardcoding key combos in UI copy, which would lie once the user rebinds.
+    @MainActor var displayString: String? { (shortcut ?? defaultShortcut)?.description }
+
     static let capture = Self("capture", default: .init(.c, modifiers: [.control, .shift]))
     static let cancelCapture = Self("cancelCapture", default: .init(.escape))
     static let chat = Self("chat", default: .init(.a, modifiers: [.control, .shift]))

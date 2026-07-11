@@ -1,3 +1,4 @@
+import KeyboardShortcuts
 import SwiftUI
 
 /// The Chat panel UI: a scrollable conversation with a composer. Renders `ChatController.shared`.
@@ -51,7 +52,8 @@ struct ChatView: View {
             Spacer()
             modelChip
             Button { ChatPanelController.shared.close() } label: { Image(systemName: "xmark") }
-                .buttonStyle(IconButtonStyle()).help("Close — ⌥⌘A or Esc")
+                .buttonStyle(IconButtonStyle())
+                .help("Close — \(KeyboardShortcuts.Name.chat.displayString ?? "shortcut") or Esc")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -383,21 +385,24 @@ struct ChatView: View {
     // MARK: - Slash commands
 
     /// Curated "What is Lasso?" card posted by `/about` — accurate and always well-formatted (no model
-    /// call). Grounded in the real feature set (kept in sync by hand, like `lassoCapabilities`).
-    private static let aboutText = """
+    /// call). Shortcuts are read live (not hardcoded) so they stay correct after the user rebinds them.
+    private var aboutText: String {
+        let capture = KeyboardShortcuts.Name.capture.displayString ?? "your Capture shortcut"
+        let chat = KeyboardShortcuts.Name.chat.displayString ?? "your Chat shortcut"
+        return """
     ## What is Lasso?
 
     Your screen's AI companion, in the menu bar. Capture anything on screen, then act on it — \
     **private by default**, running on-device unless you pick a cloud model.
 
-    ### Capture · ⌥⌘Space
+    ### Capture · \(capture)
     Select any region of the screen, then:
     - **Copy text** (OCR) · **Translate** (with in-place overlay) · **Summarize**
     - **Ask AI** about it or **Identify** what it is (with a one-tap Google Lens search)
     - Open detected **QR / barcodes**, **pick a color**, or copy / save the image
     - Links, phone numbers, emails and dates turn into one-tap chips
 
-    ### Chat · ⌥⌘A
+    ### Chat · \(chat)
     - Multi-turn conversations with memory across the thread
     - Attach images (button, ⌘V, or drag-and-drop) and ask about them
     - A per-message **⋯** menu — copy, edit, regenerate, delete
@@ -411,6 +416,7 @@ struct ChatView: View {
 
     Type `/help` for the command list.
     """
+    }
 
     private struct SlashCommand: Identifiable {
         let name: String
@@ -429,7 +435,7 @@ struct ChatView: View {
                 Pasteboard.copy(chat.transcriptText)
             },
             SlashCommand(name: "/about", detail: "What Lasso can do", icon: "sparkles") {
-                chat.postLocalMessage(Self.aboutText)
+                chat.postLocalMessage(aboutText)
             },
         ]
         if chat.webConnectorsAvailable {
