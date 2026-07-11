@@ -154,8 +154,9 @@ final class ChatController {
     • Models: choose a Language model and a separate Image (vision) model independently — Apple \
     Intelligence, local Ollama, local MLX, or a cloud model (OpenAI-compatible / Anthropic). \
     On-device and private by default; cloud is opt-in; a Local-only mode blocks all non-local calls.
-    • Connectors (optional): Web search (Wikipedia / DuckDuckGo / Reddit), Tavily, SerpApi, and \
-    Google Vision reverse-image — these ground answers with real sources.
+    • Connectors (optional): Web search (Wikipedia / DuckDuckGo / Reddit), plus Tavily or SerpApi for \
+    stronger ranked results — these ground answers with real sources. (Reverse-image search lives in \
+    Identify, via Google Lens.)
     Be concise and accurate; don’t invent features not listed here.
     """
 

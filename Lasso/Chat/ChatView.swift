@@ -382,6 +382,36 @@ struct ChatView: View {
 
     // MARK: - Slash commands
 
+    /// Curated "What is Lasso?" card posted by `/about` — accurate and always well-formatted (no model
+    /// call). Grounded in the real feature set (kept in sync by hand, like `lassoCapabilities`).
+    private static let aboutText = """
+    ## What is Lasso?
+
+    Your screen's AI companion, in the menu bar. Capture anything on screen, then act on it — \
+    **private by default**, running on-device unless you pick a cloud model.
+
+    ### Capture · ⌥⌘Space
+    Select any region of the screen, then:
+    - **Copy text** (OCR) · **Translate** (with in-place overlay) · **Summarize**
+    - **Ask AI** about it or **Identify** what it is (with a one-tap Google Lens search)
+    - Open detected **QR / barcodes**, **pick a color**, or copy / save the image
+    - Links, phone numbers, emails and dates turn into one-tap chips
+
+    ### Chat · ⌥⌘A
+    - Multi-turn conversations with memory across the thread
+    - Attach images (button, ⌘V, or drag-and-drop) and ask about them
+    - A per-message **⋯** menu — copy, edit, regenerate, delete
+    - Optional **web grounding**; type `/` for commands
+
+    ### Models · your choice, on your Mac
+    - Independent **Language** and **Image** models
+    - **Apple Intelligence · Ollama · MLX** on-device, or **cloud** (OpenAI-compatible / Anthropic)
+    - Pick your **Embedding** model for chat memory
+    - **Local-only mode** blocks every off-device call
+
+    Type `/help` for the command list.
+    """
+
     private struct SlashCommand: Identifiable {
         let name: String
         let detail: String
@@ -397,6 +427,9 @@ struct ChatView: View {
             SlashCommand(name: "/clear", detail: "Clear this conversation", icon: "eraser") { chat.clearActive() },
             SlashCommand(name: "/copy", detail: "Copy the whole conversation", icon: "doc.on.doc") {
                 Pasteboard.copy(chat.transcriptText)
+            },
+            SlashCommand(name: "/about", detail: "What Lasso can do", icon: "sparkles") {
+                chat.postLocalMessage(Self.aboutText)
             },
         ]
         if chat.webConnectorsAvailable {
