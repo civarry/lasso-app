@@ -20,12 +20,14 @@ enum MLXEmbeddings {
     /// in the labels — the download button shows the real (MLX-only) download size.
     static let suggestions: [(name: String, id: String)] = [
         ("Multilingual E5 small · multilingual, 512", "intfloat/multilingual-e5-small"),
-        ("Nomic embed v1.5 · best quality, 8k context", "nomic-ai/nomic-embed-text-v1.5"),
         ("BGE small · English, fast, 512", "BAAI/bge-small-en-v1.5"),
         ("BGE base · English, accurate, 512", "BAAI/bge-base-en-v1.5"),
         ("GTE tiny · very fast, 512", "TaylorAI/gte-tiny"),
         ("MiniLM L6 · fastest, short 256 context", "sentence-transformers/all-MiniLM-L6-v2"),
     ]
+    // Note: Nomic embed (v1/v1.5) is intentionally excluded — the current MLXEmbedders NomicBert port
+    // expects a learned `position_embeddings.weight` those rotary checkpoints don't ship, so it fails to
+    // load. Revisit if the library adds rotary Nomic support.
     static let defaultModelID = "intfloat/multilingual-e5-small"
 
     static func isDownloaded(_ id: String) -> Bool { MLXProvider.isDownloaded(id) }
@@ -38,7 +40,20 @@ enum MLXEmbeddings {
                 "Local-only mode is on, so the MLX embedding model can't be downloaded (the fetch leaves "
                 + "your Mac). Turn Local-only off to download it once; embedding stays on-device after.")
         }
-        _ = try await MLXEmbedderCache.shared.container(for: id) { progress($0.fractionCompleted) }
+        do {
+            _ = try await MLXEmbedderCache.shared.container(for: id) { progress($0.fractionCompleted) }
+        } catch {
+            // A weight-key mismatch means the model's architecture isn't supported by MLXEmbedders
+            // (e.g. rotary Nomic). Surface a clear message instead of a raw "Key … not found".
+            let m = error.localizedDescription.lowercased()
+            if m.contains("not found in") || m.contains("key ") {
+                let short = id.components(separatedBy: "/").last ?? id
+                throw IntelligenceError.unavailable(
+                    "\(short) isn't a supported MLX embedding model (its weights don't match). Pick one of "
+                    + "the suggested models instead.")
+            }
+            throw error
+        }
     }
 
     /// Embed a batch of strings → unit-normalized vectors. Returns nil if the model can't be
