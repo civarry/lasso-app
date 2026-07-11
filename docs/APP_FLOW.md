@@ -275,6 +275,29 @@ Primitives in `UI/Theme.swift`:
 
 ---
 
+## Future improvements (deferred — not yet built)
+
+Framed by the three "engineerings" — prompt / context / loop. **Prompt and context are mature**
+(an external review scored the memory/context work ~9.7 and advised *freezing* it); **loop engineering is
+the next frontier.**
+
+**Loop engineering — highest leverage next** (what the app *can do*, beyond a single pass + one tool call):
+- A lightweight **plan → act → check** loop for multi-step chat requests (builds on the `web_search` tool loop).
+- **Self-verification** on grounded answers — does the answer actually follow from the retrieved evidence?
+- Beyond the single `streamWithFailover` hop: retry-with-correction, a small planner / task queue, agentic workflows.
+
+**Context — frozen (resist tuning):**
+- Cross-session / **global memory** (search across all saved chats) → *then* a persisted vector store earns
+  its keep; the per-conversation index stays in-RAM/derived. Pairs with a "forget me" privacy surface.
+- Cross-turn image gallery + full-res image persistence (today: thumbnails + `promptText` descriptions).
+- Reviewer nice-to-haves left deliberately unbuilt until real usage demands them: adaptive-K retrieval,
+  IDF-weighted keyword gate, Fact-vs-Conversation memory split.
+
+**Polish / infra:**
+- In-app `ollama pull` for the embedding model (today: guided caption with the command).
+- Skip the `huggingface.co` update check when an MLX model is already cached (offline-when-cached).
+- A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
+
 ## Change log
 - **§4 now tracks all three Intelligence roles** (Language / Image / Embedding) with a **Settings →
   resolution** mermaid (chosen `Provider` → `effective*` local-only enforcement → `activeProvider` /
