@@ -233,6 +233,13 @@ final class ChatController {
         }.joined(separator: "\n\n")
     }
 
+    /// Append a local, non-model message (e.g. `/help` output). Never sent to a provider; persisted so it
+    /// scrolls with the thread, but it isn't indexed (no turn runs) so it won't pollute retrieval.
+    func postLocalMessage(_ text: String) {
+        active.messages.append(ChatMessage(role: .assistant, text: text))
+        persist(active)
+    }
+
     /// Start a brand-new empty conversation — keeps the current ones (no longer wipes). No-op when we're
     /// already in a pristine empty conversation, so clicking "New conversation" repeatedly can't pile up
     /// duplicate empties.

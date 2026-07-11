@@ -340,8 +340,13 @@ struct ChatView: View {
                             slashSelection = min(slashSelection + 1, slashMatches.count - 1); return .handled
                         case .upArrow:
                             slashSelection = max(slashSelection - 1, 0); return .handled
-                        case .return, .tab:
+                        case .return:
                             runSlash(slashMatches[min(slashSelection, slashMatches.count - 1)]); return .handled
+                        case .tab:
+                            // Complete to the full command name; keep the palette open so Enter runs it.
+                            chat.active.input = slashMatches[min(slashSelection, slashMatches.count - 1)].name
+                            slashSelection = 0
+                            return .handled
                         case .escape:
                             chat.active.input = ""; return .handled
                         default:
@@ -399,7 +404,20 @@ struct ChatView: View {
                                      detail: chat.webSearchOn ? "Turn web grounding off" : "Turn web grounding on",
                                      icon: "globe") { chat.webSearchOn.toggle() })
         }
+        cmds.append(SlashCommand(name: "/help", detail: "List commands & tips", icon: "questionmark.circle") {
+            chat.postLocalMessage(slashHelpText)
+        })
         return cmds
+    }
+
+    /// Help text posted by `/help` — lists the live command set + a couple of tips.
+    private var slashHelpText: String {
+        var out = "**Commands** — type `/` anytime (Tab completes, Enter runs):"
+        for c in slashCommands where c.name != "/help" { out += "\n- `\(c.name)` — \(c.detail)" }
+        out += "\n- `/help` — show this help"
+        out += "\n\nEvery message has a **⋯** menu (copy · edit · regenerate · delete). "
+            + "Attach images with the photo button, ⌘V, or by dragging one onto the panel."
+        return out
     }
 
     /// Commands matching the bare "/…" token being typed (empty once a space or non-slash text appears).
