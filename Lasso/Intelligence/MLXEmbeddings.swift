@@ -74,8 +74,8 @@ enum MLXEmbeddings {
             // Truncate to the model's window so a long exchange can't overflow a fixed-position encoder
             // (e.g. MiniLM's 256, most models' 512) — which would crash or garble the embedding.
             let maxTokens = MLXProvider.maxSequenceLength(modelID)
-            let floats: [[Float]] = try await container.perform {
-                (model: EmbeddingModel, tokenizer: MLXLMCommon.Tokenizer, pooling: Pooling) -> [[Float]] in
+            let floats: [[Float]] = await container.perform { (context: EmbedderModelContext) -> [[Float]] in
+                let tokenizer = context.tokenizer
                 let encoded = texts.map { Array(tokenizer.encode(text: prefix + $0, addSpecialTokens: true).prefix(maxTokens)) }
                 let padID = tokenizer.eosToken.flatMap { tokenizer.convertTokenToId($0) } ?? 0
                 let maxLen = encoded.reduce(into: 16) { $0 = max($0, $1.count) }
@@ -84,8 +84,8 @@ enum MLXEmbeddings {
                 })
                 let mask = padded .!= padID
                 let tokenTypes = MLXArray.zeros(like: padded)
-                let pooled = pooling(
-                    model(padded, positionIds: nil, tokenTypeIds: tokenTypes, attentionMask: mask),
+                let pooled = context.pooling(
+                    context.model(padded, positionIds: nil, tokenTypeIds: tokenTypes, attentionMask: mask),
                     normalize: true, applyLayerNorm: true)
                 pooled.eval()
                 return pooled.map { $0.asArray(Float.self) }
@@ -146,7 +146,7 @@ private actor MLXEmbedderCache {
     func evictAll(reason: String) {
         guard !containers.isEmpty else { return }
         containers.removeAll()
-        MLX.GPU.clearCache()
+        MLX.Memory.clearCache()
         Log.mlx.notice("embed EVICT [\(reason, privacy: .public)]")
     }
 
