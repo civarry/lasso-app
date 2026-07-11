@@ -413,6 +413,16 @@ private struct MessageBubble: View {
 
     private var hasTrace: Bool { !message.steps.isEmpty || !message.reasoning.isEmpty }
 
+    /// True when there's a turn *after* this message's exchange — so "Delete from here" would remove more
+    /// than plain "Delete". On the last exchange the two are identical, so we hide "Delete from here".
+    private var hasTurnsAfter: Bool {
+        let msgs = chat.active.messages
+        guard let idx = msgs.firstIndex(where: { $0.id == message.id }) else { return false }
+        let upper = (msgs[idx].role == .user && idx + 1 < msgs.count && msgs[idx + 1].role == .assistant)
+            ? idx + 1 : idx
+        return upper + 1 < msgs.count
+    }
+
     @State private var copied = false
     @State private var confirmDelete = false
     @State private var confirmDeleteFrom = false
@@ -468,8 +478,10 @@ private struct MessageBubble: View {
                         Label("Regenerate", systemImage: "arrow.triangle.2.circlepath")
                     }
                 }
-                Button(role: .destructive) { confirmDeleteFrom = true } label: {
-                    Label("Delete from here", systemImage: "arrow.down.to.line")
+                if hasTurnsAfter {
+                    Button(role: .destructive) { confirmDeleteFrom = true } label: {
+                        Label("Delete from here", systemImage: "arrow.down.to.line")
+                    }
                 }
             } label: {
                 Image(systemName: "ellipsis")
