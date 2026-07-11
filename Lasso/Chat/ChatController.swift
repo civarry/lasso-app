@@ -211,13 +211,20 @@ final class ChatController {
 
     // MARK: - Session management
 
-    /// Recents-menu rows (id, title, icon, active flag), most-recent first.
+    /// Recents-menu rows (id, title, icon, active flag), most-recent first. Only conversations with
+    /// content are listed — a pristine "New conversation" has no title of its own and would just collide
+    /// with the "New conversation" action (and the header already shows the active one).
     var sessionSummaries: [(id: UUID, title: String, systemImage: String, isActive: Bool)] {
-        sessions.reversed().map { ($0.id, $0.title, $0.systemImage, $0.id == active.id) }
+        sessions.reversed().filter(\.hasMessages).map { ($0.id, $0.title, $0.systemImage, $0.id == active.id) }
     }
 
-    /// Start a brand-new empty conversation — keeps the current ones (no longer wipes).
-    func newChat() { startSession(Conversation()) }
+    /// Start a brand-new empty conversation — keeps the current ones (no longer wipes). No-op when we're
+    /// already in a pristine empty conversation, so clicking "New conversation" repeatedly can't pile up
+    /// duplicate empties.
+    func newChat() {
+        guard active.canClear else { return }
+        startSession(Conversation())
+    }
 
     /// Switch the panel to another open conversation. Blocked mid-stream so a running turn keeps
     /// updating the session that started it.

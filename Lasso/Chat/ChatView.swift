@@ -71,7 +71,7 @@ struct ChatView: View {
                 }
                 .disabled(s.isActive || chat.active.isStreaming)
             }
-            Divider()
+            if !chat.sessionSummaries.isEmpty { Divider() }
             Button { chat.newChat(); inputFocused = true } label: {
                 Label("New conversation", systemImage: "square.and.pencil")
             }
@@ -270,17 +270,22 @@ struct ChatView: View {
             if chat.seededContext != nil || !chat.pendingAttachments.isEmpty {
                 HStack(spacing: 8) {
                     ForEach(chat.pendingAttachments) { att in
-                        ZStack(alignment: .topTrailing) {
-                            Image(decorative: att.image, scale: 1)
-                                .resizable().scaledToFill()
-                                .frame(width: 44, height: 44)
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                            Button { chat.removeAttachment(att.id) } label: {
-                                Image(systemName: "xmark.circle.fill").font(.caption)
+                        // Delete button lives *inside* the 44×44 frame (not offset outside), so it's
+                        // always hittable — an offset button got covered by the next thumbnail, which is
+                        // why only the last one could be removed.
+                        Image(decorative: att.image, scale: 1)
+                            .resizable().scaledToFill()
+                            .frame(width: 44, height: 44)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .overlay(alignment: .topTrailing) {
+                                Button { chat.removeAttachment(att.id) } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.caption)
+                                        .foregroundStyle(.white, .black.opacity(0.6))
+                                        .padding(2)
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain).foregroundStyle(.white, .black.opacity(0.5))
-                            .offset(x: 4, y: -4)
-                        }
                     }
                     if let context = chat.seededContext {
                         contextChip(context)
