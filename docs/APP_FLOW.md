@@ -299,6 +299,10 @@ the next frontier.**
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Slash-command palette**: typing `/` in the chat composer shows a filterable list of session commands
+  (`/new`, `/clear`, `/copy`, `/web` when connectors exist). Arrow keys navigate, Enter/Tab runs, Esc
+  dismisses, click/hover works too (`.onKeyPress` on the input; hidden once a space/non-slash text
+  appears). Commands are session actions, not model prompts. `/reset` still works via the legacy path.
 - **Per-message actions** (hover `⋯` menu on each bubble): Copy (folds the old standalone Copy button
   in), plus **Regenerate/Delete** (assistant) and **Edit/Resend/Delete** (user). Delete confirms; the
   rest are instant. `ChatController.deleteMessage/resendMessage/editMessage/regenerate` mutate history,

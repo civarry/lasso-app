@@ -7,6 +7,7 @@ struct ChatView: View {
     @AppStorage("ui.resultTextScale") private var textScale = 1.0
     @FocusState private var inputFocused: Bool
     @State private var isDropTarget = false
+    @State private var slashSelection = 0
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
@@ -302,6 +303,9 @@ struct ChatView: View {
                 }
             }
 
+            // Slash-command palette — appears while typing a "/…" token.
+            if inputFocused, !slashMatches.isEmpty { slashPalette }
+
             HStack(alignment: .bottom, spacing: 8) {
                 Button { attachImage() } label: { Image(systemName: "photo.badge.plus") }
                     .buttonStyle(IconButtonStyle())
@@ -325,6 +329,25 @@ struct ChatView: View {
                     .lineLimit(1)
                     .focused($inputFocused)
                     .onSubmit { chat.send() }
+                    .onChange(of: chat.active.input) { _, _ in
+                        if slashSelection >= slashMatches.count { slashSelection = 0 }
+                    }
+                    // Drive the slash palette from the keyboard; pass everything else through.
+                    .onKeyPress { press in
+                        guard !slashMatches.isEmpty else { return .ignored }
+                        switch press.key {
+                        case .downArrow:
+                            slashSelection = min(slashSelection + 1, slashMatches.count - 1); return .handled
+                        case .upArrow:
+                            slashSelection = max(slashSelection - 1, 0); return .handled
+                        case .return, .tab:
+                            runSlash(slashMatches[min(slashSelection, slashMatches.count - 1)]); return .handled
+                        case .escape:
+                            chat.active.input = ""; return .handled
+                        default:
+                            return .ignored
+                        }
+                    }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 10).padding(.vertical, 8)
                     .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
@@ -350,6 +373,71 @@ struct ChatView: View {
             }
         }
         .padding(12)
+    }
+
+    // MARK: - Slash commands
+
+    private struct SlashCommand: Identifiable {
+        let name: String
+        let detail: String
+        let icon: String
+        let run: () -> Void
+        var id: String { name }
+    }
+
+    /// Available "/" commands (session actions, not model prompts). `/web` only when connectors exist.
+    private var slashCommands: [SlashCommand] {
+        var cmds: [SlashCommand] = [
+            SlashCommand(name: "/new", detail: "Start a new conversation", icon: "square.and.pencil") { chat.newChat() },
+            SlashCommand(name: "/clear", detail: "Clear this conversation", icon: "eraser") { chat.clearActive() },
+            SlashCommand(name: "/copy", detail: "Copy the whole conversation", icon: "doc.on.doc") {
+                Pasteboard.copy(chat.transcriptText)
+            },
+        ]
+        if chat.webConnectorsAvailable {
+            cmds.append(SlashCommand(name: "/web",
+                                     detail: chat.webSearchOn ? "Turn web grounding off" : "Turn web grounding on",
+                                     icon: "globe") { chat.webSearchOn.toggle() })
+        }
+        return cmds
+    }
+
+    /// Commands matching the bare "/…" token being typed (empty once a space or non-slash text appears).
+    private var slashMatches: [SlashCommand] {
+        let t = chat.active.input
+        guard t.hasPrefix("/"), !t.contains(" ") else { return [] }
+        let q = t.lowercased()
+        return slashCommands.filter { q == "/" || $0.name.hasPrefix(q) }
+    }
+
+    private func runSlash(_ cmd: SlashCommand) {
+        chat.active.input = ""      // drop the "/…" text before running the action
+        slashSelection = 0
+        cmd.run()
+        inputFocused = true
+    }
+
+    private var slashPalette: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(slashMatches.enumerated()), id: \.element.id) { idx, cmd in
+                HStack(spacing: 10) {
+                    Image(systemName: cmd.icon).font(.system(size: 12)).frame(width: 16)
+                        .foregroundStyle(idx == slashSelection ? Color.accentColor : Color.secondary)
+                    Text(cmd.name).font(.system(.callout, design: .monospaced))
+                    Text(cmd.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(idx == slashSelection ? Color.accentColor.opacity(0.15) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 7))
+                .contentShape(Rectangle())
+                .onTapGesture { runSlash(cmd) }
+                .onHover { if $0 { slashSelection = idx } }
+            }
+        }
+        .padding(4)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(.white.opacity(0.12)))
     }
 
     private func contextChip(_ context: String) -> some View {
