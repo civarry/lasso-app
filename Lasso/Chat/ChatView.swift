@@ -410,14 +410,22 @@ struct ChatView: View {
         return cmds
     }
 
-    /// Help text posted by `/help` — lists the live command set + a couple of tips.
+    /// `/help` output — a compact, CLI-style aligned reference (man-page style,
+    /// minus its categories, which aren't needed at this handful of commands).
     private var slashHelpText: String {
-        var out = "**Commands** — type `/` anytime (Tab completes, Enter runs):"
-        for c in slashCommands where c.name != "/help" { out += "\n- `\(c.name)` — \(c.detail)" }
-        out += "\n- `/help` — show this help"
-        out += "\n\nEvery message has a **⋯** menu (copy · edit · regenerate · delete). "
-            + "Attach images with the photo button, ⌘V, or by dragging one onto the panel."
-        return out
+        let cmds = slashCommands
+        let width = (cmds.map(\.name.count).max() ?? 6) + 3
+        let rows = cmds
+            .map { "  " + $0.name.padding(toLength: width, withPad: " ", startingAt: 0) + $0.detail }
+            .joined(separator: "\n")
+        return """
+        **Commands** · type `/` to open · Tab completes · Enter runs
+        ```
+        \(rows)
+        ```
+        Every message has a **⋯** menu: copy · edit · regenerate · delete. \
+        Attach an image with the photo button, ⌘V, or by dragging one onto the panel.
+        """
     }
 
     /// Commands matching the bare "/…" token being typed (empty once a space or non-slash text appears).
