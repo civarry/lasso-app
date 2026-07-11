@@ -75,6 +75,10 @@ struct ChatView: View {
             Button { chat.newChat(); inputFocused = true } label: {
                 Label("New conversation", systemImage: "square.and.pencil")
             }
+            Button { Pasteboard.copy(chat.transcriptText) } label: {
+                Label("Copy conversation", systemImage: "doc.on.doc")
+            }
+            .disabled(!chat.active.hasMessages)
             Button(role: .destructive) { chat.closeActive(); inputFocused = true } label: {
                 Label("Close this conversation", systemImage: "trash")
             }

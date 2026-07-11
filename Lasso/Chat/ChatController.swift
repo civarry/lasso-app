@@ -217,6 +217,22 @@ final class ChatController {
         sessions.reversed().filter(\.hasMessages).map { ($0.id, $0.title, $0.systemImage, $0.id == active.id) }
     }
 
+    /// The active conversation as a clean, role-labeled Markdown transcript — for one-click "Copy
+    /// conversation" (e.g. to paste into another AI). Skips streaming/errored/empty turns; notes images.
+    var transcriptText: String {
+        active.messages.compactMap { m -> String? in
+            guard !m.isStreaming, !m.isError else { return nil }
+            let role = m.role == .user ? "You" : "Assistant"
+            var body = m.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !m.attachments.isEmpty {
+                let note = "[\(m.attachments.count) image\(m.attachments.count == 1 ? "" : "s")]"
+                body = body.isEmpty ? note : "\(note)\n\(body)"
+            }
+            guard !body.isEmpty else { return nil }
+            return "\(role): \(body)"
+        }.joined(separator: "\n\n")
+    }
+
     /// Start a brand-new empty conversation — keeps the current ones (no longer wipes). No-op when we're
     /// already in a pristine empty conversation, so clicking "New conversation" repeatedly can't pile up
     /// duplicate empties.
