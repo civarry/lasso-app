@@ -237,7 +237,7 @@ struct SettingsView: View {
     private var intelligenceTab: some View {
         Form {
             Section("Language model") {
-                Picker("Model", selection: $draft.provider) {
+                Picker("Provider", selection: $draft.provider) {
                     ForEach(availableProviders) { Text($0.label).tag($0) }
                 }
                 providerConfig
@@ -246,7 +246,7 @@ struct SettingsView: View {
             }
 
             Section("Image model") {
-                Picker("Model", selection: $draft.visionEngine) {
+                Picker("Provider", selection: $draft.visionEngine) {
                     ForEach(availableVisionEngines) { Text($0.label).tag($0) }
                 }
                 visionProviderConfig
@@ -254,7 +254,7 @@ struct SettingsView: View {
             }
 
             Section("Embedding model") {
-                Picker("Model", selection: $draft.embeddingProvider) {
+                Picker("Provider", selection: $draft.embeddingProvider) {
                     ForEach(availableEmbeddingProviders) { Text($0.label).tag($0) }
                 }
                 embeddingProviderConfig
