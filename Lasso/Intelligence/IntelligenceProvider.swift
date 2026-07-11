@@ -216,10 +216,15 @@ final class IntelligenceCoordinator {
     var embeddingOllamaModel: String {
         didSet { UserDefaults.standard.set(embeddingOllamaModel, forKey: "intelligence.embedding.ollamaModel") }
     }
-    /// Cloud embedding model name (when `embeddingProvider == .openAICompatible`); reuses the Language
-    /// model's OpenAI-compatible endpoint + key.
+    /// Cloud embedding model name (when `embeddingProvider == .openAICompatible`). Embedding has its own
+    /// independent OpenAI-compatible service/endpoint (like the Image model), so it can point at a
+    /// provider that serves `/embeddings` even when the Language model uses one that doesn't.
     var embeddingOpenAIModel: String {
         didSet { UserDefaults.standard.set(embeddingOpenAIModel, forKey: "intelligence.embedding.openAIModel") }
+    }
+    /// The embedding provider's OpenAI-compatible base URL (its own, not the Language model's).
+    var embeddingOpenAIBaseURL: String {
+        didSet { UserDefaults.standard.set(embeddingOpenAIBaseURL, forKey: "intelligence.embedding.openai.baseURL") }
     }
 
     /// True once any cloud/off-machine call is made this session — surfaced by the privacy badge.
@@ -256,6 +261,7 @@ final class IntelligenceCoordinator {
         // "" = use the text-embedding-3-small default; an empty field shows a placeholder (so it reads
         // as an editable text input, like the Language model's Model row) instead of a fixed label.
         self.embeddingOpenAIModel = defaults.string(forKey: "intelligence.embedding.openAIModel") ?? ""
+        self.embeddingOpenAIBaseURL = defaults.string(forKey: "intelligence.embedding.openai.baseURL") ?? "https://api.openai.com/v1"
         self.visionOpenAIBaseURL = defaults.string(forKey: "intelligence.vision.openai.baseURL") ?? "https://api.openai.com/v1"
         self.visionOpenAIModel = defaults.string(forKey: "intelligence.vision.openai.model") ?? "gpt-4o"
         self.visionAnthropicBaseURL = defaults.string(forKey: "intelligence.vision.anthropic.baseURL") ?? "https://api.anthropic.com"
@@ -373,7 +379,11 @@ final class IntelligenceCoordinator {
         case .automatic: return "Automatic (Apple / Ollama)"
         case .apple: return "Apple (on-device)"
         case .ollama: return "Ollama · \(embeddingOllamaModel.isEmpty ? "auto" : embeddingOllamaModel)"
-        case .openAICompatible: return "\(openAIDisplayName()) · \(embeddingOpenAIModel.isEmpty ? "text-embedding-3-small" : embeddingOpenAIModel)"
+        case .openAICompatible:
+            let host = (URL(string: embeddingOpenAIBaseURL)?.host ?? "").lowercased()
+            let name = host.contains("groq") ? "Groq" : host.contains("openrouter") ? "OpenRouter"
+                : host.contains("openai") ? "OpenAI" : (host == "localhost" || host == "127.0.0.1") ? "Local" : "Custom"
+            return "\(name) · \(embeddingOpenAIModel.isEmpty ? "text-embedding-3-small" : embeddingOpenAIModel)"
         }
     }
 
@@ -410,9 +420,10 @@ final class IntelligenceCoordinator {
             Log.chat.notice("embedder: Ollama \(model, privacy: .public) unavailable → Apple"); return apple()
 
         case .openAICompatible:
-            let key = Keychain.getMigrating("openai.apiKey", legacyDefaultsKey: "openai.apiKey") ?? ""
+            // Embedding's own endpoint + key (independent of the Language model).
+            let key = Keychain.get("embedding.openai.apiKey") ?? ""
             let model = embeddingOpenAIModel.isEmpty ? "text-embedding-3-small" : embeddingOpenAIModel
-            guard !key.isEmpty, let url = URL(string: openAIBaseURL) else {
+            guard !key.isEmpty, let url = URL(string: embeddingOpenAIBaseURL) else {
                 Log.chat.notice("embedder: cloud embedding not configured → Apple"); return apple()
             }
             let e = OpenAIEmbedder(baseURL: url, apiKey: key, model: model)

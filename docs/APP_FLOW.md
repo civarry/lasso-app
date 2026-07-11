@@ -171,7 +171,8 @@ exchanges verbatim (query = current text + last 1–2 turns), deduped against th
 bounded reserve in `ChatContextBuilder`. **Embedding backend is a user choice** (Settings ▸ Intelligence
 ▸ **Embedding model**, peer to Language/Image): `automatic` (Ollama `nomic-embed-text` if installed →
 Apple `NLEmbedding` on-device → none), `apple`, `ollama` (any local embed model), or `openAICompatible`
-(cloud, e.g. `text-embedding-3-small/-large`, reusing the Language model's endpoint+key). Resolved by
+(cloud, e.g. `text-embedding-3-small/-large`, with its **own** independent OpenAI-compatible service —
+OpenAI/Groq/OpenRouter/Custom + Base URL + key, like the Image model; key shared per-service). Resolved by
 `IntelligenceCoordinator.makeEmbedder()`; **local-only forces cloud→local** (`effectiveEmbeddingProvider`).
 The **default (Automatic → Apple) needs no download** — works on any Mac immediately. Vectors from
 different backends are incomparable, so changing the backend resets every session's index

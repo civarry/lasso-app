@@ -32,10 +32,13 @@ struct SettingsView: View {
         var visionAnthropicBaseURL = "https://api.anthropic.com"
         var visionAnthropicModel = "claude-3-5-sonnet-latest"
         var visionAnthropicKey = ""
-        // Embedding model (Chat semantic memory). Cloud reuses the Language model's OpenAI endpoint+key.
+        // Embedding model (Chat semantic memory). Cloud has its own independent OpenAI-compatible
+        // service/endpoint (like the Image model); the API key is shared per service via openAIKeyByService.
         var embeddingProvider: EmbeddingProviderKind = .automatic
         var embeddingOllamaModel = ""       // "" = Auto (best installed embed model)
-        var embeddingOpenAIModel = ""       // "" = default (text-embedding-3-small); shows as placeholder
+        var embeddingOpenAIService = "openai"
+        var embeddingOpenAICustomBaseURL = "https://api.openai.com/v1"
+        var embeddingOpenAIModelByService: [String: String] = [:]   // "" = text-embedding-3-small default
 
         // Active-service convenience, computed from the per-service dicts (consumed by serviceName,
         // privacyLine, loadCloudModels, ConnectionTest, hints).
@@ -44,6 +47,9 @@ struct SettingsView: View {
         var openAIModel: String { openAIModelByService[openAIService] ?? "" }
         var visionOpenAIBaseURL: String { SettingsView.openAIServiceURL(visionOpenAIService, custom: visionOpenAICustomBaseURL) }
         var visionOpenAIKey: String { openAIKeyByService[visionOpenAIService] ?? "" }   // shared key
+        var embeddingOpenAIBaseURL: String { SettingsView.openAIServiceURL(embeddingOpenAIService, custom: embeddingOpenAICustomBaseURL) }
+        var embeddingOpenAIKey: String { openAIKeyByService[embeddingOpenAIService] ?? "" }   // shared key
+        var embeddingOpenAIModel: String { embeddingOpenAIModelByService[embeddingOpenAIService] ?? "" }
         var visionOpenAIModel: String { visionOpenAIModelByService[visionOpenAIService] ?? "" }
         // Connector enable + key state, keyed by Connector.id — the catalog is the single source of
         // truth, so adding a connector needs no new Draft fields.
@@ -354,16 +360,16 @@ struct SettingsView: View {
                 : (false, "Ollama \(model) not reachable and no on-device embedder — \(appleNote).")
 
         case .openAICompatible:
-            let key = draft.openAIKey   // embeddings reuse the active Language-model service's key
+            let key = draft.embeddingOpenAIKey   // the embedding service's (shared-per-service) key
             let model = openAIModel.isEmpty ? "text-embedding-3-small" : openAIModel
             guard !key.isEmpty else {
                 return apple.isAvailable
-                    ? (true, "No API key on your Language model yet — using Apple on-device instead.")
+                    ? (true, "No API key for this service yet — using Apple on-device instead.")
                     : (false, "No API key and no on-device embedder — \(appleNote).")
             }
             // Actually hit the /embeddings endpoint so the status reflects reality (many chat endpoints
             // don't serve embeddings, or not that model) instead of falsely claiming "Active".
-            let url = URL(string: draft.openAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
+            let url = URL(string: draft.embeddingOpenAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
             let ok = (await OpenAIEmbedder(baseURL: url, apiKey: key, model: model)
                 .embed(["probe"]))?.first?.isEmpty == false
             if ok {
@@ -403,10 +409,32 @@ struct SettingsView: View {
         case .ollama:
             embeddingOllamaPicker
         case .openAICompatible:
-            cloudModelPicker(selection: $draft.embeddingOpenAIModel, models: embeddingCloudModels) {
+            Picker("Service", selection: embeddingOpenAIServiceBinding) {
+                Text("OpenAI").tag("openai")
+                Text("Groq").tag("groq")
+                Text("OpenRouter").tag("openrouter")
+                Text("Custom").tag("custom")
+            }
+            if draft.embeddingOpenAIService == "custom" {
+                TextField("Base URL", text: $draft.embeddingOpenAICustomBaseURL)
+            }
+            SecureKeyField("API key", text: openAIKeyField(draft.embeddingOpenAIService))
+            cloudModelPicker(selection: openAIEmbeddingModelField(draft.embeddingOpenAIService),
+                             models: embeddingCloudModels) {
                 await loadEmbeddingCloudModels(); return !embeddingCloudModels.isEmpty
             }
+            caption("Shares the API key with your language/image model for the same service.")
         }
+    }
+
+    private var embeddingOpenAIServiceBinding: Binding<String> {
+        Binding(get: { draft.embeddingOpenAIService },
+                set: { draft.embeddingOpenAIService = $0; embeddingCloudModels = []
+                       refreshEmbeddingStatus(); Task { await loadEmbeddingCloudModels() } })
+    }
+    private func openAIEmbeddingModelField(_ service: String) -> Binding<String> {
+        Binding(get: { draft.embeddingOpenAIModelByService[service] ?? "" },
+                set: { draft.embeddingOpenAIModelByService[service] = $0 })
     }
 
     /// Ollama embedding model row: a picker of *installed embedding models* (filtered from the same
@@ -442,12 +470,12 @@ struct SettingsView: View {
         }
     }
 
-    /// Fetch embedding models from the Language model's OpenAI-compatible endpoint (embeddings reuse its
-    /// endpoint + key). Filters the catalog to embedding models; leaves it empty (→ manual field) when
-    /// the endpoint exposes none, so the user can still type one.
+    /// Fetch embedding models from the embedding provider's own OpenAI-compatible endpoint. Filters the
+    /// catalog to embedding models; leaves it empty (→ manual field) when the endpoint exposes none, so
+    /// the user can still type one.
     private func loadEmbeddingCloudModels() async {
-        let url = URL(string: draft.openAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
-        let all = await OpenAICompatibleProvider.availableModels(baseURL: url, apiKey: draft.openAIKey)
+        let url = URL(string: draft.embeddingOpenAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
+        let all = await OpenAICompatibleProvider.availableModels(baseURL: url, apiKey: draft.embeddingOpenAIKey)
         embeddingCloudModels = all.filter { $0.lowercased().contains("embed") }
     }
 
@@ -466,8 +494,9 @@ struct SettingsView: View {
                 + "`ollama pull \(draft.embeddingOllamaModel.isEmpty ? "nomic-embed-text" : draft.embeddingOllamaModel)` "
                 + "(~275 MB). Falls back to Apple on-device if it's unavailable."
         case .openAICompatible:
-            return "Cloud embeddings via your Language model's OpenAI-compatible endpoint + key (e.g. "
-                + "text-embedding-3-small or -large). ⚠️ Conversation text is sent to that provider to be "
+            return "Cloud embeddings from an OpenAI-compatible service of your choice (e.g. "
+                + "text-embedding-3-small or -large) — pick a service that serves /embeddings, which may "
+                + "differ from your Language model. ⚠️ Conversation text is sent to that provider to be "
                 + "embedded; this option is hidden in local-only mode."
         }
     }
@@ -1279,7 +1308,18 @@ struct SettingsView: View {
         d.colorfulActions = UserDefaults.standard.bool(forKey: Self.colorfulKey)
         d.embeddingProvider = intelligence.embeddingProvider
         d.embeddingOllamaModel = intelligence.embeddingOllamaModel
-        d.embeddingOpenAIModel = intelligence.embeddingOpenAIModel
+        let eoaSvc = UserDefaults.standard.string(forKey: "intelligence.embedding.openai.service")
+            ?? Self.openAIServiceID(forURL: intelligence.embeddingOpenAIBaseURL)
+        d.embeddingOpenAIService = eoaSvc
+        d.embeddingOpenAICustomBaseURL = UserDefaults.standard.string(forKey: "intelligence.embedding.openai.customBaseURL")
+            ?? (eoaSvc == "custom" ? intelligence.embeddingOpenAIBaseURL : "https://api.openai.com/v1")
+        for s in Self.openAIServices {
+            d.embeddingOpenAIModelByService[s] = UserDefaults.standard.string(forKey: "intelligence.embedding.openai.svc.\(s).model") ?? ""
+        }
+        // Seed the active service's model from the legacy flat store (first run after this change).
+        if (d.embeddingOpenAIModelByService[eoaSvc] ?? "").isEmpty, !intelligence.embeddingOpenAIModel.isEmpty {
+            d.embeddingOpenAIModelByService[eoaSvc] = intelligence.embeddingOpenAIModel
+        }
         // Heal an inconsistent saved state (local-only + a cloud engine / cloud image provider).
         if d.localOnly, !d.provider.isLocalKind { d.provider = .onDevice }
         if d.localOnly, d.visionEngine == .openAICompatible || d.visionEngine == .anthropic {
@@ -1354,10 +1394,23 @@ struct SettingsView: View {
         // from a different embedder are incomparable, so the in-RAM indexes must rebuild).
         let embeddingChanged = draft.embeddingProvider != saved.embeddingProvider
             || draft.embeddingOllamaModel != saved.embeddingOllamaModel
-            || draft.embeddingOpenAIModel != saved.embeddingOpenAIModel
+            || draft.embeddingOpenAIService != saved.embeddingOpenAIService
+            || draft.embeddingOpenAICustomBaseURL != saved.embeddingOpenAICustomBaseURL
+            || draft.embeddingOpenAIModelByService != saved.embeddingOpenAIModelByService
+            || (draft.embeddingProvider == .openAICompatible
+                && draft.openAIKeyByService != saved.openAIKeyByService)
         intelligence.embeddingProvider = draft.embeddingProvider
         intelligence.embeddingOllamaModel = draft.embeddingOllamaModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        intelligence.embeddingOpenAIModel = draft.embeddingOpenAIModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Embedding's own OpenAI-compatible service (independent endpoint; key shared per service).
+        for s in Self.openAIServices {
+            UserDefaults.standard.set(draft.embeddingOpenAIModelByService[s] ?? "", forKey: "intelligence.embedding.openai.svc.\(s).model")
+        }
+        UserDefaults.standard.set(draft.embeddingOpenAIService, forKey: "intelligence.embedding.openai.service")
+        UserDefaults.standard.set(draft.embeddingOpenAICustomBaseURL, forKey: "intelligence.embedding.openai.customBaseURL")
+        intelligence.embeddingOpenAIBaseURL = Self.openAIServiceURL(draft.embeddingOpenAIService, custom: draft.embeddingOpenAICustomBaseURL)
+        intelligence.embeddingOpenAIModel = (draft.embeddingOpenAIModelByService[draft.embeddingOpenAIService] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        Keychain.set(draft.openAIKeyByService[draft.embeddingOpenAIService] ?? "", for: "embedding.openai.apiKey")
         if embeddingChanged { ChatController.shared.embeddingConfigChanged() }
         Task { await intelligence.refreshVisionAvailability() }   // re-grey vision features as needed
         saved = draft
