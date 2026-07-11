@@ -130,12 +130,15 @@ enum EmbeddingProviderKind: String, CaseIterable, Identifiable, Sendable {
     case openAICompatible   // cloud embeddings (reuses the Language model's endpoint + key)
 
     var id: String { rawValue }
+    /// Labels follow the Language/Image picker convention: no editorial suffix on branded providers,
+    /// `(local)` only on local runtimes. (Apple here is NaturalLanguage embeddings, not the Apple
+    /// Intelligence LLM — so just "Apple".)
     var label: String {
         switch self {
-        case .automatic: "Automatic (recommended)"
-        case .apple: "Apple (on-device)"
+        case .automatic: "Automatic"
+        case .apple: "Apple"
         case .ollama: "Ollama (local)"
-        case .openAICompatible: "OpenAI-compatible (cloud)"
+        case .openAICompatible: "OpenAI-compatible"
         }
     }
     /// Local kinds never leave the Mac — cloud is forced back to `automatic` in local-only mode.
