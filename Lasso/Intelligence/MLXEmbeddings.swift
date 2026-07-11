@@ -19,9 +19,9 @@ enum MLXEmbeddings {
     /// matters here — we embed whole exchange chunks, so a small window truncates long turns). No sizes
     /// in the labels — the download button shows the real (MLX-only) download size.
     static let suggestions: [(name: String, id: String)] = [
-        ("Multilingual E5 small · multilingual", "intfloat/multilingual-e5-small"),
         ("BGE small · English, cleanest", "BAAI/bge-small-en-v1.5"),
-        ("MiniLM L6 · fastest", "sentence-transformers/all-MiniLM-L6-v2"),
+        ("MiniLM L6 · fast", "sentence-transformers/all-MiniLM-L6-v2"),
+        ("Multilingual E5 small · non-English", "intfloat/multilingual-e5-small"),
     ]
     // Excluded after testing:
     //   • Nomic v1/v1.5 — the MLXEmbedders NomicBert port expects a learned position-embedding weight
@@ -31,7 +31,7 @@ enum MLXEmbeddings {
     //     tuned for the others admits everything. Their ranking is still correct — so if retrieval ever
     //     moves to Top-K + margin/rerank (see docs "Future improvements"), they're worth revisiting.
     //     BGE-small has a wide, well-calibrated spread and fits the current gate cleanly.
-    static let defaultModelID = "intfloat/multilingual-e5-small"
+    static let defaultModelID = "BAAI/bge-small-en-v1.5"
 
     static func isDownloaded(_ id: String) -> Bool { MLXProvider.isDownloaded(id) }
 
@@ -63,6 +63,10 @@ enum MLXEmbeddings {
     /// loaded/run, so the embedder ladder falls back to Apple.
     static func embed(_ texts: [String], modelID: String) async -> [[Double]]? {
         guard !texts.isEmpty else { return [] }
+        // e5 models are trained WITH instruction prefixes and collapse into a narrow cosine cone without
+        // one (unrelated pairs ~0.85+, which kills discrimination). Prepend the prefix to restore spread.
+        // Symmetric use here → the same "query: " on every input.
+        let prefix = modelID.lowercased().contains("e5") ? "query: " : ""
         do {
             let container = try await MLXEmbedderCache.shared.container(for: modelID)
             // Truncate to the model's window so a long exchange can't overflow a fixed-position encoder
@@ -70,7 +74,7 @@ enum MLXEmbeddings {
             let maxTokens = MLXProvider.maxSequenceLength(modelID)
             let floats: [[Float]] = try await container.perform {
                 (model: EmbeddingModel, tokenizer: MLXLMCommon.Tokenizer, pooling: Pooling) -> [[Float]] in
-                let encoded = texts.map { Array(tokenizer.encode(text: $0, addSpecialTokens: true).prefix(maxTokens)) }
+                let encoded = texts.map { Array(tokenizer.encode(text: prefix + $0, addSpecialTokens: true).prefix(maxTokens)) }
                 let padID = tokenizer.eosToken.flatMap { tokenizer.convertTokenToId($0) } ?? 0
                 let maxLen = encoded.reduce(into: 16) { $0 = max($0, $1.count) }
                 let padded = stacked(encoded.map { row in
