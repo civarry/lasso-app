@@ -19,15 +19,16 @@ enum MLXEmbeddings {
     /// matters here — we embed whole exchange chunks, so a small window truncates long turns). No sizes
     /// in the labels — the download button shows the real (MLX-only) download size.
     static let suggestions: [(name: String, id: String)] = [
-        ("Multilingual E5 small · multilingual, 512", "intfloat/multilingual-e5-small"),
-        ("BGE small · English, fast, 512", "BAAI/bge-small-en-v1.5"),
-        ("BGE base · English, accurate, 512", "BAAI/bge-base-en-v1.5"),
-        ("GTE tiny · very fast, 512", "TaylorAI/gte-tiny"),
-        ("MiniLM L6 · fastest, short 256 context", "sentence-transformers/all-MiniLM-L6-v2"),
+        ("Multilingual E5 small · multilingual", "intfloat/multilingual-e5-small"),
+        ("BGE small · English, cleanest", "BAAI/bge-small-en-v1.5"),
+        ("MiniLM L6 · fastest", "sentence-transformers/all-MiniLM-L6-v2"),
     ]
-    // Note: Nomic embed (v1/v1.5) is intentionally excluded — the current MLXEmbedders NomicBert port
-    // expects a learned `position_embeddings.weight` those rotary checkpoints don't ship, so it fails to
-    // load. Revisit if the library adds rotary Nomic support.
+    // Excluded after testing:
+    //   • Nomic v1/v1.5 — the MLXEmbedders NomicBert port expects a learned position-embedding weight
+    //     that these rotary checkpoints don't ship → fails to load.
+    //   • BGE-base & GTE-tiny — their cosine scores cluster near ~0.9 for *any* pair (tiny spread), so
+    //     retrieval can't discriminate; they'd inject irrelevant chunks every turn. BGE-small has a wide,
+    //     well-calibrated spread and is the cleanest.
     static let defaultModelID = "intfloat/multilingual-e5-small"
 
     static func isDownloaded(_ id: String) -> Bool { MLXProvider.isDownloaded(id) }

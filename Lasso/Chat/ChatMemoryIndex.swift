@@ -66,7 +66,11 @@ final class ChatMemoryIndex {
     /// precision gate. Semantic similarity only ranks the survivors, plus a high-bar OR-path that stays
     /// dormant for NLEmbedding and activates only for a stronger embedder (Ollama nomic-embed).
     private static let questionWeight = 0.7     // question vs. recent-context weight in the semantic score
-    private static let highSemanticBar = 0.55   // pure-semantic escape hatch (only strong embedders reach it)
+    // Pure-semantic escape hatch (admit a no-keyword candidate on strong similarity alone). Raised from
+    // 0.55 after testing MLX backends: e5/MiniLM score ~0.6–0.68 for *unrelated* text, so 0.55 admitted
+    // noise on every off-topic query. 0.72 clears that while staying dormant for Apple NLEmbedding (~0.36)
+    // and keeping keyword recall untouched (that admits via `overlap > 0`, independent of this bar).
+    private static let highSemanticBar = 0.72
 
     /// Retrieve up to `k` older exchanges relevant to the current turn, excluding any already in the
     /// recent verbatim window. A candidate must share a keyword with the question (or clear the high
