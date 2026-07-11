@@ -78,7 +78,8 @@ struct ChatView: View {
             Button(role: .destructive) { chat.closeActive(); inputFocused = true } label: {
                 Label("Close this conversation", systemImage: "trash")
             }
-            .disabled(chat.active.isStreaming || (chat.sessions.count == 1 && !chat.canClear))
+            // Nothing to close in a pristine empty conversation — switch to another one instead.
+            .disabled(chat.active.isStreaming || !chat.canClear)
         } label: {
             HStack(spacing: 3) {
                 Text(chat.sessions.count > 1 ? chat.active.title : "Chat")
