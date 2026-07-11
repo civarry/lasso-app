@@ -73,19 +73,47 @@ flowchart TD
 
 ## 4. Intelligence system (`Intelligence/IntelligenceProvider.swift`)
 
-Two independent **roles**, each chosen in Settings:
+**Three independent roles** (Settings ▸ Intelligence: **Language model**, **Image model**, **Embedding
+model** — each a `Provider` picker + per-provider config), staged in a `Draft` and committed on Apply:
 
-- **Text** (`ProviderKind`): `apple` on-device Foundation Models (default, text-only), `ollama` (local
-  server), `mlx` (local Apple-Silicon), `openAICompatible` (cloud/local endpoint, e.g. Groq/LM Studio),
-  `anthropic`. Streams deltas via `respond(prompt:context:)` / `respond(messages:)`; tool-capable
+- **Language / Text** (`ProviderKind`): `apple` on-device Foundation Models (default, text-only), `ollama`
+  (local server), `mlx` (local Apple-Silicon), `openAICompatible` (cloud/local endpoint, e.g. Groq/LM
+  Studio), `anthropic`. Streams deltas via `respond(prompt:context:)` / `respond(messages:)`; tool-capable
   providers also expose `respond(messages:tools:execute:)`.
-- **Vision** (`VisionEngine`): `matchText` (route through the text provider if it's multimodal),
+- **Image / Vision** (`VisionEngine`): `matchText` (route through the text provider if it's multimodal),
   `ollama`, `mlx`, `openAICompatible`, `anthropic`. **Apple on-device is text-only** → returns nil for
   vision (no silent fallback). Used to *describe* an image (Identify, Ask-AI-on-image, Chat attachments).
-- **`isLocal`** drives the privacy badge; **local-only mode** (`PrivacyMode.localOnly`) forces on-device
-  and pauses every off-device path (see §8).
+- **Embedding** (`EmbeddingProviderKind`, §7): `automatic` (Ollama embed model if reachable → Apple
+  `NLEmbedding` → none), `apple`, `ollama`, `openAICompatible`. Powers Chat semantic memory only.
+  Resolved by `makeEmbedder()` (probe → **always falls back to Apple**, so retrieval never breaks).
+- **OpenAI-compatible services**: each cloud role picks a **Service** (OpenAI/Groq/OpenRouter/Custom) with
+  its own Base URL + model; the **API key is shared per service** across roles (`openAIKeyByService`).
+  Embedding has its own independent service (can differ from Language — e.g. embed on OpenAI while chatting
+  on Groq).
+- **`isLocal` / local-only**: `isLocal` drives the privacy badge; **local-only mode**
+  (`PrivacyMode.localOnly`) forces every cloud choice back to local via the `effective*` getters
+  (`effectivePreferred` / `effectiveVisionEngine` / `effectiveEmbeddingProvider`) — cloud options are also
+  hidden in the pickers — so nothing leaves the Mac regardless of what's stored (see §8).
 - **Tools** (`Intelligence/Tools/`): a model-decided `web_search` tool for Chat on tool-capable
   backends; others fall back to heuristic grounding.
+
+**Settings → resolution** (how a stored choice becomes the backend that actually runs):
+```mermaid
+flowchart TD
+  subgraph S["Settings ▸ Intelligence (staged Draft, committed on Apply)"]
+    LP["Language · ProviderKind"]
+    IP["Image · VisionEngine"]
+    EP["Embedding · EmbeddingProviderKind"]
+  end
+  LP --> LO{{"PrivacyMode.localOnly?"}}
+  IP --> LO
+  EP --> LO
+  LO -->|"yes → force cloud to local"| EFF["effectivePreferred /<br/>effectiveVisionEngine /<br/>effectiveEmbeddingProvider"]
+  LO -->|"no → as chosen"| EFF
+  EFF --> RT["activeProvider()<br/>→ streamWithFailover ↓"]
+  EFF --> RV["activeVisionProvider()<br/>(nil if unusable — no silent Apple)"]
+  EFF --> RE["makeEmbedder()<br/>probe → Apple fallback"]
+```
 - **Transient-error failover** (`streamWithFailover`): every `respond(…)` streams through one wrapper.
   If the active provider throws a *transient* error (`isTransient`: 429/timeout/5xx/network) **before the
   first token**, it retries **once on the on-device Apple model** and prefixes a short honest note. Never
@@ -248,6 +276,10 @@ Primitives in `UI/Theme.swift`:
 ---
 
 ## Change log
+- **§4 now tracks all three Intelligence roles** (Language / Image / Embedding) with a **Settings →
+  resolution** mermaid (chosen `Provider` → `effective*` local-only enforcement → `activeProvider` /
+  `activeVisionProvider` / `makeEmbedder`). Documents the per-service OpenAI-compatible key sharing and
+  embedding's independent service. (Was "two roles", no resolution diagram.)
 - **Embedding availability + graceful "no embedder"**: `AppleSentenceEmbedder` now falls back from
   sentence embeddings to **word-vector averaging** (bundled for ~50 languages) so Apple on-device
   resolves on nearly any Mac (no download). Settings shows a **live status row** (`probeEmbedding`) —
