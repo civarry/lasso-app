@@ -268,6 +268,9 @@ private actor MLXModelCache {
     static let shared = MLXModelCache()
 
     private var containers: [String: ModelContainer] = [:]
+    /// In-flight first-loads, so concurrent callers for the same model share one load instead of each
+    /// loading a full copy (the chat answer + the background summary hit MLX at the same time).
+    private var loading: [String: Task<ModelContainer, Error>] = [:]
     private var idleEviction: Task<Void, Never>?
     private var pressureSource: DispatchSourceMemoryPressure?
     private static let idleSeconds: UInt64 = 180   // free loaded models after 3 min of no use
@@ -287,16 +290,24 @@ private actor MLXModelCache {
             Log.mlx.notice("reuse \(modelID, privacy: .public) (in memory) · mem=\(MemoryReport.footprintMB(), privacy: .public)MB")
             return container
         }
+        // Coalesce: if this model is already loading, wait for that load instead of starting a second
+        // (two concurrent loads transiently double memory — e.g. chat answer + background summary).
+        if let inFlight = loading[modelID] {
+            Log.mlx.notice("join in-flight load \(modelID, privacy: .public)")
+            return try await inFlight.value
+        }
         Log.mlx.notice("load START \(modelID, privacy: .public) · mem=\(MemoryReport.footprintMB(), privacy: .public)MB")
         let t0 = Date()
-        let container: ModelContainer
-        if let progress {
-            container = try await #huggingFaceLoadModelContainer(
-                configuration: ModelConfiguration(id: modelID), progressHandler: progress)
-        } else {
-            container = try await #huggingFaceLoadModelContainer(
-                configuration: ModelConfiguration(id: modelID))
+        let task = Task<ModelContainer, Error> { [progress] in
+            if let progress {
+                return try await #huggingFaceLoadModelContainer(
+                    configuration: ModelConfiguration(id: modelID), progressHandler: progress)
+            }
+            return try await #huggingFaceLoadModelContainer(configuration: ModelConfiguration(id: modelID))
         }
+        loading[modelID] = task
+        defer { loading[modelID] = nil }
+        let container = try await task.value
         containers[modelID] = container
         MLXProvider.markDownloaded(modelID)   // a successful load means it's cached on disk
         scheduleIdleEviction()

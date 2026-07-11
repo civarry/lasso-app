@@ -19,7 +19,11 @@ private actor ReachabilityCache {
 /// remember the one that answers. Also powers the in-app connection status (the compiled app has no
 /// debug console, so users need a visible signal).
 enum OllamaEndpoint {
-    static let defaultURL = URL(string: "http://localhost:11434")!
+    // Use the IPv4 literal, not `localhost`: `localhost` resolves to both `::1` (IPv6) and `127.0.0.1`,
+    // and since Ollama binds IPv4-only by default, every call first tries `::1`, gets refused, and the OS
+    // logs `Socket SO_ERROR [61: Connection refused] ::1.11434` before falling back. Going straight to
+    // 127.0.0.1 skips the failed IPv6 attempt (and its DNS), removing that console noise.
+    static let defaultURL = URL(string: "http://127.0.0.1:11434")!
     private static let customKey = "ollama.baseURL"     // user-entered URL, "" = Auto
     private static let detectedKey = "ollama.detectedURL" // last URL that answered (session cache)
 
@@ -56,8 +60,8 @@ enum OllamaEndpoint {
         if let env = ProcessInfo.processInfo.environment["OLLAMA_HOST"], let u = normalized(env) {
             urls.append(u)
         }
-        urls.append(defaultURL)
-        urls.append(URL(string: "http://127.0.0.1:11434")!)
+        urls.append(defaultURL)   // 127.0.0.1 (IPv4, Ollama's default bind)
+        urls.append(URL(string: "http://localhost:11434")!)   // fallback for IPv6-only / custom setups
         return urls
     }
 
