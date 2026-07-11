@@ -64,6 +64,8 @@ struct SettingsView: View {
 
     @State private var tab: Tab = .general
     @State private var showClearHistoryConfirm = false
+    @State private var embeddingStatus: (ok: Bool, text: String)?
+    @State private var embeddingStatusTask: Task<Void, Never>?
     @State private var draft = Draft()
     @State private var saved = Draft()
     @State private var availableModels: [String] = []
@@ -256,6 +258,7 @@ struct SettingsView: View {
                     ForEach(availableEmbeddingProviders) { Text($0.label).tag($0) }
                 }
                 embeddingProviderConfig
+                embeddingStatusCaption
                 caption(embeddingHint)
             }
 
@@ -275,7 +278,77 @@ struct SettingsView: View {
         // Populate the cloud catalogs when switching to a cloud engine (Ollama loads in `load()`).
         .onChange(of: draft.provider) { _, _ in Task { await loadCloudModels() } }
         .onChange(of: draft.visionEngine) { _, _ in Task { await loadVisionModels() } }
-        .task { scheduleOllamaStatus(); await loadVisionModels() }
+        .onChange(of: draft.embeddingProvider) { _, _ in refreshEmbeddingStatus() }
+        .onChange(of: draft.embeddingOllamaModel) { _, _ in refreshEmbeddingStatus() }
+        .onChange(of: draft.embeddingOpenAIModel) { _, _ in refreshEmbeddingStatus() }
+        .task { scheduleOllamaStatus(); await loadVisionModels(); refreshEmbeddingStatus() }
+    }
+
+    /// Live status of the chosen embedding backend — shows whether semantic recall is actually active,
+    /// what it fell back to, or that it's off (chat memory then uses the running summary only). This is
+    /// how "no embedder" is surfaced instead of silently going dark.
+    @ViewBuilder private var embeddingStatusCaption: some View {
+        if let s = embeddingStatus {
+            Label(s.text, systemImage: s.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(s.ok ? Color.secondary : Color.orange)
+        }
+    }
+
+    private func refreshEmbeddingStatus() {
+        let choice = draft.embeddingProvider
+        let ollamaModel = draft.embeddingOllamaModel
+        let openAIModel = draft.embeddingOpenAIModel
+        embeddingStatusTask?.cancel()
+        embeddingStatusTask = Task {
+            let status = await probeEmbedding(choice, ollamaModel: ollamaModel, openAIModel: openAIModel)
+            if !Task.isCancelled { embeddingStatus = status }
+        }
+    }
+
+    /// Probe the chosen backend and describe the *actual* outcome — including the always-Apple fallback,
+    /// so the user knows exactly what their chat memory is doing.
+    private func probeEmbedding(_ choice: EmbeddingProviderKind, ollamaModel: String,
+                                openAIModel: String) async -> (ok: Bool, text: String) {
+        let apple = AppleSentenceEmbedder()
+        let appleNote = "chat memory will use the running summary only (semantic recall off)"
+
+        func ollamaEmbeds(_ model: String) async -> Bool {
+            guard await OllamaEndpoint.isReachable(OllamaEndpoint.baseURL, maxAge: 30) else { return false }
+            return (await OllamaChatEmbedder(model: model).embed(["probe"]))?.first?.isEmpty == false
+        }
+
+        switch choice {
+        case .apple:
+            return apple.isAvailable
+                ? (true, "Active — \(apple.label). Runs on this Mac.")
+                : (false, "Not available on this Mac for this language — \(appleNote).")
+
+        case .automatic:
+            if await ollamaEmbeds("nomic-embed-text") {
+                return (true, "Active — Ollama nomic-embed-text (local).")
+            }
+            return apple.isAvailable
+                ? (true, "Active — \(apple.label). Upgrades to Ollama automatically if you run it.")
+                : (false, "No embedder available — \(appleNote).")
+
+        case .ollama:
+            let model = ollamaModel.isEmpty ? "nomic-embed-text" : ollamaModel
+            if await ollamaEmbeds(model) { return (true, "Active — Ollama \(model) (local).") }
+            return apple.isAvailable
+                ? (true, "Ollama \(model) not reachable — using Apple on-device instead.")
+                : (false, "Ollama \(model) not reachable and no on-device embedder — \(appleNote).")
+
+        case .openAICompatible:
+            let key = Keychain.getMigrating("openai.apiKey", legacyDefaultsKey: "openai.apiKey") ?? ""
+            let model = openAIModel.isEmpty ? "text-embedding-3-small" : openAIModel
+            if !key.isEmpty {
+                return (true, "Active — cloud \(model). Conversation text is sent to your provider.")
+            }
+            return apple.isAvailable
+                ? (true, "No API key on your Language model yet — using Apple on-device instead.")
+                : (false, "No API key and no on-device embedder — \(appleNote).")
+        }
     }
 
     /// Image providers offered — cloud hidden in local-only mode (keyed to the saved setting, like the
@@ -316,8 +389,9 @@ struct SettingsView: View {
             return "Recalls relevant earlier messages in long chats. Uses a local Ollama embed model if "
                 + "you have one, otherwise Apple's built-in on-device embeddings — no download needed."
         case .apple:
-            return "Apple's built-in on-device embeddings (NaturalLanguage). Zero setup, instant, and "
-                + "never leaves your Mac. Availability varies by language."
+            return "Apple's built-in on-device embeddings (NaturalLanguage) — bundled with macOS, no "
+                + "download. Uses sentence embeddings where available, otherwise word embeddings, so it "
+                + "works on nearly any Mac. Instant and never leaves your device."
         case .ollama:
             return "A local Ollama embedding model — higher quality and multilingual. Install once with "
                 + "`ollama pull \(draft.embeddingOllamaModel.isEmpty ? "nomic-embed-text" : draft.embeddingOllamaModel)` "

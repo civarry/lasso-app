@@ -247,6 +247,11 @@ Primitives in `UI/Theme.swift`:
 ---
 
 ## Change log
+- **Embedding availability + graceful "no embedder"**: `AppleSentenceEmbedder` now falls back from
+  sentence embeddings to **word-vector averaging** (bundled for ~50 languages) so Apple on-device
+  resolves on nearly any Mac (no download). Settings shows a **live status row** (`probeEmbedding`) —
+  Active / fell-back-to-Apple / off — so a missing embedder is visible, not silent. When truly no
+  embedder exists, retrieval is a safe no-op (nothing indexed → chat falls back to the running summary).
 - **Selectable embedding model** (Settings ▸ Intelligence ▸ Embedding model): `EmbeddingProviderKind`
   (automatic/apple/ollama/openAICompatible), peer to Language/Image. Cloud reuses the Language model's
   OpenAI endpoint+key (`OpenAIEmbedder`, `/embeddings`), **blocked in local-only** (forced to local via

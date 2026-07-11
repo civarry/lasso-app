@@ -182,24 +182,53 @@ protocol ChatEmbedder: Sendable {
 /// (→ skip) when the asset isn't present. `@unchecked Sendable`: `NLEmbedding.vector(for:)` is a
 /// read-only query on an immutable model, safe to call concurrently.
 struct AppleSentenceEmbedder: ChatEmbedder, @unchecked Sendable {
-    let label = "Apple NLEmbedding"
-    private let model: NLEmbedding?
+    private let sentence: NLEmbedding?
+    private let word: NLEmbedding?
+    let label: String
 
     init(language: NLLanguage = .english) {
-        model = NLEmbedding.sentenceEmbedding(for: language)
+        let s = NLEmbedding.sentenceEmbedding(for: language)
+        // Sentence embeddings aren't present for every language/OS; word embeddings are bundled for many
+        // more. Averaging word vectors is a crude sentence embedding — and since retrieval gates on
+        // lexical overlap first (the embedding only ranks), it's plenty. This makes "Apple on-device"
+        // resolve on nearly any Mac instead of silently returning nil.
+        let w = (s == nil) ? NLEmbedding.wordEmbedding(for: language) : nil
+        sentence = s
+        word = w
+        label = s != nil ? "Apple NLEmbedding (sentence)"
+            : (w != nil ? "Apple NLEmbedding (word-avg)" : "Apple NLEmbedding (unavailable)")
     }
 
-    var isAvailable: Bool { model != nil }
+    var isAvailable: Bool { sentence != nil || word != nil }
 
     func embed(_ texts: [String]) async -> [[Double]]? {
-        guard let model else { return nil }
-        var out: [[Double]] = []
-        out.reserveCapacity(texts.count)
-        for t in texts {
-            guard let v = model.vector(for: t.isEmpty ? " " : t) else { return nil }
-            out.append(v)
+        if let sentence {
+            var out: [[Double]] = []
+            out.reserveCapacity(texts.count)
+            for t in texts {
+                guard let v = sentence.vector(for: t.isEmpty ? " " : t) else { return nil }
+                out.append(v)
+            }
+            return out
         }
-        return out
+        guard let word else { return nil }
+        return texts.map { averageWordVector($0, using: word) }
+    }
+
+    /// Mean of the in-vocabulary word vectors. Returns a zero vector (cosine 0, harmless) when a chunk
+    /// has no embeddable tokens — so a single odd chunk never nils the whole batch and stalls indexing.
+    private func averageWordVector(_ text: String, using emb: NLEmbedding) -> [Double] {
+        let tokens = text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        var sum = [Double](repeating: 0, count: emb.dimension)
+        var n = 0
+        for tok in tokens {
+            guard let v = emb.vector(for: tok), v.count == sum.count else { continue }
+            for i in sum.indices { sum[i] += v[i] }
+            n += 1
+        }
+        guard n > 0 else { return sum }
+        for i in sum.indices { sum[i] /= Double(n) }
+        return sum
     }
 }
 
