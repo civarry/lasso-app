@@ -66,6 +66,7 @@ struct SettingsView: View {
     @State private var showClearHistoryConfirm = false
     @State private var embeddingStatus: (ok: Bool, text: String)?
     @State private var embeddingStatusTask: Task<Void, Never>?
+    @State private var embeddingCloudModels: [String] = []   // embedding catalog from the cloud endpoint
     @State private var draft = Draft()
     @State private var saved = Draft()
     @State private var availableModels: [String] = []
@@ -278,10 +279,16 @@ struct SettingsView: View {
         // Populate the cloud catalogs when switching to a cloud engine (Ollama loads in `load()`).
         .onChange(of: draft.provider) { _, _ in Task { await loadCloudModels() } }
         .onChange(of: draft.visionEngine) { _, _ in Task { await loadVisionModels() } }
-        .onChange(of: draft.embeddingProvider) { _, _ in refreshEmbeddingStatus() }
+        .onChange(of: draft.embeddingProvider) { _, new in
+            refreshEmbeddingStatus()
+            if new == .openAICompatible { Task { await loadEmbeddingCloudModels() } }
+        }
         .onChange(of: draft.embeddingOllamaModel) { _, _ in refreshEmbeddingStatus() }
         .onChange(of: draft.embeddingOpenAIModel) { _, _ in refreshEmbeddingStatus() }
-        .task { scheduleOllamaStatus(); await loadVisionModels(); refreshEmbeddingStatus() }
+        .task {
+            scheduleOllamaStatus(); await loadVisionModels(); refreshEmbeddingStatus()
+            if draft.embeddingProvider == .openAICompatible { await loadEmbeddingCloudModels() }
+        }
     }
 
     /// Live status of the chosen embedding backend — shows whether semantic recall is actually active,
@@ -369,17 +376,58 @@ struct SettingsView: View {
         saved.localOnly ? [.automatic, .apple, .ollama] : EmbeddingProviderKind.allCases
     }
 
-    /// Per-backend config row for the Embedding model section (only Ollama/cloud need a model field —
-    /// Apple and Automatic are zero-config).
+    /// Per-backend config row for the Embedding model section — mirrors the Language/Image rows: a
+    /// picker of *real* models (installed Ollama embed models with a refresh; the cloud endpoint's
+    /// embedding catalog), not a hardcoded text field. Apple and Automatic are zero-config.
     @ViewBuilder private var embeddingProviderConfig: some View {
         switch draft.embeddingProvider {
         case .automatic, .apple:
             EmptyView()
         case .ollama:
-            TextField("Model", text: $draft.embeddingOllamaModel, prompt: Text("nomic-embed-text"))
+            embeddingOllamaPicker
         case .openAICompatible:
-            TextField("Model", text: $draft.embeddingOpenAIModel, prompt: Text("text-embedding-3-small"))
+            cloudModelPicker(selection: $draft.embeddingOpenAIModel, models: embeddingCloudModels) {
+                await loadEmbeddingCloudModels(); return !embeddingCloudModels.isEmpty
+            }
         }
+    }
+
+    /// Ollama embedding model row: a picker of *installed embedding models* (filtered from the same
+    /// catalog the Language row uses) + a refresh button, matching that row's behaviour. Falls back to a
+    /// manual field when none are installed yet (so the user can still name one to pull).
+    @ViewBuilder private var embeddingOllamaPicker: some View {
+        let embedModels = availableModels.filter(OllamaModels.isEmbedding)
+        LabeledContent("Model") {
+            HStack(spacing: 8) {
+                if embedModels.isEmpty {
+                    TextField("Model", text: $draft.embeddingOllamaModel, prompt: Text("nomic-embed-text"))
+                        .labelsHidden().multilineTextAlignment(.trailing).textFieldStyle(.plain)
+                } else {
+                    Picker("", selection: $draft.embeddingOllamaModel) {
+                        let current = draft.embeddingOllamaModel
+                        if !current.isEmpty, !embedModels.contains(current) {
+                            Text("\(current) (not installed)").tag(current)
+                        }
+                        ForEach(embedModels, id: \.self) { Text($0).tag($0) }
+                    }
+                    .labelsHidden().fixedSize()
+                }
+                Button { reloadOllamaModels() } label: {
+                    Image(systemName: "arrow.clockwise").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Refresh installed models")
+            }
+        }
+    }
+
+    /// Fetch embedding models from the Language model's OpenAI-compatible endpoint (embeddings reuse its
+    /// endpoint + key). Filters the catalog to embedding models; leaves it empty (→ manual field) when
+    /// the endpoint exposes none, so the user can still type one.
+    private func loadEmbeddingCloudModels() async {
+        let url = URL(string: draft.openAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
+        let all = await OpenAICompatibleProvider.availableModels(baseURL: url, apiKey: draft.openAIKey)
+        embeddingCloudModels = all.filter { $0.lowercased().contains("embed") }
     }
 
     /// Explanatory caption for the chosen embedding backend.
