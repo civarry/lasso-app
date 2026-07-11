@@ -474,7 +474,10 @@ final class IntelligenceCoordinator {
 
     /// True when the current config actually uses a local Ollama model (for text or image) — so we
     /// only probe / auto-start Ollama when it's relevant (no noise for cloud-only setups).
-    var usesOllama: Bool { effectivePreferred == .ollama || effectiveVisionEngine == .ollama }
+    var usesOllama: Bool {
+        effectivePreferred == .ollama || effectiveVisionEngine == .ollama
+            || effectiveEmbeddingProvider == .ollama
+    }
 
     /// The image provider to actually use: in local-only mode any cloud choice is forced to local
     /// Ollama (and "Same as text" stays local only if the effective text engine is local).

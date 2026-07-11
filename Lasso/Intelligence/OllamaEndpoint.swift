@@ -43,6 +43,19 @@ enum OllamaEndpoint {
         return defaultURL
     }
 
+    /// One-time: clear a `localhost` detected-URL cached before we switched the default to the IPv4
+    /// literal, so `baseURL` stops returning it (and stops the `::1` connection-refused noise). Autodetect
+    /// re-caches the right server; an IPv6-only setup simply re-picks localhost when 127.0.0.1 fails.
+    static func migrateDetectedLocalhostToIPv4() {
+        let flag = "ollama.detected.ipv4Migrated"
+        guard !UserDefaults.standard.bool(forKey: flag) else { return }
+        UserDefaults.standard.set(true, forKey: flag)
+        if let cached = UserDefaults.standard.string(forKey: detectedKey),
+           URL(string: cached)?.host == "localhost" {
+            UserDefaults.standard.removeObject(forKey: detectedKey)
+        }
+    }
+
     /// Turn a loose string ("localhost:11434", "host:port", "http://…/") into a clean base URL.
     static func normalized(_ raw: String) -> URL? {
         var string = raw.trimmingCharacters(in: .whitespacesAndNewlines)

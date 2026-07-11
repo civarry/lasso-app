@@ -12,6 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Agent app: no Dock icon, no app menu (also set via LSUIElement in Info.plist).
         NSApp.setActivationPolicy(.accessory)
 
+        // Drop a pre-IPv4 cached "localhost" Ollama URL so we don't re-hit the refused ::1 socket.
+        OllamaEndpoint.migrateDetectedLocalhostToIPv4()
+
         let registry = ActionRegistry.makeDefault(intelligence: .shared)
         self.registry = registry
         CaptureCoordinator.shared.configure(registry: registry, intelligence: .shared)

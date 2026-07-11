@@ -350,14 +350,24 @@ struct SettingsView: View {
                 : (false, "Ollama \(model) not reachable and no on-device embedder — \(appleNote).")
 
         case .openAICompatible:
-            let key = Keychain.getMigrating("openai.apiKey", legacyDefaultsKey: "openai.apiKey") ?? ""
+            let key = draft.openAIKey   // embeddings reuse the active Language-model service's key
             let model = openAIModel.isEmpty ? "text-embedding-3-small" : openAIModel
-            if !key.isEmpty {
+            guard !key.isEmpty else {
+                return apple.isAvailable
+                    ? (true, "No API key on your Language model yet — using Apple on-device instead.")
+                    : (false, "No API key and no on-device embedder — \(appleNote).")
+            }
+            // Actually hit the /embeddings endpoint so the status reflects reality (many chat endpoints
+            // don't serve embeddings, or not that model) instead of falsely claiming "Active".
+            let url = URL(string: draft.openAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
+            let ok = (await OpenAIEmbedder(baseURL: url, apiKey: key, model: model)
+                .embed(["probe"]))?.first?.isEmpty == false
+            if ok {
                 return (true, "Active — cloud \(model). Conversation text is sent to your provider.")
             }
             return apple.isAvailable
-                ? (true, "No API key on your Language model yet — using Apple on-device instead.")
-                : (false, "No API key and no on-device embedder — \(appleNote).")
+                ? (true, "Cloud \(model) didn't return embeddings (check the endpoint + model) — using Apple on-device instead.")
+                : (false, "Cloud \(model) failed and no on-device embedder — \(appleNote).")
         }
     }
 
