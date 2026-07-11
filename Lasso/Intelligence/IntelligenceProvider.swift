@@ -253,7 +253,9 @@ final class IntelligenceCoordinator {
         self.embeddingProvider = defaults.string(forKey: "intelligence.embedding.provider")
             .flatMap(EmbeddingProviderKind.init(rawValue:)) ?? .automatic
         self.embeddingOllamaModel = defaults.string(forKey: "intelligence.embedding.ollamaModel") ?? ""
-        self.embeddingOpenAIModel = defaults.string(forKey: "intelligence.embedding.openAIModel") ?? "text-embedding-3-small"
+        // "" = use the text-embedding-3-small default; an empty field shows a placeholder (so it reads
+        // as an editable text input, like the Language model's Model row) instead of a fixed label.
+        self.embeddingOpenAIModel = defaults.string(forKey: "intelligence.embedding.openAIModel") ?? ""
         self.visionOpenAIBaseURL = defaults.string(forKey: "intelligence.vision.openai.baseURL") ?? "https://api.openai.com/v1"
         self.visionOpenAIModel = defaults.string(forKey: "intelligence.vision.openai.model") ?? "gpt-4o"
         self.visionAnthropicBaseURL = defaults.string(forKey: "intelligence.vision.anthropic.baseURL") ?? "https://api.anthropic.com"

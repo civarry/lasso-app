@@ -35,7 +35,7 @@ struct SettingsView: View {
         // Embedding model (Chat semantic memory). Cloud reuses the Language model's OpenAI endpoint+key.
         var embeddingProvider: EmbeddingProviderKind = .automatic
         var embeddingOllamaModel = ""       // "" = Auto (best installed embed model)
-        var embeddingOpenAIModel = "text-embedding-3-small"
+        var embeddingOpenAIModel = ""       // "" = default (text-embedding-3-small); shows as placeholder
 
         // Active-service convenience, computed from the per-service dicts (consumed by serviceName,
         // privacyLine, loadCloudModels, ConnectionTest, hints).
@@ -308,6 +308,10 @@ struct SettingsView: View {
         let openAIModel = draft.embeddingOpenAIModel
         embeddingStatusTask?.cancel()
         embeddingStatusTask = Task {
+            // Debounce: while the user types a model name we don't want to hit the cloud /embeddings
+            // endpoint (or re-probe Ollama) on every keystroke.
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
             let status = await probeEmbedding(choice, ollamaModel: ollamaModel, openAIModel: openAIModel)
             if !Task.isCancelled { embeddingStatus = status }
         }
