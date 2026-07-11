@@ -557,7 +557,7 @@ final class ChatController {
               active.messages[idx].role == .user else { return }
         let m = active.messages[idx]
         active.messages.removeSubrange(idx..<active.messages.count)
-        active.memoryIndex.reset()
+        resetDerivedMemory()
         active.input = m.text
         active.pendingAttachments = m.attachments
         send()
@@ -573,7 +573,7 @@ final class ChatController {
               active.messages[idx].role == .user else { return }
         let atts = active.messages[idx].attachments
         active.messages.removeSubrange(idx..<active.messages.count)
-        active.memoryIndex.reset()
+        resetDerivedMemory()
         active.input = text
         active.pendingAttachments = atts
         send()
@@ -588,17 +588,28 @@ final class ChatController {
               let uIdx = active.messages[..<aIdx].lastIndex(where: { $0.role == .user }) else { return }
         let userMsg = active.messages[uIdx]
         active.messages.removeSubrange(uIdx..<active.messages.count)
-        active.memoryIndex.reset()
+        resetDerivedMemory()
         active.input = userMsg.text
         active.pendingAttachments = userMsg.attachments
         send()
     }
 
-    /// After an in-place history edit (delete/edit): the semantic index references now-stale message ids,
-    /// so reset + lazily rebuild it, and persist the trimmed conversation.
-    private func historyDidChange() {
+    /// Drop **both** derived memories after a history edit — the semantic index *and* the running
+    /// two-track summary. Resetting only the index left deleted facts alive in `durableFacts`/`topicTrace`
+    /// (the model still "knew" a deleted fact). Both rebuild from the remaining messages: the index
+    /// lazily via `reindexActive`, the summary on the next turn's overflow.
+    private func resetDerivedMemory() {
         active.indexTask?.cancel()
+        active.summaryTask?.cancel()
         active.memoryIndex.reset()
+        active.memory = ConversationMemory()
+        active.summarizedTurnCount = 0
+    }
+
+    /// After an in-place history edit (delete/truncate): reset derived memory, lazily rebuild the index,
+    /// and persist the trimmed conversation.
+    private func historyDidChange() {
+        resetDerivedMemory()
         reindexActive()
         persist(active)
     }
