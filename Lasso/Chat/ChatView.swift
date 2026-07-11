@@ -102,6 +102,8 @@ struct ChatView: View {
     /// up (no keys/downloads here; that stays in Settings). Switching applies globally.
     private var modelChip: some View {
         Menu {
+            // Full model string lives here (moved out of the header, which shows a friendly name).
+            Text(intelligence.textEngineLabel)
             Section("Language model") {
                 Button { chat.selectTextModel(.onDevice) } label: {
                     Label("Apple Intelligence",
@@ -155,7 +157,7 @@ struct ChatView: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: textIcon).font(.system(size: 9))
-                Text(Self.shortModel(intelligence.textEngineLabel))
+                Text(Self.friendlyModel(intelligence.textEngineLabel))
                     .font(.caption).lineLimit(1)
                 Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold))
             }
@@ -176,6 +178,12 @@ struct ChatView: View {
         return afterDot.components(separatedBy: "/").last ?? afterDot
     }
 
+    /// Friendly provider name for the header chip: "Groq · openai/gpt-oss-20b" → "Groq";
+    /// "Apple Intelligence" stays as-is. The full model id is shown in the dropdown instead.
+    private static func friendlyModel(_ label: String) -> String {
+        label.components(separatedBy: " · ").first ?? label
+    }
+
     // MARK: - Conversation
 
     @ViewBuilder
@@ -194,15 +202,16 @@ struct ChatView: View {
             // keyed to data changes (not geometry) so it doesn't loop.
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 8) {
                         ForEach(chat.messages) { message in
                             MessageBubble(message: message, fontSize: resultTextBaseSize * textScale)
                         }
                         Color.clear.frame(height: 1).id(Self.scrollBottomID)
                     }
-                    .padding(12)
+                    .padding(.horizontal, 10).padding(.vertical, 10)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .scrollIndicators(.visible)
                 .onAppear { proxy.scrollTo(Self.scrollBottomID, anchor: .bottom) }
                 .onChange(of: chat.messages.count) { _, _ in
                     proxy.scrollTo(Self.scrollBottomID, anchor: .bottom)
@@ -325,11 +334,18 @@ struct ChatView: View {
                     Button { chat.cancelStreaming() } label: { Image(systemName: "stop.fill") }
                         .buttonStyle(IconButtonStyle()).help("Stop")
                 } else {
-                    Button { chat.send() } label: { Image(systemName: "arrow.up.circle.fill").font(.title2) }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(canSend ? Color.accentColor : Color.secondary)
-                        .disabled(!canSend)
-                        .help("Send")
+                    Button { chat.send() } label: {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(canSend ? Color.white : Color.secondary)
+                            .frame(width: 28, height: 28)
+                            .background(canSend ? AnyShapeStyle(Color.accentColor)
+                                                : AnyShapeStyle(.white.opacity(0.10)), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSend)
+                    .help("Send")
+                    .animation(.easeInOut(duration: 0.15), value: canSend)
                 }
             }
         }
@@ -398,41 +414,66 @@ private struct MessageBubble: View {
     private var hasTrace: Bool { !message.steps.isEmpty || !message.reasoning.isEmpty }
 
     @State private var copied = false
+    @State private var hovering = false
 
-    /// Replaces drag-to-select on assistant answers (which stole clicks from the Activity row).
+    /// Small icon-only copy control, revealed on hover so it doesn't compete with the message text.
     private var copyButton: some View {
         Button {
             Pasteboard.copy(message.text)
             copied = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
         } label: {
-            Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
                 .font(.caption2).foregroundStyle(.secondary)
+                .frame(width: 22, height: 16)
         }
         .buttonStyle(.plain)
-        .padding(.top, 2)
+        .padding(.top, 1)
         .help("Copy this answer")
     }
 
+    /// Asymmetric bubble with a small "tail": all corners rounded except the one nearest the speaker
+    /// (bottom-right for the user, bottom-left for the assistant).
+    private var bubbleShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            topLeadingRadius: 13,
+            bottomLeadingRadius: isUser ? 13 : 4,
+            bottomTrailingRadius: isUser ? 4 : 13,
+            topTrailingRadius: 13,
+            style: .continuous)
+    }
+
+    /// Compact attachment card (thumbnail + label + dimensions) — replaces shrinking a whole screenshot
+    /// into an unreadable bubble.
+    private func attachmentCard(_ att: Attachment) -> some View {
+        HStack(spacing: 8) {
+            Image(decorative: att.image, scale: 1)
+                .resizable().scaledToFill()
+                .frame(width: 40, height: 40)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            VStack(alignment: .leading, spacing: 1) {
+                Label("Image", systemImage: "photo")
+                    .font(.caption).fontWeight(.medium)
+                Text("\(att.image.width) × \(att.image.height)")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(6)
+        .frame(maxWidth: 220, alignment: .leading)
+        .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.10)))
+    }
+
     var body: some View {
-        // User messages: a right-aligned tinted bubble (kept narrow). Assistant messages: full-width
-        // with no bubble (ChatGPT/Claude style) so tables, code, and long text get the whole panel.
+        // User: right-aligned tinted bubble. Assistant: a subtle contained card so each turn reads as a
+        // distinct block (not flush-left plain text). Both get a bubble tail (see `bubbleShape`).
         HStack(spacing: 0) {
-            if isUser { Spacer(minLength: 36) }
+            if isUser { Spacer(minLength: 40) }
             VStack(alignment: .leading, spacing: 6) {
-                if message.attachments.count == 1, let att = message.attachments.first {
-                    Image(decorative: att.image, scale: 1)
-                        .resizable().scaledToFit()
-                        .frame(maxWidth: 240, maxHeight: 180)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                } else if !message.attachments.isEmpty {
-                    HStack(spacing: 6) {
-                        ForEach(message.attachments) { att in
-                            Image(decorative: att.image, scale: 1)
-                                .resizable().scaledToFill()
-                                .frame(width: 92, height: 92)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                        }
+                if !message.attachments.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(message.attachments) { attachmentCard($0) }
                     }
                 }
                 if !isUser, hasTrace {
@@ -444,22 +485,23 @@ private struct MessageBubble: View {
                         Text("Thinking…").font(.caption).foregroundStyle(.secondary)
                     }
                 } else if !message.text.isEmpty {
-                    // Drag-selectable like any chat app (⌘C to copy the highlight); the Copy button
-                    // remains for one-tap whole-message copy. The Activity disclosure is a separate view,
-                    // so enabling selection on the body doesn't affect its toggle.
+                    // Drag-selectable (⌘C copies the highlight); the icon Copy button (on hover) handles
+                    // whole-message copy. The Activity disclosure is a separate view, unaffected.
                     MarkdownView(text: message.text, fontSize: fontSize, selectable: true)
                         .foregroundStyle(message.isError ? Color.orange : Color.primary)
                         .fixedSize(horizontal: false, vertical: true)
                     if !isUser, !message.isStreaming, !message.isError {
-                        copyButton
+                        copyButton.opacity(hovering ? 1 : 0)
                     }
                 }
             }
-            .padding(.horizontal, isUser ? 11 : 2).padding(.vertical, isUser ? 8 : 2)
-            .background(isUser ? AnyShapeStyle(.tint.opacity(0.22)) : AnyShapeStyle(.clear),
-                        in: RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal, 11).padding(.vertical, 8)
+            .background(isUser ? AnyShapeStyle(.tint.opacity(0.22)) : AnyShapeStyle(.white.opacity(0.05)),
+                        in: bubbleShape)
+            .overlay(bubbleShape.strokeBorder(.white.opacity(isUser ? 0 : 0.06)))
             .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
         }
+        .onHover { hovering = $0 }
     }
 
 }

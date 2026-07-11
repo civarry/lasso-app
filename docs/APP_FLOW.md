@@ -299,6 +299,13 @@ the next frontier.**
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Chat UI polish pass** (`ChatView`, `MessageBubble`): assistant turns get a subtle contained card
+  (was flush-left plain text); both roles get a bubble **tail** (`UnevenRoundedRectangle` — squared
+  corner nearest the speaker). Header shows a **friendly** provider name (`friendlyModel`); the full
+  model id moved into the model dropdown. Copy button is now **icon-only, on hover**. Attachments render
+  as a **compact card** (thumbnail + dimensions) instead of a shrunken full-screenshot. Tighter
+  inter-message spacing; send button is a **filled accent circle** when ready (dim when empty). Message
+  text is drag-selectable + **Copy conversation** (whole transcript) in the menu.
 - **§4 now tracks all three Intelligence roles** (Language / Image / Embedding) with a **Settings →
   resolution** mermaid (chosen `Provider` → `effective*` local-only enforcement → `activeProvider` /
   `activeVisionProvider` / `makeEmbedder`). Documents the per-service OpenAI-compatible key sharing and
