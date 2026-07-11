@@ -548,10 +548,16 @@ final class ChatController {
         historyDidChange()
     }
 
-    /// Re-send a user message verbatim (a fresh turn → a new answer).
+    /// Re-run a user message **in place**: drop its old answer + everything after, then re-send the same
+    /// text/images so a fresh reply replaces the old one (no duplicate appended at the bottom). Same
+    /// effect as Regenerate on the paired reply, just triggered from the question side.
     func resendMessage(_ id: UUID) {
         guard !active.isStreaming,
-              let m = active.messages.first(where: { $0.id == id }), m.role == .user else { return }
+              let idx = active.messages.firstIndex(where: { $0.id == id }),
+              active.messages[idx].role == .user else { return }
+        let m = active.messages[idx]
+        active.messages.removeSubrange(idx..<active.messages.count)
+        active.memoryIndex.reset()
         active.input = m.text
         active.pendingAttachments = m.attachments
         send()
