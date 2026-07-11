@@ -292,6 +292,12 @@ the next frontier.**
 - Cross-turn image gallery + full-res image persistence (today: thumbnails + `promptText` descriptions).
 - Reviewer nice-to-haves left deliberately unbuilt until real usage demands them: adaptive-K retrieval,
   IDF-weighted keyword gate, Fact-vs-Conversation memory split.
+- **Calibration-independent retrieval** (would let *any* embedder in, incl. BGE-base): replace the fixed
+  `highSemanticBar` cosine gate with **Top-K + margin** (admit only candidates within a delta of the top
+  score) or a **reranker**. Fixed cosine thresholds assume calibrated scores across models, which doesn't
+  hold (BGE-base/GTE cluster ~0.9 for everything though their *ranking* is still correct). Pair with a
+  **ranking benchmark** ("is the right memory ranked #1 in the top-20?") instead of the current
+  above-threshold pass/fail — that measures the embedder, not the threshold fit.
 
 **Polish / infra:**
 - In-app `ollama pull` for the embedding model (today: guided caption with the command).

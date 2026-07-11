@@ -26,9 +26,11 @@ enum MLXEmbeddings {
     // Excluded after testing:
     //   • Nomic v1/v1.5 — the MLXEmbedders NomicBert port expects a learned position-embedding weight
     //     that these rotary checkpoints don't ship → fails to load.
-    //   • BGE-base & GTE-tiny — their cosine scores cluster near ~0.9 for *any* pair (tiny spread), so
-    //     retrieval can't discriminate; they'd inject irrelevant chunks every turn. BGE-small has a wide,
-    //     well-calibrated spread and is the cleanest.
+    //   • BGE-base & GTE-tiny — NOT worse embedders, but poorly *calibrated* for our fixed-cosine gate:
+    //     their scores cluster near ~0.9 for *any* pair (tiny spread), so a single `highSemanticBar`
+    //     tuned for the others admits everything. Their ranking is still correct — so if retrieval ever
+    //     moves to Top-K + margin/rerank (see docs "Future improvements"), they're worth revisiting.
+    //     BGE-small has a wide, well-calibrated spread and fits the current gate cleanly.
     static let defaultModelID = "intfloat/multilingual-e5-small"
 
     static func isDownloaded(_ id: String) -> Bool { MLXProvider.isDownloaded(id) }
