@@ -252,7 +252,7 @@ final class IntelligenceCoordinator {
         self.mlxModel = defaults.string(forKey: "intelligence.mlx.model") ?? MLXProvider.defaultModelID
         self.embeddingProvider = defaults.string(forKey: "intelligence.embedding.provider")
             .flatMap(EmbeddingProviderKind.init(rawValue:)) ?? .automatic
-        self.embeddingOllamaModel = defaults.string(forKey: "intelligence.embedding.ollamaModel") ?? "nomic-embed-text"
+        self.embeddingOllamaModel = defaults.string(forKey: "intelligence.embedding.ollamaModel") ?? ""
         self.embeddingOpenAIModel = defaults.string(forKey: "intelligence.embedding.openAIModel") ?? "text-embedding-3-small"
         self.visionOpenAIBaseURL = defaults.string(forKey: "intelligence.vision.openai.baseURL") ?? "https://api.openai.com/v1"
         self.visionOpenAIModel = defaults.string(forKey: "intelligence.vision.openai.model") ?? "gpt-4o"
@@ -370,7 +370,7 @@ final class IntelligenceCoordinator {
         switch effectiveEmbeddingProvider {
         case .automatic: return "Automatic (Apple / Ollama)"
         case .apple: return "Apple (on-device)"
-        case .ollama: return "Ollama · \(embeddingOllamaModel.isEmpty ? "nomic-embed-text" : embeddingOllamaModel)"
+        case .ollama: return "Ollama · \(embeddingOllamaModel.isEmpty ? "auto" : embeddingOllamaModel)"
         case .openAICompatible: return "\(openAIDisplayName()) · \(embeddingOpenAIModel.isEmpty ? "text-embedding-3-small" : embeddingOpenAIModel)"
         }
     }
@@ -396,7 +396,11 @@ final class IntelligenceCoordinator {
             Log.chat.notice("embedder: none available (auto) — retrieval off"); return nil
 
         case .ollama:
-            let model = embeddingOllamaModel.isEmpty ? "nomic-embed-text" : embeddingOllamaModel
+            // Empty = "Auto" → best installed embedding model (avoids a hardcoded tag-less name that
+            // mismatches Ollama's ":latest"). Falls back to nomic-embed-text as a last resort.
+            let chosen = embeddingOllamaModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            let model = chosen.isEmpty ? (await resolvedEmbeddingModel().isEmpty ? "nomic-embed-text"
+                                          : await resolvedEmbeddingModel()) : chosen
             if await OllamaEndpoint.isReachable(OllamaEndpoint.baseURL, maxAge: 30) {
                 let o = OllamaChatEmbedder(model: model)
                 if await probe(o) { Log.chat.notice("embedder: Ollama \(model, privacy: .public)"); return o }

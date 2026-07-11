@@ -34,7 +34,7 @@ struct SettingsView: View {
         var visionAnthropicKey = ""
         // Embedding model (Chat semantic memory). Cloud reuses the Language model's OpenAI endpoint+key.
         var embeddingProvider: EmbeddingProviderKind = .automatic
-        var embeddingOllamaModel = "nomic-embed-text"
+        var embeddingOllamaModel = ""       // "" = Auto (best installed embed model)
         var embeddingOpenAIModel = "text-embedding-3-small"
 
         // Active-service convenience, computed from the per-service dicts (consumed by serviceName,
@@ -340,7 +340,10 @@ struct SettingsView: View {
                 : (false, "No embedder available — \(appleNote).")
 
         case .ollama:
-            let model = ollamaModel.isEmpty ? "nomic-embed-text" : ollamaModel
+            // "Auto" → the best installed embedding model, so the probe targets the real one.
+            let model = ollamaModel.isEmpty
+                ? (availableModels.first(where: OllamaModels.isEmbedding) ?? "nomic-embed-text")
+                : ollamaModel
             if await ollamaEmbeds(model) { return (true, "Active — Ollama \(model) (local).") }
             return apple.isAvailable
                 ? (true, "Ollama \(model) not reachable — using Apple on-device instead.")
@@ -404,8 +407,12 @@ struct SettingsView: View {
                         .labelsHidden().multilineTextAlignment(.trailing).textFieldStyle(.plain)
                 } else {
                     Picker("", selection: $draft.embeddingOllamaModel) {
+                        Text("Auto").tag("")
                         let current = draft.embeddingOllamaModel
-                        if !current.isEmpty, !embedModels.contains(current) {
+                        // Only flag a truly-missing explicit choice — treat a tag-less name as matching
+                        // Ollama's implicit ":latest" so "nomic-embed-text" isn't falsely "not installed".
+                        if !current.isEmpty, !embedModels.contains(current),
+                           !embedModels.contains(current + ":latest") {
                             Text("\(current) (not installed)").tag(current)
                         }
                         ForEach(embedModels, id: \.self) { Text($0).tag($0) }
