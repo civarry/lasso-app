@@ -37,6 +37,11 @@ final class ChatMemoryIndex {
         // Keep the resolved embedder — the backend doesn't change within a session.
     }
 
+    /// Drop the cached embedder so the next resolve re-reads the user's embedding-model choice. Called
+    /// (with `reset()`) when the embedding backend changes in Settings — old vectors are incomparable
+    /// with a new backend's, so the whole index rebuilds.
+    func clearEmbedderCache() { embedderCache = nil }
+
     /// Index any completed exchanges not yet covered (background; off the send path). Cheap-skips
     /// trivial exchanges. No-op when nothing new or no embedder is available.
     func index(_ exchanges: [Exchange]) async {
@@ -142,24 +147,10 @@ final class ChatMemoryIndex {
         return resolved
     }
 
-    /// Probe the ladder once: Ollama (only if it actually returns a vector) → Apple → none. The Ollama
-    /// step is gated on a cached reachability check so we don't fire a guaranteed connection-refused at
-    /// `api/embed` (and spam the console) when the server is down. Logs the *reason* for the pick.
+    /// Resolve the embedder from the user's Embedding-model choice (Settings ▸ Intelligence). The
+    /// coordinator owns the ladder + local-only enforcement + cloud config, so this just delegates.
     private static func pickEmbedder() async -> ChatEmbedder? {
-        if await OllamaEndpoint.isReachable(OllamaEndpoint.baseURL, maxAge: 30) {
-            let ollama = OllamaChatEmbedder()
-            if let probe = await ollama.embed(["probe"]), probe.first?.isEmpty == false {
-                Log.chat.notice("memory index embedder ladder: Ollama reachable + embed model → nomic-embed-text")
-                return ollama
-            }
-            Log.chat.notice("memory index embedder ladder: Ollama reachable but no embed model → Apple")
-        } else {
-            Log.chat.notice("memory index embedder ladder: Ollama unreachable → Apple")
-        }
-        let apple = AppleSentenceEmbedder()
-        if apple.isAvailable { return apple }
-        Log.chat.notice("memory index embedder ladder: no embedder available → retrieval off")
-        return nil
+        await IntelligenceCoordinator.shared.makeEmbedder()
     }
 
     /// Cheap importance heuristic. 0 = trivial (skip from the index — "ok", "thanks"); higher = richer
@@ -212,11 +203,44 @@ struct AppleSentenceEmbedder: ChatEmbedder, @unchecked Sendable {
     }
 }
 
-/// Ollama embeddings (`nomic-embed-text`) via the existing provider — better quality/multilingual.
-/// Returns nil when the server/model isn't there, so the ladder falls back to Apple.
+/// Ollama embeddings via the existing provider — better quality/multilingual. Returns nil when the
+/// server/model isn't there, so resolution falls back to Apple.
 struct OllamaChatEmbedder: ChatEmbedder {
-    let label = "Ollama nomic-embed-text"
+    var model: String = "nomic-embed-text"
+    var label: String { "Ollama · \(model)" }
     func embed(_ texts: [String]) async -> [[Double]]? {
-        await OllamaEmbeddings().embed(texts)
+        await OllamaEmbeddings(model: model).embed(texts)
+    }
+}
+
+/// Cloud embeddings via an OpenAI-compatible `/embeddings` endpoint (e.g. text-embedding-3-small /
+/// -large). Reuses the Language model's endpoint + key. **Sends conversation text off-device** — only
+/// resolved when NOT in local-only mode (enforced by `effectiveEmbeddingProvider`).
+struct OpenAIEmbedder: ChatEmbedder {
+    let baseURL: URL
+    let apiKey: String
+    let model: String
+    var label: String { "Cloud · \(model)" }
+
+    func embed(_ texts: [String]) async -> [[Double]]? {
+        guard !texts.isEmpty else { return [] }
+        var request = URLRequest(url: baseURL.appendingPathComponent("embeddings"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 20
+        request.httpBody = try? JSONEncoder().encode(Req(model: model, input: texts))
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let decoded = try? JSONDecoder().decode(Resp.self, from: data),
+              decoded.data.count == texts.count else { return nil }
+        // The API may return items out of order — sort by `index` before dropping it.
+        return decoded.data.sorted { $0.index < $1.index }.map(\.embedding)
+    }
+
+    private struct Req: Encodable { let model: String; let input: [String] }
+    private struct Resp: Decodable {
+        struct Item: Decodable { let embedding: [Double]; let index: Int }
+        let data: [Item]
     }
 }

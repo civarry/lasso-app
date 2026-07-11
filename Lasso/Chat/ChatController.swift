@@ -103,6 +103,18 @@ final class ChatController {
         scheduleIndex()
     }
 
+    /// The user changed the embedding backend (Settings ▸ Intelligence ▸ Embedding model). Vectors from
+    /// a different embedder aren't comparable, so every session's index is fully reset + its cached
+    /// embedder cleared; the active one re-embeds now, the rest lazily when next viewed.
+    func embeddingConfigChanged() {
+        for s in sessions {
+            s.indexTask?.cancel(); s.indexTask = nil
+            s.memoryIndex.reset()
+            s.memoryIndex.clearEmbedderCache()
+        }
+        reindexActive()
+    }
+
     private static let systemPrompt = """
     You are Lasso's assistant — a helpful, concise chat companion living in the user's menu bar. \
     Answer directly. Use Markdown for structure when it helps.

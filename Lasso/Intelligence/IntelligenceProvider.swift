@@ -120,6 +120,28 @@ enum VisionEngine: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Backend for the Chat semantic-memory embeddings (recall of relevant earlier messages). Peer to the
+/// Language/Image model choices. `automatic` is the zero-setup default (Apple on-device, upgrading to a
+/// local Ollama embed model if present); cloud reuses the Language model's OpenAI-compatible endpoint.
+enum EmbeddingProviderKind: String, CaseIterable, Identifiable, Sendable {
+    case automatic          // Ollama nomic-embed-text if installed, else Apple on-device, else none
+    case apple              // force Apple NLEmbedding (built into macOS, zero download)
+    case ollama             // a local Ollama embedding model
+    case openAICompatible   // cloud embeddings (reuses the Language model's endpoint + key)
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .automatic: "Automatic (recommended)"
+        case .apple: "Apple (on-device)"
+        case .ollama: "Ollama (local)"
+        case .openAICompatible: "OpenAI-compatible (cloud)"
+        }
+    }
+    /// Local kinds never leave the Mac — cloud is forced back to `automatic` in local-only mode.
+    var isLocalKind: Bool { self != .openAICompatible }
+}
+
 /// Chooses and drives the active provider. The single entry point actions use for AI.
 @MainActor
 @Observable
@@ -184,6 +206,22 @@ final class IntelligenceCoordinator {
         didSet { UserDefaults.standard.set(mlxModel, forKey: "intelligence.mlx.model") }
     }
 
+    // MARK: - Embedding (Chat semantic memory) config
+    /// Chosen embedding backend for chat retrieval. Default `automatic` (Apple on-device, upgrading to
+    /// Ollama if present) — zero setup for a fresh install.
+    var embeddingProvider: EmbeddingProviderKind {
+        didSet { UserDefaults.standard.set(embeddingProvider.rawValue, forKey: "intelligence.embedding.provider") }
+    }
+    /// Local Ollama embedding model name (when `embeddingProvider == .ollama`).
+    var embeddingOllamaModel: String {
+        didSet { UserDefaults.standard.set(embeddingOllamaModel, forKey: "intelligence.embedding.ollamaModel") }
+    }
+    /// Cloud embedding model name (when `embeddingProvider == .openAICompatible`); reuses the Language
+    /// model's OpenAI-compatible endpoint + key.
+    var embeddingOpenAIModel: String {
+        didSet { UserDefaults.standard.set(embeddingOpenAIModel, forKey: "intelligence.embedding.openAIModel") }
+    }
+
     /// True once any cloud/off-machine call is made this session — surfaced by the privacy badge.
     private(set) var usedOffDeviceThisSession = false
 
@@ -212,6 +250,10 @@ final class IntelligenceCoordinator {
         self.anthropicBaseURL = defaults.string(forKey: "intelligence.anthropic.baseURL") ?? "https://api.anthropic.com"
         self.anthropicModel = defaults.string(forKey: "intelligence.anthropic.model") ?? "claude-3-5-haiku-latest"
         self.mlxModel = defaults.string(forKey: "intelligence.mlx.model") ?? MLXProvider.defaultModelID
+        self.embeddingProvider = defaults.string(forKey: "intelligence.embedding.provider")
+            .flatMap(EmbeddingProviderKind.init(rawValue:)) ?? .automatic
+        self.embeddingOllamaModel = defaults.string(forKey: "intelligence.embedding.ollamaModel") ?? "nomic-embed-text"
+        self.embeddingOpenAIModel = defaults.string(forKey: "intelligence.embedding.openAIModel") ?? "text-embedding-3-small"
         self.visionOpenAIBaseURL = defaults.string(forKey: "intelligence.vision.openai.baseURL") ?? "https://api.openai.com/v1"
         self.visionOpenAIModel = defaults.string(forKey: "intelligence.vision.openai.model") ?? "gpt-4o"
         self.visionAnthropicBaseURL = defaults.string(forKey: "intelligence.vision.anthropic.baseURL") ?? "https://api.anthropic.com"
@@ -313,6 +355,67 @@ final class IntelligenceCoordinator {
     /// Resolve the embedding model used for relevance ranking (best installed; nil → "" disables it).
     func resolvedEmbeddingModel() async -> String {
         OllamaModels.bestEmbeddingModel(await OllamaModels.installed()) ?? ""
+    }
+
+    // MARK: - Chat embedding backend (semantic memory)
+
+    /// Effective embedding backend — local-only forces a cloud choice back to the local ladder, so no
+    /// conversation text ever leaves the Mac (mirrors `effectivePreferred` / `effectiveVisionEngine`).
+    var effectiveEmbeddingProvider: EmbeddingProviderKind {
+        (PrivacyMode.localOnly && !embeddingProvider.isLocalKind) ? .automatic : embeddingProvider
+    }
+
+    /// Human label for the resolved embedding backend (Settings caption + logs).
+    var embeddingEngineLabel: String {
+        switch effectiveEmbeddingProvider {
+        case .automatic: return "Automatic (Apple / Ollama)"
+        case .apple: return "Apple (on-device)"
+        case .ollama: return "Ollama · \(embeddingOllamaModel.isEmpty ? "nomic-embed-text" : embeddingOllamaModel)"
+        case .openAICompatible: return "\(openAIDisplayName()) · \(embeddingOpenAIModel.isEmpty ? "text-embedding-3-small" : embeddingOpenAIModel)"
+        }
+    }
+
+    /// Build the Chat retrieval embedder for the current **effective** config. Vectors from different
+    /// backends aren't comparable, so `ChatMemoryIndex` fully resets when this changes. Falls back to
+    /// Apple on-device (never breaks retrieval); returns nil only when even Apple is unavailable.
+    /// Cloud is only ever reached when NOT local-only (see `effectiveEmbeddingProvider`), so it can't leak.
+    func makeEmbedder() async -> ChatEmbedder? {
+        func apple() -> ChatEmbedder? { let a = AppleSentenceEmbedder(); return a.isAvailable ? a : nil }
+        func probe(_ e: ChatEmbedder) async -> Bool { (await e.embed(["probe"]))?.first?.isEmpty == false }
+
+        switch effectiveEmbeddingProvider {
+        case .apple:
+            return apple()
+
+        case .automatic:
+            if await OllamaEndpoint.isReachable(OllamaEndpoint.baseURL, maxAge: 30) {
+                let o = OllamaChatEmbedder(model: "nomic-embed-text")
+                if await probe(o) { Log.chat.notice("embedder: Ollama nomic-embed-text (auto)"); return o }
+            }
+            if let a = apple() { Log.chat.notice("embedder: Apple NLEmbedding (auto)"); return a }
+            Log.chat.notice("embedder: none available (auto) — retrieval off"); return nil
+
+        case .ollama:
+            let model = embeddingOllamaModel.isEmpty ? "nomic-embed-text" : embeddingOllamaModel
+            if await OllamaEndpoint.isReachable(OllamaEndpoint.baseURL, maxAge: 30) {
+                let o = OllamaChatEmbedder(model: model)
+                if await probe(o) { Log.chat.notice("embedder: Ollama \(model, privacy: .public)"); return o }
+            }
+            Log.chat.notice("embedder: Ollama \(model, privacy: .public) unavailable → Apple"); return apple()
+
+        case .openAICompatible:
+            let key = Keychain.getMigrating("openai.apiKey", legacyDefaultsKey: "openai.apiKey") ?? ""
+            let model = embeddingOpenAIModel.isEmpty ? "text-embedding-3-small" : embeddingOpenAIModel
+            guard !key.isEmpty, let url = URL(string: openAIBaseURL) else {
+                Log.chat.notice("embedder: cloud embedding not configured → Apple"); return apple()
+            }
+            let e = OpenAIEmbedder(baseURL: url, apiKey: key, model: model)
+            if await probe(e) {
+                usedOffDeviceThisSession = true   // conversation text is being sent off-device
+                Log.chat.notice("embedder: cloud \(model, privacy: .public)"); return e
+            }
+            Log.chat.notice("embedder: cloud \(model, privacy: .public) failed → Apple"); return apple()
+        }
     }
 
     var privacyNote: String {

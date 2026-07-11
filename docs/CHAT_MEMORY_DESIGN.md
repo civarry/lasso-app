@@ -133,7 +133,15 @@ flowchart TD
    "Image N:" blocks. Composer shows a removable thumbnail row; bubble renders single large / multi grid.
    *Deferred:* populating `Attachment.caption`/`.ocr` for reuse across follow-ups (currently recomputed
    per turn / carried via `promptText`), and cross-turn image eviction/retrieval.
-3. Offer `nomic-embed-text` in the setup/model list. (Not started.)
+3. **Selectable embedding backend** — ✅ **SHIPPED**. Settings ▸ Intelligence ▸ **Embedding model**
+   (peer to Language/Image): Automatic (Apple→Ollama ladder, zero-setup default) / Apple (on-device) /
+   Ollama (any local embed model) / OpenAI-compatible cloud (`text-embedding-3-small/-large`, reuses the
+   Language model's endpoint+key). `IntelligenceCoordinator.makeEmbedder` resolves + probes, always
+   falling back to Apple so retrieval never breaks. **Local-only forces cloud→local** (no text egress).
+   The default needs **no download** (Apple `NLEmbedding` ships with macOS). Changing the backend resets
+   every session's index (`embeddingConfigChanged`) and re-embeds lazily — vectors across backends are
+   incomparable, and none are persisted. *Deferred:* in-app `ollama pull` for the embed model (currently
+   guided via a caption); a cloud-embedding connection test.
 
 ## Persistence (SHIPPED — `ConversationStore`)
 Conversations now persist to `~/Library/Application Support/Lasso/` (outside the `.app`, so history

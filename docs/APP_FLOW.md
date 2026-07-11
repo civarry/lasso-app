@@ -168,8 +168,14 @@ escalation, not a silent per-turn API call.
 + topic trace) → **semantic retrieval** (`ChatMemoryIndex`, Phase 1). The index embeds completed
 *exchanges* (user + assistant) in the background; at send it retrieves the top-K most relevant *older*
 exchanges verbatim (query = current text + last 1–2 turns), deduped against the recent window, into a
-bounded reserve in `ChatContextBuilder`. Embedder ladder: Ollama `nomic-embed-text` → Apple
-`NLEmbedding` (zero-setup) → none (retrieval silently off). See `docs/CHAT_MEMORY_DESIGN.md`.
+bounded reserve in `ChatContextBuilder`. **Embedding backend is a user choice** (Settings ▸ Intelligence
+▸ **Embedding model**, peer to Language/Image): `automatic` (Ollama `nomic-embed-text` if installed →
+Apple `NLEmbedding` on-device → none), `apple`, `ollama` (any local embed model), or `openAICompatible`
+(cloud, e.g. `text-embedding-3-small/-large`, reusing the Language model's endpoint+key). Resolved by
+`IntelligenceCoordinator.makeEmbedder()`; **local-only forces cloud→local** (`effectiveEmbeddingProvider`).
+The **default (Automatic → Apple) needs no download** — works on any Mac immediately. Vectors from
+different backends are incomparable, so changing the backend resets every session's index
+(`ChatController.embeddingConfigChanged`) and it re-embeds lazily. See `docs/CHAT_MEMORY_DESIGN.md`.
 
 **Persistence (`ConversationStore`):** conversations are saved to `~/Library/Application Support/Lasso/`
 — **one JSON per conversation** + a lightweight `index.json`, so history survives app updates /
@@ -241,6 +247,12 @@ Primitives in `UI/Theme.swift`:
 ---
 
 ## Change log
+- **Selectable embedding model** (Settings ▸ Intelligence ▸ Embedding model): `EmbeddingProviderKind`
+  (automatic/apple/ollama/openAICompatible), peer to Language/Image. Cloud reuses the Language model's
+  OpenAI endpoint+key (`OpenAIEmbedder`, `/embeddings`), **blocked in local-only** (forced to local via
+  `effectiveEmbeddingProvider`). `IntelligenceCoordinator.makeEmbedder` owns resolution (probe →
+  Apple fallback so retrieval never breaks). Default `automatic` needs no download (Apple on-device).
+  Changing the backend resets all chat indexes (`embeddingConfigChanged`) — vectors are incomparable.
 - **Chat persistence** (`ConversationStore`): conversations now survive app updates / reinstall — saved
   as one JSON per conversation + `index.json` in Application Support (outside the bundle). Source-of-truth
   only (messages, two-track memory, title, image thumbnails + `promptText` descriptions); the semantic

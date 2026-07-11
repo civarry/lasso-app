@@ -32,6 +32,10 @@ struct SettingsView: View {
         var visionAnthropicBaseURL = "https://api.anthropic.com"
         var visionAnthropicModel = "claude-3-5-sonnet-latest"
         var visionAnthropicKey = ""
+        // Embedding model (Chat semantic memory). Cloud reuses the Language model's OpenAI endpoint+key.
+        var embeddingProvider: EmbeddingProviderKind = .automatic
+        var embeddingOllamaModel = "nomic-embed-text"
+        var embeddingOpenAIModel = "text-embedding-3-small"
 
         // Active-service convenience, computed from the per-service dicts (consumed by serviceName,
         // privacyLine, loadCloudModels, ConnectionTest, hints).
@@ -247,6 +251,14 @@ struct SettingsView: View {
                 caption(imageModelHint)
             }
 
+            Section("Embedding model") {
+                Picker("Model", selection: $draft.embeddingProvider) {
+                    ForEach(availableEmbeddingProviders) { Text($0.label).tag($0) }
+                }
+                embeddingProviderConfig
+                caption(embeddingHint)
+            }
+
             // Ollama plumbing shown once, only when text OR image actually uses Ollama.
             if usesOllama {
                 Section("Ollama") {
@@ -276,6 +288,45 @@ struct SettingsView: View {
     /// to local Ollama for images.
     private var usesOllama: Bool {
         draft.provider == .ollama || draft.visionEngine == .ollama
+    }
+
+    /// Embedding backends offered — cloud hidden in local-only mode (keyed to the saved setting, like
+    /// the text/image lists, so it only changes after Save & Apply).
+    private var availableEmbeddingProviders: [EmbeddingProviderKind] {
+        saved.localOnly ? [.automatic, .apple, .ollama] : EmbeddingProviderKind.allCases
+    }
+
+    /// Per-backend config row for the Embedding model section (only Ollama/cloud need a model field —
+    /// Apple and Automatic are zero-config).
+    @ViewBuilder private var embeddingProviderConfig: some View {
+        switch draft.embeddingProvider {
+        case .automatic, .apple:
+            EmptyView()
+        case .ollama:
+            TextField("Model", text: $draft.embeddingOllamaModel, prompt: Text("nomic-embed-text"))
+        case .openAICompatible:
+            TextField("Model", text: $draft.embeddingOpenAIModel, prompt: Text("text-embedding-3-small"))
+        }
+    }
+
+    /// Explanatory caption for the chosen embedding backend.
+    private var embeddingHint: String {
+        switch draft.embeddingProvider {
+        case .automatic:
+            return "Recalls relevant earlier messages in long chats. Uses a local Ollama embed model if "
+                + "you have one, otherwise Apple's built-in on-device embeddings — no download needed."
+        case .apple:
+            return "Apple's built-in on-device embeddings (NaturalLanguage). Zero setup, instant, and "
+                + "never leaves your Mac. Availability varies by language."
+        case .ollama:
+            return "A local Ollama embedding model — higher quality and multilingual. Install once with "
+                + "`ollama pull \(draft.embeddingOllamaModel.isEmpty ? "nomic-embed-text" : draft.embeddingOllamaModel)` "
+                + "(~275 MB). Falls back to Apple on-device if it's unavailable."
+        case .openAICompatible:
+            return "Cloud embeddings via your Language model's OpenAI-compatible endpoint + key (e.g. "
+                + "text-embedding-3-small or -large). ⚠️ Conversation text is sent to that provider to be "
+                + "embedded; this option is hidden in local-only mode."
+        }
     }
 
     // MARK: - Connectors (the "bring your own tool" store)
@@ -1083,11 +1134,15 @@ struct SettingsView: View {
             ?? ActionBarStyle.compact.rawValue
         d.hideUnavailable = UserDefaults.standard.bool(forKey: Self.hideUnavailableKey)
         d.colorfulActions = UserDefaults.standard.bool(forKey: Self.colorfulKey)
+        d.embeddingProvider = intelligence.embeddingProvider
+        d.embeddingOllamaModel = intelligence.embeddingOllamaModel
+        d.embeddingOpenAIModel = intelligence.embeddingOpenAIModel
         // Heal an inconsistent saved state (local-only + a cloud engine / cloud image provider).
         if d.localOnly, !d.provider.isLocalKind { d.provider = .onDevice }
         if d.localOnly, d.visionEngine == .openAICompatible || d.visionEngine == .anthropic {
             d.visionEngine = .ollama
         }
+        if d.localOnly, !d.embeddingProvider.isLocalKind { d.embeddingProvider = .automatic }
         draft = d
         saved = d
         // Pre-load the cloud catalogs if a cloud engine/image provider is already configured.
@@ -1101,6 +1156,7 @@ struct SettingsView: View {
         if draft.localOnly, draft.visionEngine == .openAICompatible || draft.visionEngine == .anthropic {
             draft.visionEngine = .ollama
         }
+        if draft.localOnly, !draft.embeddingProvider.isLocalKind { draft.embeddingProvider = .automatic }
         intelligence.preferred = draft.provider
         intelligence.ollamaModel = draft.ollamaModel
         intelligence.mlxModel = draft.mlxModel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1151,6 +1207,15 @@ struct SettingsView: View {
         UserDefaults.standard.set(draft.hideUnavailable, forKey: Self.hideUnavailableKey)
         UserDefaults.standard.set(draft.colorfulActions, forKey: Self.colorfulKey)
         if draft.launchAtLogin != saved.launchAtLogin { LoginItem.set(draft.launchAtLogin) }
+        // Embedding backend — commit, then reset chat indexes if the backend actually changed (vectors
+        // from a different embedder are incomparable, so the in-RAM indexes must rebuild).
+        let embeddingChanged = draft.embeddingProvider != saved.embeddingProvider
+            || draft.embeddingOllamaModel != saved.embeddingOllamaModel
+            || draft.embeddingOpenAIModel != saved.embeddingOpenAIModel
+        intelligence.embeddingProvider = draft.embeddingProvider
+        intelligence.embeddingOllamaModel = draft.embeddingOllamaModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        intelligence.embeddingOpenAIModel = draft.embeddingOpenAIModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if embeddingChanged { ChatController.shared.embeddingConfigChanged() }
         Task { await intelligence.refreshVisionAvailability() }   // re-grey vision features as needed
         saved = draft
     }
