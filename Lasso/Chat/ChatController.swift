@@ -522,15 +522,17 @@ final class ChatController {
     /// "What can you do?" chip) — it never becomes a standing system prompt, so normal chats stay clean.
     // MARK: - Per-message actions (hover ⋯ menu)
 
-    /// Delete a message. Deleting a user turn also drops its paired assistant reply (no orphan Q/A).
+    /// Delete a message's whole exchange (question + its answer), whichever half was clicked — so you
+    /// never leave an orphaned question or a reply with no question. Everything else stays.
     func deleteMessage(_ id: UUID) {
         guard !active.isStreaming, let idx = active.messages.firstIndex(where: { $0.id == id }) else { return }
-        var upper = idx
-        if active.messages[idx].role == .user, idx + 1 < active.messages.count,
-           active.messages[idx + 1].role == .assistant {
-            upper = idx + 1
+        var lo = idx, hi = idx
+        if active.messages[idx].role == .user {
+            if idx + 1 < active.messages.count, active.messages[idx + 1].role == .assistant { hi = idx + 1 }
+        } else if idx > 0, active.messages[idx - 1].role == .user {
+            lo = idx - 1   // assistant reply → also drop the question it answered
         }
-        active.messages.removeSubrange(idx...upper)
+        active.messages.removeSubrange(lo...hi)
         historyDidChange()
     }
 
