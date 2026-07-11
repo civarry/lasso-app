@@ -15,15 +15,16 @@ import Tokenizers   // required by the #huggingFaceTokenizerLoader() macro expan
 /// string is embedded identically — no query/passage prefixes. (Prefix-tuning for e5/nomic is a possible
 /// future refinement.)
 enum MLXEmbeddings {
-    /// Curated models for the picker (small-first). Multilingual default fills Apple NLEmbedding's gap.
-    /// No sizes in the labels — the download button shows the real (MLX-only) download size.
+    /// Curated models for the picker, ordered by recommendation with a one-line strength (context window
+    /// matters here — we embed whole exchange chunks, so a small window truncates long turns). No sizes
+    /// in the labels — the download button shows the real (MLX-only) download size.
     static let suggestions: [(name: String, id: String)] = [
-        ("Multilingual E5 small", "intfloat/multilingual-e5-small"),
-        ("BGE small (English)", "BAAI/bge-small-en-v1.5"),
-        ("MiniLM L6 · tiny & fast", "sentence-transformers/all-MiniLM-L6-v2"),
-        ("Nomic embed v1.5", "nomic-ai/nomic-embed-text-v1.5"),
-        ("GTE tiny", "TaylorAI/gte-tiny"),
-        ("BGE base (English)", "BAAI/bge-base-en-v1.5"),
+        ("Multilingual E5 small · multilingual, 512", "intfloat/multilingual-e5-small"),
+        ("Nomic embed v1.5 · best quality, 8k context", "nomic-ai/nomic-embed-text-v1.5"),
+        ("BGE small · English, fast, 512", "BAAI/bge-small-en-v1.5"),
+        ("BGE base · English, accurate, 512", "BAAI/bge-base-en-v1.5"),
+        ("GTE tiny · very fast, 512", "TaylorAI/gte-tiny"),
+        ("MiniLM L6 · fastest, short 256 context", "sentence-transformers/all-MiniLM-L6-v2"),
     ]
     static let defaultModelID = "intfloat/multilingual-e5-small"
 
@@ -46,9 +47,12 @@ enum MLXEmbeddings {
         guard !texts.isEmpty else { return [] }
         do {
             let container = try await MLXEmbedderCache.shared.container(for: modelID)
+            // Truncate to the model's window so a long exchange can't overflow a fixed-position encoder
+            // (e.g. MiniLM's 256, most models' 512) — which would crash or garble the embedding.
+            let maxTokens = MLXProvider.maxSequenceLength(modelID)
             let floats: [[Float]] = try await container.perform {
                 (model: EmbeddingModel, tokenizer: MLXLMCommon.Tokenizer, pooling: Pooling) -> [[Float]] in
-                let encoded = texts.map { tokenizer.encode(text: $0, addSpecialTokens: true) }
+                let encoded = texts.map { Array(tokenizer.encode(text: $0, addSpecialTokens: true).prefix(maxTokens)) }
                 let padID = tokenizer.eosToken.flatMap { tokenizer.convertTokenToId($0) } ?? 0
                 let maxLen = encoded.reduce(into: 16) { $0 = max($0, $1.count) }
                 let padded = stacked(encoded.map { row in

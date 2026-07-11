@@ -146,6 +146,17 @@ struct MLXProvider: IntelligenceProvider {
     }
 
     /// Read a downloaded model's config.json from the HF cache snapshot (nil if not downloaded).
+    /// The model's max input length from its downloaded config — used to truncate embedding inputs so a
+    /// long chunk can't feed out-of-range positions to a fixed-window encoder. Falls back to 512 (the
+    /// common BERT default) when unknown.
+    static func maxSequenceLength(_ id: String) -> Int {
+        let cfg = downloadedConfig(id)
+        let n = (cfg?["max_position_embeddings"] as? Int)
+            ?? (cfg?["n_positions"] as? Int)
+            ?? (cfg?["max_seq_length"] as? Int)
+        return n.map { max(16, min($0, 8192)) } ?? 512
+    }
+
     private static func downloadedConfig(_ id: String) -> [String: Any]? {
         let snapshots = MLXCache.directory(for: id).appendingPathComponent("snapshots", isDirectory: true)
         guard let dirs = try? FileManager.default.contentsOfDirectory(
