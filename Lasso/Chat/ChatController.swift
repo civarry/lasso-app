@@ -557,17 +557,20 @@ final class ChatController {
         send()
     }
 
-    /// Pull a user message back into the composer (with its images) and drop it **and everything after**
-    /// — editing rewrites the past, so the turns that answered the old version are invalidated. Sending
-    /// the edit then continues from that point (like ChatGPT/Claude edit).
-    func editMessage(_ id: UUID) {
-        guard !active.isStreaming, let idx = active.messages.firstIndex(where: { $0.id == id }),
+    /// Commit an inline edit of a user message (called on **Send**, not when Edit is clicked — so Cancel
+    /// leaves the thread untouched): replace it and drop everything after (editing rewrites the past),
+    /// then re-send the new text with the original images.
+    func submitEdit(_ id: UUID, newText: String) {
+        let text = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !active.isStreaming, !text.isEmpty,
+              let idx = active.messages.firstIndex(where: { $0.id == id }),
               active.messages[idx].role == .user else { return }
-        let m = active.messages[idx]
-        active.input = m.text
-        active.pendingAttachments = m.attachments
+        let atts = active.messages[idx].attachments
         active.messages.removeSubrange(idx..<active.messages.count)
-        historyDidChange()
+        active.memoryIndex.reset()
+        active.input = text
+        active.pendingAttachments = atts
+        send()
     }
 
     /// Regenerate an assistant reply: drop this turn **and everything after** (they answered the old

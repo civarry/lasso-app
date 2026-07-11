@@ -416,7 +416,33 @@ private struct MessageBubble: View {
     @State private var hovering = false
     @State private var confirmDelete = false
     @State private var confirmDeleteFrom = false
+    @State private var editing = false
+    @State private var draft = ""
+    @FocusState private var editorFocused: Bool
     private let chat = ChatController.shared
+
+    /// Inline editor shown in place of a user message when Edit is tapped. Truncation happens only on
+    /// Send (`submitEdit`); Cancel just exits — nothing below is touched.
+    private var editView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Edit message", text: $draft, axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(1...10)
+                .focused($editorFocused)
+                .padding(8)
+                .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 1))
+            HStack(spacing: 8) {
+                Button("Send") { chat.submitEdit(message.id, newText: draft); editing = false }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
+                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              || chat.active.isStreaming)
+                Button("Cancel") { editing = false }
+                    .buttonStyle(.bordered).controlSize(.small)
+            }
+        }
+        .onAppear { DispatchQueue.main.async { editorFocused = true } }
+    }
 
     /// Per-message actions, revealed on hover (folds Copy in, so there's no standalone Copy button).
     /// Assistant: Copy / Regenerate / Delete. User: Copy / Edit / Resend / Delete. Delete confirms.
@@ -424,7 +450,7 @@ private struct MessageBubble: View {
         Menu {
             Button { Pasteboard.copy(message.text) } label: { Label("Copy", systemImage: "doc.on.doc") }
             if isUser {
-                Button { chat.editMessage(message.id) } label: { Label("Edit", systemImage: "pencil") }
+                Button { draft = message.text; editing = true } label: { Label("Edit", systemImage: "pencil") }
                 Button { chat.resendMessage(message.id) } label: { Label("Resend", systemImage: "arrow.uturn.up") }
             } else {
                 Button { chat.regenerate(message.id) } label: {
@@ -501,23 +527,27 @@ private struct MessageBubble: View {
                         ForEach(message.attachments) { attachmentCard($0) }
                     }
                 }
-                if !isUser, hasTrace {
-                    TraceView(message: message)
-                }
-                if message.isStreaming && message.text.isEmpty && !hasTrace {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.small)
-                        Text("Thinking…").font(.caption).foregroundStyle(.secondary)
+                if editing {
+                    editView
+                } else {
+                    if !isUser, hasTrace {
+                        TraceView(message: message)
                     }
-                } else if !message.text.isEmpty {
-                    // Drag-selectable (⌘C copies the highlight); whole-message actions live in the hover
-                    // ⋯ menu below. The Activity disclosure is a separate view, unaffected.
-                    MarkdownView(text: message.text, fontSize: fontSize, selectable: true)
-                        .foregroundStyle(message.isError ? Color.orange : Color.primary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if !message.isStreaming, !message.text.isEmpty || !message.attachments.isEmpty {
-                    actionsMenu.opacity(hovering ? 1 : 0)
+                    if message.isStreaming && message.text.isEmpty && !hasTrace {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Thinking…").font(.caption).foregroundStyle(.secondary)
+                        }
+                    } else if !message.text.isEmpty {
+                        // Drag-selectable (⌘C copies the highlight); whole-message actions live in the
+                        // hover ⋯ menu below. The Activity disclosure is a separate view, unaffected.
+                        MarkdownView(text: message.text, fontSize: fontSize, selectable: true)
+                            .foregroundStyle(message.isError ? Color.orange : Color.primary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if !message.isStreaming, !message.text.isEmpty || !message.attachments.isEmpty {
+                        actionsMenu.opacity(hovering ? 1 : 0)
+                    }
                 }
             }
             .padding(.horizontal, 11).padding(.vertical, 8)
