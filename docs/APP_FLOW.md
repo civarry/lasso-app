@@ -299,6 +299,11 @@ the next frontier.**
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Per-message actions** (hover `⋯` menu on each bubble): Copy (folds the old standalone Copy button
+  in), plus **Regenerate/Delete** (assistant) and **Edit/Resend/Delete** (user). Delete confirms; the
+  rest are instant. `ChatController.deleteMessage/resendMessage/editMessage/regenerate` mutate history,
+  then `historyDidChange` resets + rebuilds the semantic index and re-persists. No context-window meter
+  (deliberately tokenizer-free; token counts aren't reliable across Apple/MLX/Ollama).
 - **Chat UI polish pass** (`ChatView`, `MessageBubble`): assistant turns get a subtle contained card
   (was flush-left plain text); both roles get a bubble **tail** (`UnevenRoundedRectangle` — squared
   corner nearest the speaker). Header shows a **friendly** provider name (`friendlyModel`); the full

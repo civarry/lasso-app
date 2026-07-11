@@ -413,23 +413,39 @@ private struct MessageBubble: View {
 
     private var hasTrace: Bool { !message.steps.isEmpty || !message.reasoning.isEmpty }
 
-    @State private var copied = false
     @State private var hovering = false
+    @State private var confirmDelete = false
+    private let chat = ChatController.shared
 
-    /// Small icon-only copy control, revealed on hover so it doesn't compete with the message text.
-    private var copyButton: some View {
-        Button {
-            Pasteboard.copy(message.text)
-            copied = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+    /// Per-message actions, revealed on hover (folds Copy in, so there's no standalone Copy button).
+    /// Assistant: Copy / Regenerate / Delete. User: Copy / Edit / Resend / Delete. Delete confirms.
+    private var actionsMenu: some View {
+        Menu {
+            Button { Pasteboard.copy(message.text) } label: { Label("Copy", systemImage: "doc.on.doc") }
+            if isUser {
+                Button { chat.editMessage(message.id) } label: { Label("Edit", systemImage: "pencil") }
+                Button { chat.resendMessage(message.id) } label: { Label("Resend", systemImage: "arrow.uturn.up") }
+            } else {
+                Button { chat.regenerate(message.id) } label: {
+                    Label("Regenerate", systemImage: "arrow.triangle.2.circlepath")
+                }
+            }
+            Divider()
+            Button(role: .destructive) { confirmDelete = true } label: { Label("Delete", systemImage: "trash") }
         } label: {
-            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+            Image(systemName: "ellipsis")
                 .font(.caption2).foregroundStyle(.secondary)
                 .frame(width: 22, height: 16)
         }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .buttonStyle(.plain)
-        .padding(.top, 1)
-        .help("Copy this answer")
+        .fixedSize()
+        .disabled(chat.active.isStreaming)
+        .confirmationDialog("Delete this message?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) { chat.deleteMessage(message.id) }
+            Button("Cancel", role: .cancel) {}
+        }
     }
 
     /// Asymmetric bubble with a small "tail": all corners rounded except the one nearest the speaker
@@ -485,14 +501,14 @@ private struct MessageBubble: View {
                         Text("Thinking…").font(.caption).foregroundStyle(.secondary)
                     }
                 } else if !message.text.isEmpty {
-                    // Drag-selectable (⌘C copies the highlight); the icon Copy button (on hover) handles
-                    // whole-message copy. The Activity disclosure is a separate view, unaffected.
+                    // Drag-selectable (⌘C copies the highlight); whole-message actions live in the hover
+                    // ⋯ menu below. The Activity disclosure is a separate view, unaffected.
                     MarkdownView(text: message.text, fontSize: fontSize, selectable: true)
                         .foregroundStyle(message.isError ? Color.orange : Color.primary)
                         .fixedSize(horizontal: false, vertical: true)
-                    if !isUser, !message.isStreaming, !message.isError {
-                        copyButton.opacity(hovering ? 1 : 0)
-                    }
+                }
+                if !message.isStreaming, !message.text.isEmpty || !message.attachments.isEmpty {
+                    actionsMenu.opacity(hovering ? 1 : 0)
                 }
             }
             .padding(.horizontal, 11).padding(.vertical, 8)

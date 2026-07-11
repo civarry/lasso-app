@@ -520,6 +520,65 @@ final class ChatController {
     /// Send a message. `text` overrides the composer (used by the suggestion chips); `extraContext`
     /// is a one-shot context folded into *only this* turn (e.g. Lasso's feature list for the
     /// "What can you do?" chip) — it never becomes a standing system prompt, so normal chats stay clean.
+    // MARK: - Per-message actions (hover ⋯ menu)
+
+    /// Delete a message. Deleting a user turn also drops its paired assistant reply (no orphan Q/A).
+    func deleteMessage(_ id: UUID) {
+        guard !active.isStreaming, let idx = active.messages.firstIndex(where: { $0.id == id }) else { return }
+        var upper = idx
+        if active.messages[idx].role == .user, idx + 1 < active.messages.count,
+           active.messages[idx + 1].role == .assistant {
+            upper = idx + 1
+        }
+        active.messages.removeSubrange(idx...upper)
+        historyDidChange()
+    }
+
+    /// Re-send a user message verbatim (a fresh turn → a new answer).
+    func resendMessage(_ id: UUID) {
+        guard !active.isStreaming,
+              let m = active.messages.first(where: { $0.id == id }), m.role == .user else { return }
+        active.input = m.text
+        active.pendingAttachments = m.attachments
+        send()
+    }
+
+    /// Pull a user message back into the composer (with its images) and drop that turn + its reply, so
+    /// editing and sending replaces it.
+    func editMessage(_ id: UUID) {
+        guard !active.isStreaming, let idx = active.messages.firstIndex(where: { $0.id == id }),
+              active.messages[idx].role == .user else { return }
+        let m = active.messages[idx]
+        active.input = m.text
+        active.pendingAttachments = m.attachments
+        let upper = (idx + 1 < active.messages.count && active.messages[idx + 1].role == .assistant)
+            ? idx + 1 : idx
+        active.messages.removeSubrange(idx...upper)
+        historyDidChange()
+    }
+
+    /// Regenerate an assistant reply: drop it + its user turn, then re-send that user turn for a new answer.
+    func regenerate(_ id: UUID) {
+        guard !active.isStreaming, let aIdx = active.messages.firstIndex(where: { $0.id == id }),
+              active.messages[aIdx].role == .assistant,
+              let uIdx = active.messages[..<aIdx].lastIndex(where: { $0.role == .user }) else { return }
+        let userMsg = active.messages[uIdx]
+        active.messages.removeSubrange(uIdx...aIdx)
+        active.memoryIndex.reset()
+        active.input = userMsg.text
+        active.pendingAttachments = userMsg.attachments
+        send()
+    }
+
+    /// After an in-place history edit (delete/edit): the semantic index references now-stale message ids,
+    /// so reset + lazily rebuild it, and persist the trimmed conversation.
+    private func historyDidChange() {
+        active.indexTask?.cancel()
+        active.memoryIndex.reset()
+        reindexActive()
+        persist(active)
+    }
+
     func send(text: String? = nil, extraContext: String? = nil, webSearch: Bool? = nil) {
         if let text { input = text }
         let typed = input.trimmingCharacters(in: .whitespacesAndNewlines)
