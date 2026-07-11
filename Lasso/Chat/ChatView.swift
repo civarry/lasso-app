@@ -413,7 +413,7 @@ private struct MessageBubble: View {
 
     private var hasTrace: Bool { !message.steps.isEmpty || !message.reasoning.isEmpty }
 
-    @State private var hovering = false
+    @State private var copied = false
     @State private var confirmDelete = false
     @State private var confirmDeleteFrom = false
     @State private var editing = false
@@ -444,33 +444,43 @@ private struct MessageBubble: View {
         .onAppear { DispatchQueue.main.async { editorFocused = true } }
     }
 
-    /// Per-message actions, revealed on hover (folds Copy in, so there's no standalone Copy button).
-    /// Assistant: Copy / Regenerate / Delete. User: Copy / Edit / Resend / Delete. Delete confirms.
-    private var actionsMenu: some View {
-        Menu {
-            Button { Pasteboard.copy(message.text) } label: { Label("Copy", systemImage: "doc.on.doc") }
-            if isUser {
-                Button { draft = message.text; editing = true } label: { Label("Edit", systemImage: "pencil") }
-                Button { chat.resendMessage(message.id) } label: { Label("Resend", systemImage: "arrow.uturn.up") }
-            } else {
-                Button { chat.regenerate(message.id) } label: {
-                    Label("Regenerate", systemImage: "arrow.triangle.2.circlepath")
+    /// Persistent per-message action row (always visible — the space is reserved anyway): Copy + Delete
+    /// as direct icons, plus a ⋯ menu for the rest (Regenerate/Edit/Resend/Delete-from-here). Delete
+    /// actions confirm.
+    private var actionsRow: some View {
+        HStack(spacing: 12) {
+            Button {
+                Pasteboard.copy(message.text)
+                copied = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) { copied = false }
+            } label: { Image(systemName: copied ? "checkmark" : "doc.on.doc") }
+                .help("Copy")
+
+            Button(role: .destructive) { confirmDelete = true } label: { Image(systemName: "trash") }
+                .help("Delete this exchange")
+
+            Menu {
+                if isUser {
+                    Button { draft = message.text; editing = true } label: { Label("Edit", systemImage: "pencil") }
+                    Button { chat.resendMessage(message.id) } label: { Label("Resend", systemImage: "arrow.uturn.up") }
+                } else {
+                    Button { chat.regenerate(message.id) } label: {
+                        Label("Regenerate", systemImage: "arrow.triangle.2.circlepath")
+                    }
                 }
+                Button(role: .destructive) { confirmDeleteFrom = true } label: {
+                    Label("Delete from here", systemImage: "arrow.down.to.line")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
             }
-            Divider()
-            Button(role: .destructive) { confirmDelete = true } label: { Label("Delete", systemImage: "trash") }
-            Button(role: .destructive) { confirmDeleteFrom = true } label: {
-                Label("Delete from here", systemImage: "arrow.down.to.line")
-            }
-        } label: {
-            Image(systemName: "ellipsis")
-                .font(.caption2).foregroundStyle(.secondary)
-                .frame(width: 22, height: 16)
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .help("More actions")
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
+        .font(.caption2)
+        .foregroundStyle(.secondary)
         .buttonStyle(.plain)
-        .fixedSize()
+        .padding(.top, 1)
         .disabled(chat.active.isStreaming)
         .confirmationDialog("Delete this message?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) { chat.deleteMessage(message.id) }
@@ -546,7 +556,7 @@ private struct MessageBubble: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if !message.isStreaming, !message.text.isEmpty || !message.attachments.isEmpty {
-                        actionsMenu.opacity(hovering ? 1 : 0)
+                        actionsRow
                     }
                 }
             }
@@ -556,7 +566,6 @@ private struct MessageBubble: View {
             .overlay(bubbleShape.strokeBorder(.white.opacity(isUser ? 0 : 0.06)))
             .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
         }
-        .onHover { hovering = $0 }
     }
 
 }
