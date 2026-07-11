@@ -557,27 +557,28 @@ final class ChatController {
         send()
     }
 
-    /// Pull a user message back into the composer (with its images) and drop that turn + its reply, so
-    /// editing and sending replaces it.
+    /// Pull a user message back into the composer (with its images) and drop it **and everything after**
+    /// — editing rewrites the past, so the turns that answered the old version are invalidated. Sending
+    /// the edit then continues from that point (like ChatGPT/Claude edit).
     func editMessage(_ id: UUID) {
         guard !active.isStreaming, let idx = active.messages.firstIndex(where: { $0.id == id }),
               active.messages[idx].role == .user else { return }
         let m = active.messages[idx]
         active.input = m.text
         active.pendingAttachments = m.attachments
-        let upper = (idx + 1 < active.messages.count && active.messages[idx + 1].role == .assistant)
-            ? idx + 1 : idx
-        active.messages.removeSubrange(idx...upper)
+        active.messages.removeSubrange(idx..<active.messages.count)
         historyDidChange()
     }
 
-    /// Regenerate an assistant reply: drop it + its user turn, then re-send that user turn for a new answer.
+    /// Regenerate an assistant reply: drop this turn **and everything after** (they answered the old
+    /// reply), then re-send its user turn for a new answer. On the last turn this is just "try again";
+    /// on a middle turn it rewrites forward from that point (no reordering).
     func regenerate(_ id: UUID) {
         guard !active.isStreaming, let aIdx = active.messages.firstIndex(where: { $0.id == id }),
               active.messages[aIdx].role == .assistant,
               let uIdx = active.messages[..<aIdx].lastIndex(where: { $0.role == .user }) else { return }
         let userMsg = active.messages[uIdx]
-        active.messages.removeSubrange(uIdx...aIdx)
+        active.messages.removeSubrange(uIdx..<active.messages.count)
         active.memoryIndex.reset()
         active.input = userMsg.text
         active.pendingAttachments = userMsg.attachments
