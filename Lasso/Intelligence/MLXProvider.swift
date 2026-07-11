@@ -433,10 +433,22 @@ enum MLXCache {
               let items = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
         else { return nil }
         let total = items.reduce(Int64(0)) { sum, item in
-            guard (item["type"] as? String) == "file" else { return sum }
+            guard (item["type"] as? String) == "file",
+                  let path = item["path"] as? String, countsTowardDownload(path) else { return sum }
             let size = (item["size"] as? NSNumber)?.int64Value ?? Int64(item["size"] as? Int ?? 0)
             return sum + size
         }
         return total > 0 ? total : nil
+    }
+
+    /// Whether a repo file is actually fetched by the MLX loader (which globs safetensors + config +
+    /// tokenizer). HF repos often ship duplicate weight formats (PyTorch `.bin`, ONNX, TF `.h5`) that
+    /// MLX never downloads — counting them badly over-estimated small models (e.g. e5-small: 120 MB
+    /// downloaded, but the whole repo is 2.3 GB).
+    private static func countsTowardDownload(_ path: String) -> Bool {
+        let p = path.lowercased()
+        guard p.hasSuffix(".safetensors") || p.hasSuffix(".json") || p.hasSuffix(".txt")
+            || p.hasSuffix(".model") || p.hasSuffix(".tiktoken") else { return false }
+        return !(p.contains("onnx/") || p.contains("openvino/") || p.contains("coreml/"))
     }
 }

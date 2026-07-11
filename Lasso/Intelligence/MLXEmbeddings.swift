@@ -16,9 +16,10 @@ import Tokenizers   // required by the #huggingFaceTokenizerLoader() macro expan
 /// future refinement.)
 enum MLXEmbeddings {
     /// Curated models for the picker (small-first). Multilingual default fills Apple NLEmbedding's gap.
+    /// No sizes in the labels — the download button shows the real (MLX-only) download size.
     static let suggestions: [(name: String, id: String)] = [
-        ("Multilingual E5 small · ~120 MB", "intfloat/multilingual-e5-small"),
-        ("BGE small (English) · ~130 MB", "BAAI/bge-small-en-v1.5"),
+        ("Multilingual E5 small", "intfloat/multilingual-e5-small"),
+        ("BGE small (English)", "BAAI/bge-small-en-v1.5"),
         ("MiniLM L6 · tiny & fast", "sentence-transformers/all-MiniLM-L6-v2"),
         ("Nomic embed v1.5", "nomic-ai/nomic-embed-text-v1.5"),
         ("GTE tiny", "TaylorAI/gte-tiny"),
