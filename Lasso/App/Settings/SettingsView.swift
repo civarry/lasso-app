@@ -266,7 +266,9 @@ struct SettingsView: View {
                     ForEach(availableEmbeddingProviders) { Text($0.label).tag($0) }
                 }
                 embeddingProviderConfig
-                embeddingStatusCaption
+                // MLX shows its own install/error state in the model row above, so the extra status
+                // line would be redundant (and could go stale after a download).
+                if draft.embeddingProvider != .mlx { embeddingStatusCaption }
                 caption(embeddingHint)
             }
 
@@ -515,9 +517,8 @@ struct SettingsView: View {
                 + "`ollama pull \(draft.embeddingOllamaModel.isEmpty ? "nomic-embed-text" : draft.embeddingOllamaModel)` "
                 + "(~275 MB). Falls back to Apple on-device if it's unavailable."
         case .mlx:
-            return "A local MLX embedding model (bge / e5 / nomic), Apple-Silicon accelerated and "
-                + "downloaded in-app — a strong, multilingual on-device option with no Ollama needed. "
-                + "Falls back to Apple on-device until it's downloaded."
+            return "A local, Apple-Silicon embedding model (e5 / bge), downloaded in-app — strong and "
+                + "multilingual, no Ollama. Uses Apple on-device until it's downloaded."
         case .openAICompatible:
             return "Cloud embeddings from an OpenAI-compatible service of your choice (e.g. "
                 + "text-embedding-3-small or -large) — pick a service that serves /embeddings, which may "
