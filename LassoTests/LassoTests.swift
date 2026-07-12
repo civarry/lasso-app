@@ -194,6 +194,33 @@ struct LassoTests {
         #expect(ChatController.parseSearchQuery(from: "answer SEARCH: not-a-command") == nil)           // not at line start
     }
 
+    /// Structured search plans carry the entity separately from the final query so downstream filters can
+    /// enforce the subject instead of trusting a raw string like "latest news about Philippines 2026".
+    @MainActor
+    @Test func parseSearchPlanCapturesEntityIntentLocation() {
+        let plan = ChatController.parseSearchPlan(from: """
+        SEARCH: Leni Robredo recent news Philippines 2026
+        ENTITY: Leni Robredo
+        INTENT: latest_news
+        LOCATION: Philippines
+        """)
+        #expect(plan?.query == "Leni Robredo recent news Philippines 2026")
+        #expect(plan?.resolvedEntity == "Leni Robredo")
+        #expect(plan?.intent == .latestNews)
+        #expect(plan?.location == "Philippines")
+    }
+
+    /// Entity matching is deliberately stricter than general relevance: generic recency/location terms
+    /// should not pass unless the resolved subject appears.
+    @MainActor
+    @Test func entityMatchingRejectsGenericLocationNews() {
+        #expect(ChatController.textMatchesEntity("Leni Robredo may run in 2028", entity: "Leni Robredo"))
+        #expect(ChatController.textMatchesEntity("Robredo rejects 2028 speculation", entity: "Leni Robredo"))
+        #expect(!ChatController.textMatchesEntity("Latest Philippines election news 2026", entity: "Leni Robredo"))
+        #expect(ChatController.textMatchesEntity("ChatGPT model updates from OpenAI", entity: "OpenAI"))
+        #expect(!ChatController.textMatchesEntity("Generic AI regulation headlines", entity: "OpenAI"))
+    }
+
     /// The zero-latency routing pre-filter: fresh-news searches, explicit instructions override in both
     /// directions, small talk / clock skip, and a plain factual question is deferred to the model.
     @MainActor
