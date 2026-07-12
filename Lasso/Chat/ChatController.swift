@@ -119,13 +119,16 @@ final class ChatController {
     /// whenever the app happened to launch — a long-running menu-bar session would otherwise drift.
     private static var systemPrompt: String {
     """
-    You are Lasso's assistant — a helpful, concise chat companion living in the user's menu bar. \
-    Answer directly. Use Markdown for structure when it helps.
+    You are Lasso's assistant, living in the user's menu bar. Answer directly and match depth to the \
+    task — concise for simple questions, thorough for complex ones like code, debugging, or \
+    explanations. Use Markdown (code blocks for code) when it helps.
 
-    The current date and time is \(currentDateTimeString), in the user's local timezone — treat this \
-    as authoritative for "what time/day is it" and any date math; answer those from it directly rather \
-    than saying you lack a clock. Your training data may be older, so treat your own knowledge of \
-    recent events as possibly stale and never claim a past year is the current year.
+    The app gives you the current date and time from the user's device clock: \(currentDateTimeString) \
+    (their local timezone). Treat it as authoritative for "what time/day is it" and any date math, and \
+    answer directly rather than saying you lack a clock. If asked how you know, say the app provides the \
+    current time from the device — do NOT say the user told you the time or attribute it to them. Your \
+    training data may be older, so treat your own knowledge of recent events as possibly stale and never \
+    claim a past year is the current year.
 
     This is an ongoing conversation. Greet the user at most once, only if they greet first; never open \
     a later reply with "Hello", "Hi", or "It's great to meet you". Do NOT restate your name, role, or a \
@@ -135,20 +138,9 @@ final class ChatController {
     asking about it (a pronoun like "it"/"her" refers to the most recent matching subject). If you've \
     already introduced yourself, just answer.
 
-    Do NOT paste raw URLs or add a "Sources"/"References" list to your reply — the app already shows \
-    the sources you used as separate links. Just answer naturally; weave in a source name only if it \
-    reads well in a sentence.
-
-    Always make a genuine attempt to help. Do NOT refuse or tell the user to describe their own image \
-    — they can see it, and you are given an automatic description to work from. Some turns include an \
-    automatic description of an attached image, produced by a separate vision model (NOT written by \
-    the user) — use it as your eyes. Never say "the description you gave" or credit that description \
-    to the user.
-
     Give a substantive best answer from what you have. If a detail is genuinely ambiguous or missing, \
-    you may briefly note the uncertainty, but still provide your best interpretation rather than \
-    declining. When asked to identify a person you can't name, describe who and what is visible and \
-    the likely context instead of refusing. Don't invent specifics you have no basis for.
+    briefly note the uncertainty, but still provide your best interpretation rather than declining. \
+    Don't invent specifics you have no basis for.
     """
     }
 
@@ -893,8 +885,11 @@ final class ChatController {
                 let joined = descriptions.joined(separator: "\n\n")
                 userText = """
                 [I attached \(attachments.count) image\(multi ? "s" : ""). A separate vision model produced \
-                \(multi ? "these descriptions" : "this description") — treat \(multi ? "them" : "it") cautiously \
-                and don't attribute \(multi ? "them" : "it") to me:]
+                \(multi ? "these descriptions" : "this description") (NOT written by me) — use \
+                \(multi ? "them" : "it") as your eyes, treat \(multi ? "them" : "it") cautiously, and don't \
+                attribute \(multi ? "them" : "it") to me or say "the description you gave". Don't refuse or \
+                tell me to describe my own image. If you can't name a person, describe who and what is \
+                visible and the likely context instead of refusing:]
                 \(joined)
 
                 \(typed.isEmpty ? (multi ? "What are these?" : "What is this?") : typed)
@@ -1545,7 +1540,15 @@ final class ChatController {
         if let guess = evidence.bestGuess, !guess.isEmpty { summary = "Identified “\(guess)” · " + summary }
         completeStep(assistantID, stepID, text: summary, links: hits)
         let body = Self.formatEvidence(evidence)
-        return body.isEmpty ? "No useful results found." : body
+        guard !body.isEmpty else { return "No useful results found." }
+        // Carry the grounding + no-URL-dump rule with the tool result (the heuristic path gets it via
+        // appendEvidence), so it isn't a standing rule in the base system prompt on non-search turns.
+        return """
+        Ground your answer in these results; don't invent facts they don't support. Do NOT paste these \
+        URLs or add a "Sources"/"References" list — the app shows them as separate links.
+
+        \(body)
+        """
     }
 
     /// Fold gathered evidence into the turn as grounding context for the model (heuristic path).
