@@ -1,5 +1,6 @@
 import Testing
 import CoreGraphics
+import Foundation
 @testable import Lasso
 
 struct LassoTests {
@@ -266,5 +267,68 @@ struct LassoTests {
             (hit: hit("c"), score: 0.05),
         ])
         #expect(kept.map(\.title) == ["a", "b"])   // all below absFloor → top minKeep survive
+    }
+
+    /// Dedup collapses the same URL across sources (case/trailing-slash insensitive) and adopts a
+    /// snippet from a duplicate when the kept copy lacks one; distinct URLs survive.
+    @Test func dedupedCollapsesSameURLAndAdoptsSnippet() {
+        func h(_ title: String, _ url: String, snippet: String? = nil) -> WebSourcesProvider.Hit {
+            .init(title: title, url: URL(string: url), source: "test", snippet: snippet)
+        }
+        let out = WebSourcesProvider.deduped([
+            h("A", "https://Example.com/Page/"),                              // kept (first), no snippet
+            h("A dup", "https://example.com/page", snippet: "the snippet"),   // same normalized URL
+            h("B", "https://other.com/x"),                                    // distinct
+        ])
+        #expect(out.count == 2)
+        #expect(out.first?.title == "A")                 // first occurrence kept
+        #expect(out.first?.snippet == "the snippet")     // snippet adopted from the duplicate
+        #expect(out.contains { $0.url?.host == "other.com" })
+    }
+
+    /// Local models get a RAM-safe sweet spot regardless of how big their window is; cloud gets a large
+    /// slice of its window; tiny models stay safely inside their window either way.
+    @Test func budgetSweetSpotByProvider() {
+        // A huge local window (256K Ollama) is still held to the ~8K-token sweet spot (RAM safety).
+        let localBig = ChatContextBuilder.Budget.forContextTokens(262_144, isLocal: true)
+        #expect(localBig.total == 8_192 * 4)                    // ~32K chars, not the whole 256K window
+        // The same huge window on cloud scales up (no device RAM cost).
+        let cloudBig = ChatContextBuilder.Budget.forContextTokens(262_144, isLocal: false)
+        #expect(cloudBig.total > localBig.total * 4)            // much larger than the local sweet spot
+        // Cloud is bounded so a 1M window doesn't cost a fortune.
+        #expect(ChatContextBuilder.Budget.forContextTokens(1_000_000, isLocal: false).total == 128_000 * 4)
+        // A tiny local model uses its whole (small) window, never over it.
+        let tiny = ChatContextBuilder.Budget.forContextTokens(4_096, isLocal: true)
+        #expect(tiny.total <= 4_096 * 4 && tiny.total >= 4_000)
+    }
+
+    /// Parse the model's real context length out of Ollama's `/api/show` (`<arch>.context_length`).
+    @Test func parseOllamaContextLength() {
+        let json = Data(#"{"model_info":{"general.architecture":"qwen3","qwen3.context_length":262144,"qwen3.embedding_length":2560}}"#.utf8)
+        #expect(OllamaEndpoint.parseContextLength(json) == 262144)
+        #expect(OllamaEndpoint.parseContextLength(Data("{}".utf8)) == nil)
+    }
+
+    /// Parse context length from an OpenAI-compatible `/v1/models` response — Groq (`context_window`) and
+    /// OpenRouter (nested `top_provider.context_length`); nil when the provider doesn't expose it.
+    @MainActor
+    @Test func parseOpenAIContextLength() {
+        let groq = Data(#"{"data":[{"id":"llama-3.1-8b-instant","context_window":131072}]}"#.utf8)
+        #expect(IntelligenceCoordinator.parseOpenAIContextLength(groq, model: "llama-3.1-8b-instant") == 131072)
+        let openRouter = Data(#"{"data":[{"id":"anthropic/claude","top_provider":{"context_length":200000}}]}"#.utf8)
+        #expect(IntelligenceCoordinator.parseOpenAIContextLength(openRouter, model: "anthropic/claude") == 200000)
+        let bare = Data(#"{"data":[{"id":"x"}]}"#.utf8)
+        #expect(IntelligenceCoordinator.parseOpenAIContextLength(bare, model: "x") == nil)
+    }
+
+    /// Name inference is the 3rd detection tier — a custom gateway serving Claude/GPT/Llama isn't clamped
+    /// to the default just because it doesn't advertise the window in /v1/models.
+    @MainActor
+    @Test func inferContextFromModelName() {
+        #expect(IntelligenceCoordinator.inferContextFromModelName("claude-3-5-sonnet-latest") == 200_000)
+        #expect(IntelligenceCoordinator.inferContextFromModelName("claude-sonnet-4-1m") == 1_000_000)
+        #expect(IntelligenceCoordinator.inferContextFromModelName("gpt-4o-mini") == 128_000)
+        #expect(IntelligenceCoordinator.inferContextFromModelName("llama-3.1-8b-instant") == 131_072)
+        #expect(IntelligenceCoordinator.inferContextFromModelName("some-unknown-model") == nil)
     }
 }
