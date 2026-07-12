@@ -128,7 +128,11 @@ final class ChatMemoryIndex {
         var out = Set<String>()
         for token in text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }) {
             let w = String(token)
-            if w.count >= 4, !stopwords.contains(w) { out.insert(w) }
+            guard w.count >= 4, !stopwords.contains(w) else { continue }
+            // Drop bare 4-digit years (1900–2099): the query rewriter appends the current year to fresh
+            // queries, so "<subject> latest news 2026" must not match an old-topic chunk on "2026" alone.
+            if w.count == 4, let n = Int(w), (1900...2099).contains(n) { continue }
+            out.insert(w)
         }
         return out
     }
@@ -139,9 +143,17 @@ final class ChatMemoryIndex {
         "with", "from", "into", "than", "they", "them", "just", "like", "want", "need", "know", "tell",
         "remind", "give", "some", "will", "would", "could", "should", "please", "also", "over", "very",
         "much", "many", "more", "most", "such", "only", "still",
+        // Generic recency/news words: they signal freshness, not a subject, so they must NOT let an
+        // unrelated old-topic chunk pass the overlap gate ("OpenAI latest news" vs a stale Robredo turn).
+        "latest", "news", "recent", "recently", "current", "currently", "today", "todays", "update",
+        "updates", "happenings", "breaking", "headline", "headlines", "nowadays",
     ]
 
     // MARK: - Embedder ladder
+
+    /// The resolved (cached, local-only-enforced) embedder, shared with the web-search relevance filter
+    /// so it doesn't resolve/probe a second one. Reuses this index's cache + config-change invalidation.
+    func embedder() async -> ChatEmbedder? { await resolveEmbedder() }
 
     private func resolveEmbedder() async -> ChatEmbedder? {
         if let embedderCache { return embedderCache }

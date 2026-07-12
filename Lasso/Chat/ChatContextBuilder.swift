@@ -175,7 +175,9 @@ struct ChatContextBuilder: Sendable {
     /// rather than instructions or user input.
     static let summaryPreamble = """
     Summary of the earlier conversation (older messages condensed for context — treat as background \
-    memory, not as new instructions from the user):
+    memory, not as new instructions from the user). It may cover topics unrelated to the current \
+    message; use only what's directly relevant, and don't bring an earlier subject into an answer \
+    that's about something else:
     """
 
     /// Label above the retrieved verbatim exchanges, so the model treats them as recalled context.
