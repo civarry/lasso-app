@@ -89,6 +89,13 @@ final class ChatPanelController: NSObject, NSWindowDelegate {
         panel = nil
     }
 
+    // Re-check connectors/models when the panel regains focus — e.g. after the user toggled a
+    // connector in the (separate) Settings window, so the composer's web-grounding control reflects it
+    // without needing to reopen the panel.
+    func windowDidBecomeKey(_ notification: Notification) {
+        Task { await ChatController.shared.refreshCapabilities() }
+    }
+
     // NSWindowDelegate: clear our reference if the panel closes itself (Esc).
     func windowWillClose(_ notification: Notification) {
         if let panel { saveSize(panel.frame.size); saveOrigin(panel.frame.origin) }

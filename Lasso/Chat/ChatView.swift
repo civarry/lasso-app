@@ -316,14 +316,16 @@ struct ChatView: View {
                           ? "Attach an image — or paste (⌘V) or drag one onto the panel"
                           : "Attach an image — needs a multimodal or Image model (Settings ▸ Intelligence)")
 
-                if chat.webConnectorsAvailable {
-                    Button { chat.webSearchOn.toggle() } label: { Image(systemName: "globe") }
-                        .buttonStyle(IconButtonStyle())
-                        .foregroundStyle(chat.webSearchOn ? Color.accentColor : Color.secondary)
-                        .help(chat.webSearchOn
-                              ? "Web grounding ON — answers use your connectors (Wikipedia, search, reverse-image)"
-                              : "Web grounding OFF — tap to ground answers with your connectors")
-                }
+                Button { chat.webSearchOn.toggle() } label: { Image(systemName: "globe") }
+                    .buttonStyle(IconButtonStyle())
+                    .disabled(!chat.webConnectorsAvailable)
+                    .foregroundStyle(!chat.webConnectorsAvailable ? Color.secondary.opacity(0.4)
+                                     : (chat.webSearchOn ? Color.accentColor : Color.secondary))
+                    .help(!chat.webConnectorsAvailable
+                          ? "No web connectors on — enable Web search under Settings ▸ Connectors to ground answers"
+                          : (chat.webSearchOn
+                             ? "Web grounding ON — answers use your connectors (Wikipedia, search, reverse-image)"
+                             : "Web grounding OFF — tap to ground answers with your connectors"))
 
                 TextField("Message…", text: Binding(
                     get: { chat.active.input }, set: { chat.active.input = $0 }))
