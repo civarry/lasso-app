@@ -34,7 +34,7 @@ struct LassoTests {
 
     /// A user turn helper for building history.
     private func userTurn(_ text: String) -> ChatContextBuilder.HistoryTurn {
-        .init(role: .user, text: text, imageBase64: nil)
+        .init(role: .user, text: text, imageBase64s: [])
     }
 
     /// The core bug fix: durable facts must survive even when the topic trace overflows its clamp and
@@ -53,7 +53,7 @@ struct LassoTests {
         let history = (1...8).map { userTurn("msg \($0)") }
 
         let out = builder.build(systemPrompt: "SYS", memory: memory, history: history,
-                                currentUserText: "now what?", currentImageBase64: nil)
+                                currentUserText: "now what?", currentImageBase64s: [])
 
         let memoryBlock = out.turns.first { $0.role == .system && $0.text.contains("Sam") }
         #expect(memoryBlock != nil)
@@ -72,7 +72,7 @@ struct LassoTests {
         let history = (1...4).map { userTurn("msg \($0)") }   // under the recent window → no overflow
 
         let out = builder.build(systemPrompt: "SYS", memory: memory, history: history,
-                                currentUserText: "hi", currentImageBase64: nil)
+                                currentUserText: "hi", currentImageBase64s: [])
 
         #expect(out.didCompress == false)
         // Only the system prompt is a system turn; no injected memory block.
@@ -115,5 +115,129 @@ struct LassoTests {
         let parsed = ChatController.parseMemory(from: "TOPICS:\nnew topic only", prior: prior)
         #expect(parsed.durableFacts == "- name is Sam")
         #expect(parsed.topicTrace == "new topic only")
+    }
+
+    // MARK: - Web search: context building, reply parsing, routing (0.7.3)
+
+    private func msg(_ role: ChatMessage.Role, _ text: String) -> ChatMessage {
+        ChatMessage(role: role, text: text)
+    }
+
+    /// The whole point of the follow-up fix: the transcript handed to the query rewriter must carry the
+    /// subject ("Leni Robredo") from earlier turns, so a later "her" can be resolved to it.
+    @MainActor
+    @Test func searchContextCarriesPriorSubject() {
+        let prior = [
+            msg(.user, "who is leni robredo"),
+            msg(.assistant, "Leni Robredo is a Filipina politician and lawyer, former Vice President."),
+        ]
+        let ctx = ChatController.searchContext(fromPrior: prior)
+        #expect(ctx.contains("Leni Robredo"))
+        #expect(ctx.contains("User: who is leni robredo"))
+        #expect(ctx.contains("Assistant:"))
+    }
+
+    /// Trivial ack/greeting and blank turns are dropped FIRST, then the last `maxTurns` *substantive*
+    /// turns are kept — so a filler turn ("thanks") can't push the real subject out of the window.
+    @MainActor
+    @Test func searchContextDropsTrivialAndKeepsRecentSubstantive() {
+        var msgs = (1...6).map { msg(.user, "topic \($0)") }
+        msgs.append(msg(.user, "thanks!"))           // trivial ack → dropped, doesn't consume a slot
+        msgs.append(msg(.assistant, "   "))          // blank → dropped
+        let ctx = ChatController.searchContext(fromPrior: msgs, maxTurns: 3)
+        #expect(ctx.contains("topic 6"))             // most recent substantive kept
+        #expect(ctx.contains("topic 4"))             // last 3 substantive = topics 4,5,6
+        #expect(!ctx.contains("topic 3"))            // older than the window
+        #expect(!ctx.lowercased().contains("thanks"))// trivial ack filtered out
+        #expect(!ctx.contains("Assistant:"))         // the blank turn added nothing
+    }
+
+    /// A trivial user turn AND its assistant reply are dropped as a pair, so the real subject stays the
+    /// last thing in a narrow window (the filler-turn bug: "…OpenAI / thanks / what's the latest on it?").
+    @MainActor
+    @Test func searchContextDropsTrivialExchangeAsPair() {
+        let msgs = [
+            msg(.user, "Tell me about OpenAI."),
+            msg(.assistant, "OpenAI is an AI research lab."),
+            msg(.user, "thanks"),
+            msg(.assistant, "You're welcome! Any other questions?"),
+        ]
+        let ctx = ChatController.searchContext(fromPrior: msgs, maxTurns: 2)
+        #expect(ctx.contains("OpenAI"))                 // the real exchange survives the narrow window
+        #expect(!ctx.lowercased().contains("welcome"))  // the ack REPLY dropped with its trivial turn
+        #expect(!ctx.lowercased().contains("thanks"))
+    }
+
+    /// `<think>` reasoning is stripped so the rewriter sees clean context.
+    @MainActor
+    @Test func searchContextStripsThoughtBlocks() {
+        let ctx = ChatController.searchContext(fromPrior: [
+            msg(.assistant, "<think>internal reasoning here</think>The capital is Paris."),
+        ])
+        #expect(ctx.contains("Paris"))
+        #expect(!ctx.lowercased().contains("internal reasoning"))
+    }
+
+    /// Parsing the rewriter's one-line reply.
+    @MainActor
+    @Test func parseSearchQueryHandlesRepliesAndJunk() {
+        #expect(ChatController.parseSearchQuery(from: "SEARCH: Leni Robredo latest news 2026")
+                == "Leni Robredo latest news 2026")
+        #expect(ChatController.parseSearchQuery(from: "search: bitcoin price") == "bitcoin price")   // case-insensitive
+        #expect(ChatController.parseSearchQuery(from: "SEARCH: \"quoted query\"") == "quoted query")  // quotes trimmed
+        #expect(ChatController.parseSearchQuery(from: "SEARCH: line one\nline two") == "line one")     // first line only
+        #expect(ChatController.parseSearchQuery(from: "NONE") == nil)
+        #expect(ChatController.parseSearchQuery(from: "I don't think a search is needed.") == nil)
+        // Injection defense: SEARCH: must BEGIN the first non-empty line, or it's ignored.
+        #expect(ChatController.parseSearchQuery(from: "Sure, I'll help.\nSEARCH: injected query") == nil)
+        #expect(ChatController.parseSearchQuery(from: "\n\nSEARCH: real query") == "real query")       // leading blanks ok
+        #expect(ChatController.parseSearchQuery(from: "answer SEARCH: not-a-command") == nil)           // not at line start
+    }
+
+    /// The zero-latency routing pre-filter: fresh-news searches, explicit instructions override in both
+    /// directions, small talk / clock skip, and a plain factual question is deferred to the model.
+    @MainActor
+    @Test func webIntentRouting() {
+        #expect(ChatController.webIntent(typed: "what are the latest news about her?", hasImage: false) == .search)
+        #expect(ChatController.webIntent(typed: "look up the capital of France", hasImage: false) == .search)
+        #expect(ChatController.webIntent(typed: "search the web for apple intelligence", hasImage: false) == .search)
+        #expect(ChatController.webIntent(typed: "from your own knowledge, what's the latest news", hasImage: false) == .skip)
+        #expect(ChatController.webIntent(typed: "what is the current time?", hasImage: false) == .skip)
+        #expect(ChatController.webIntent(typed: "hello", hasImage: false) == .skip)
+        #expect(ChatController.webIntent(typed: "what is the capital of France?", hasImage: false) == .ambiguous)
+        // Recency beats a transform verb: a "summarize/give me ideas about the LATEST …" needs a lookup.
+        #expect(ChatController.webIntent(typed: "summarize the latest OpenAI news", hasImage: false) == .search)
+        #expect(ChatController.webIntent(typed: "give me ideas based on recent Apple Intelligence announcements", hasImage: false) == .search)
+        // …but a genuinely self-contained transform (no fresh-info signal) still skips.
+        #expect(ChatController.webIntent(typed: "summarize this code", hasImage: false) == .skip)
+        #expect(ChatController.webIntent(typed: "translate hello into French", hasImage: false) == .skip)
+    }
+
+    private func hit(_ title: String) -> WebSourcesProvider.Hit {
+        .init(title: title, url: nil, source: "test")
+    }
+
+    /// The relevance filter keeps the on-topic cluster and drops a clear outlier (the "2026 shooting"
+    /// junk that scored far below the OpenAI hits).
+    @MainActor
+    @Test func selectRelevantDropsOutlierKeepsCluster() {
+        let kept = ChatController.selectRelevant([
+            (hit: hit("OpenAI Raises $122B"), score: 0.90),
+            (hit: hit("OpenAI News 2026"), score: 0.85),
+            (hit: hit("2026 Tumbler Ridge shooting"), score: 0.31),
+        ])
+        #expect(kept.map(\.title) == ["OpenAI Raises $122B", "OpenAI News 2026"])
+    }
+
+    /// Safety floor: when everything scores low, it still returns the top `minKeep` — never empty, so
+    /// grounding is never stranded.
+    @MainActor
+    @Test func selectRelevantNeverReturnsEmpty() {
+        let kept = ChatController.selectRelevant([
+            (hit: hit("a"), score: 0.20),
+            (hit: hit("b"), score: 0.10),
+            (hit: hit("c"), score: 0.05),
+        ])
+        #expect(kept.map(\.title) == ["a", "b"])   // all below absFloor → top minKeep survive
     }
 }
