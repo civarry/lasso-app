@@ -115,9 +115,15 @@ final class ChatController {
         reindexActive()
     }
 
-    private static let systemPrompt = """
+    /// Computed (not a stored `let`) so the injected date reflects the real day at send time, not
+    /// whenever the app happened to launch — a long-running menu-bar session would otherwise drift.
+    private static var systemPrompt: String {
+    """
     You are Lasso's assistant — a helpful, concise chat companion living in the user's menu bar. \
     Answer directly. Use Markdown for structure when it helps.
+
+    Today's date is \(currentDateString). Your training data may be older, so treat your own \
+    knowledge of recent events as possibly stale and never claim a past year is the current year.
 
     This is an ongoing conversation. Greet the user at most once, only if they greet first; never open \
     a later reply with "Hello", "Hi", or "It's great to meet you". Do NOT restate your name, role, or a \
@@ -140,6 +146,16 @@ final class ChatController {
     declining. When asked to identify a person you can't name, describe who and what is visible and \
     the likely context instead of refusing. Don't invent specifics you have no basis for.
     """
+    }
+
+    /// Locale-stable "today" (e.g. "Saturday, July 11, 2026") for grounding the model. Uses a fixed
+    /// POSIX locale + explicit format so the wording never varies with the user's region settings.
+    private static var currentDateString: String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "EEEE, MMMM d, yyyy"
+        return f.string(from: .now)
+    }
 
     /// Factual description of Lasso, injected only when the user asks "What can you do?" (the starter
     /// chip) so the model explains the *real* app instead of guessing. Not a standing system prompt.
@@ -468,18 +484,59 @@ final class ChatController {
 
     // MARK: - Web grounding intent
 
-    /// Whether a turn plausibly benefits from web/connector grounding. The globe toggle means "ground
-    /// *when it helps*", not "search every message" — so even with it on we skip turns that gain
-    /// nothing from a lookup: greetings and small talk, and self-contained creative/transform asks
-    /// (write / rewrite / translate / summarize / fix-this-code). Image turns always benefit
-    /// (reverse-image identification), so they're never gated. Errs toward searching when unsure, so
-    /// real questions still get grounded.
-    static func turnBenefitsFromWeb(typed: String, hasImage: Bool) -> Bool {
-        if hasImage { return true }
+    /// The search decision for a turn, before consulting the model. `search`/`skip` are the confident
+    /// cases we resolve for free; `ambiguous` is the middle — a real question with no obvious fresh-info
+    /// signal — which the caller hands to the model to judge (on the heuristic path) so the globe
+    /// toggle means "search *when it helps*", not "search every message".
+    enum WebIntent { case search, skip, ambiguous }
+
+    /// Cheap, zero-latency pre-filter. Confident SKIPs: greetings/small talk, self-contained
+    /// creative/transform asks (write/translate/summarize/fix-this-code), the device's own wall-clock
+    /// or today's date (the web can't help and the model already knows the date), and questions about
+    /// this assistant or our own conversation (that's memory, not the web). Confident SEARCHes: strong
+    /// recency signals (latest / news / breaking / happenings / this week). Everything else is
+    /// `ambiguous` — deferred to the model. Image turns always benefit (reverse-image identification).
+    static func webIntent(typed: String, hasImage: Bool) -> WebIntent {
+        if hasImage { return .search }
         let t = normalizeForIntent(typed)
-        guard !t.isEmpty else { return false }
-        if isSmallTalk(t) || isSelfContainedTask(t) { return false }
-        return true
+        guard !t.isEmpty else { return .skip }
+        if isSmallTalk(t) || isSelfContainedTask(t)
+            || isDeviceLocalQuestion(t) || isAboutAssistantOrChat(t) { return .skip }
+        if hasStrongRecencyIntent(t) { return .search }
+        return .ambiguous
+    }
+
+    /// Wall-clock time or today's day/date — the web can't give the user's local clock, and the model
+    /// is already told today's date in the system prompt, so a lookup is pure waste. Note weak recency
+    /// words ("now", "current") live in `hasRecencyIntent`, not here, so "the time now" lands as SKIP
+    /// before it can be mistaken for a fresh-news search.
+    private static func isDeviceLocalQuestion(_ t: String) -> Bool {
+        let clock = ["what time is it", "whats the time", "what's the time", "what is the time",
+                     "current time", "time right now", "the time now", "time now", "time is it"]
+        let dayDate = ["what day is it", "what is today", "whats today", "what's today",
+                       "todays date", "today's date", "what is the date", "whats the date",
+                       "what's the date", "what is the day", "what year is it"]
+        return clock.contains { t.contains($0) } || dayDate.contains { t.contains($0) }
+    }
+
+    /// Questions about the assistant itself or the ongoing conversation — answerable from memory, never
+    /// the web. Kept phrase-specific so a genuine question that merely says "you"/"we" isn't captured.
+    private static func isAboutAssistantOrChat(_ t: String) -> Bool {
+        let phrases = ["what did i just say", "what did i say", "what did we talk about",
+                       "what were we talking about", "recall what", "what are we talking about",
+                       "summarize our conversation", "summarize this chat", "summarize our chat",
+                       "what did you just say", "what did i ask", "our conversation so far"]
+        return phrases.contains { t.contains($0) }
+    }
+
+    /// Strong, unambiguous "fresh world info" markers — these almost always mean the answer changes over
+    /// time and the model's training is likely stale. Weaker words (now/today/current) are deliberately
+    /// excluded (they over-fire on "how are you now") and left to the model gate.
+    private static func hasStrongRecencyIntent(_ t: String) -> Bool {
+        let padded = " " + t + " "
+        let markers = ["latest", "news", "recent", "recently", "breaking", "headline", "headlines",
+                       "happenings", "this year", "this week", "this month", "so far this"]
+        return markers.contains { padded.contains(" \($0) ") || padded.contains(" \($0)") }
     }
 
     /// Lowercased, trimmed, with surrounding whitespace/punctuation stripped — for whole-message matching.
@@ -712,19 +769,22 @@ final class ChatController {
             Log.chat.notice("runTurn · OCR \(ocrText.count, privacy: .public) chars across \(attachments.count, privacy: .public) image(s) (+\(ms(), privacy: .public)ms)")
         }
 
-        // Grounding routing. A cheap heuristic pre-filter runs on BOTH paths: obvious no-search turns
-        // (greetings/small talk, write/translate/summarize) never ground — so the model can't
-        // over-search a "hello how are you". For turns that pass, a tool-capable provider gets a
-        // `web_search` tool and the *model* makes the final call (industry standard); otherwise we
-        // fall back to the local heuristic and pre-gather evidence.
-        let benefits = Self.turnBenefitsFromWeb(typed: typed, hasImage: !attachments.isEmpty)
+        // Grounding routing. A cheap tri-state pre-filter (`webIntent`) resolves the confident cases for
+        // free — obvious no-search turns (greetings/small talk, write/translate/summarize, clock/date,
+        // "what did we talk about") never ground, obvious fresh-news turns always do. The `.ambiguous`
+        // middle is decided by the *model*: a tool-capable provider gets a `web_search` tool and calls
+        // it mid-generation (industry standard); on the heuristic path (MLX/Apple) we ask a fast yes/no
+        // first — so the globe toggle grounds when it helps instead of spamming a search on every turn.
         let providerTools = allowGround ? await intelligence.activeTextProviderSupportsTools() : false
+        let intent = Self.webIntent(typed: typed, hasImage: !attachments.isEmpty)
+        let benefits = await decideBenefits(typed: typed, hasImage: !attachments.isEmpty,
+                                            allowGround: allowGround, providerTools: providerTools)
         let toolPath = allowGround && providerTools && benefits
         let heuristicGround = allowGround && !providerTools && benefits
         if allowGround && !benefits {
-            Log.chat.notice("runTurn · grounding skipped — turn doesn't benefit from web (pre-filter)")
+            Log.chat.notice("runTurn · grounding skipped — turn doesn't benefit from web (intent=\(String(describing: intent), privacy: .public))")
         }
-        Log.chat.notice("runTurn · grounding route: toolPath=\(toolPath, privacy: .public) heuristic=\(heuristicGround, privacy: .public) benefits=\(benefits, privacy: .public)")
+        Log.chat.notice("runTurn · grounding route: toolPath=\(toolPath, privacy: .public) heuristic=\(heuristicGround, privacy: .public) intent=\(String(describing: intent), privacy: .public) benefits=\(benefits, privacy: .public)")
 
         async let evidenceResult = gatherEvidence(typed: typed, boxed: boxed,
                                                   ocrText: ocrText, enabled: heuristicGround)
@@ -920,6 +980,59 @@ final class ChatController {
 
     // MARK: - Web / connector grounding
 
+    /// Resolve whether this turn should ground on the web. Confident cases (`.search`/`.skip`) are free;
+    /// the `.ambiguous` middle is where the model earns its keep — on the tool path we simply offer the
+    /// tool and let the model decide mid-generation; on the heuristic path (MLX/Apple, no tool calling)
+    /// we ask the model a fast yes/no first, so a plain "what's 2+2" or "how are you" doesn't spam a
+    /// search while a real "who's the CEO of Acme now" still gets grounded.
+    private func decideBenefits(typed: String, hasImage: Bool,
+                                allowGround: Bool, providerTools: Bool) async -> Bool {
+        switch Self.webIntent(typed: typed, hasImage: hasImage) {
+        case .search: return true
+        case .skip: return false
+        case .ambiguous:
+            guard allowGround else { return false }   // we wouldn't search anyway — don't pay for the gate
+            if providerTools { return true }           // tool path: the model decides during generation
+            return await modelWantsToSearch(typed)     // heuristic path: quick model yes/no
+        }
+    }
+
+    /// One-token gate: ask the active model whether answering needs a live web lookup. Provider-agnostic
+    /// (same `respond` the summary pass uses), tool-free, and bounded. Errs toward searching on any
+    /// unclear/failed answer, so we never *lose* grounding a real question would want — we only trim the
+    /// obviously-pointless searches. Only invoked for `.ambiguous` turns on the non-tool path.
+    private func modelWantsToSearch(_ typed: String) async -> Bool {
+        let prompt = """
+        Decide whether answering the user's message requires a live web search. Reply with ONLY one \
+        word: yes or no.
+        yes — needs current events, real-time data, prices, scores, schedules, or facts about the \
+        world that change over time or you may not reliably know.
+        no — small talk, opinions, math, coding, writing/editing/translation, or general knowledge you \
+        already know well.
+        User message: "\(typed)"
+        Answer:
+        """
+        var raw = ""
+        do {
+            for try await delta in intelligence.respond(prompt: prompt, context: nil) {
+                if Task.isCancelled { return true }
+                raw += delta
+                if raw.count > 240 { break }   // safety valve; the answer is one word
+            }
+        } catch {
+            return true   // provider hiccup → fall back to grounding rather than silently under-answering
+        }
+        let answer = Self.stripThoughtBlocks(from: raw).lowercased()
+        // First explicit token wins; default to searching when neither/both/unclear.
+        let yes = answer.range(of: "yes")?.lowerBound
+        let no = answer.range(of: "no")?.lowerBound
+        switch (yes, no) {
+        case let (y?, n?): return y <= n
+        case (nil, _?): return false
+        default: return true
+        }
+    }
+
     /// Gather evidence from the active connectors: a text web lookup (Wikipedia / DuckDuckGo / Reddit,
     /// plus optional Tavily / SerpApi) on the strongest query built from any typed question and
     /// on-screen text. Returns nil when nothing usable was found. (Reverse-image lives in the Lens
@@ -947,10 +1060,95 @@ final class ChatController {
         var parts: [String] = []
         if let g = bestGuess, !g.isEmpty { parts.append(g) }
         if let o = ocrText, !o.isEmpty { parts.append(keyTerms(o)) }
-        if !typed.isEmpty, !isGenericQuestion(typed) { parts.append(typed) }
+        if !typed.isEmpty, !isGenericQuestion(typed) { parts.append(distill(typed)) }
         if parts.isEmpty, let e = entity, !e.isEmpty { parts.append(e) }
         if parts.isEmpty, !typed.isEmpty { parts.append(typed) }
-        return parts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        var query = parts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        // For "latest / news / happenings" intent, pin the year so the free sources skew fresh
+        // instead of surfacing whatever's most-linked historically.
+        if !query.isEmpty, hasRecencyIntent(query) {
+            query += " \(Calendar.current.component(.year, from: .now))"
+        }
+        return query
+    }
+
+    /// Distill a conversational message into a lean search query. Users type whole sentences ("Or
+    /// let's search about the latest happenings in the Philippines and you will tell me your thoughts
+    /// about it"); handed verbatim to an instant-answer API that scaffolding becomes disambiguation
+    /// noise. We strip the chatty lead-in and the trailing clause aimed at the model, keeping just the
+    /// topic. Conservative: if stripping would empty the query we return the original — never search
+    /// for nothing. Future: an LLM rewrite could do this better, at the cost of a round-trip.
+    private static func distill(_ text: String) -> String {
+        let original = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var s = original
+
+        // Drop trailing clauses addressed to the model, not part of what to search for.
+        while true {
+            var changed = false
+            for clause in trailingScaffolding {
+                let stripped = stripSuffixPhrase(s, clause)
+                if stripped != s { s = stripped; changed = true; break }
+            }
+            if !changed { break }
+        }
+        // Peel leading scaffolding one phrase at a time, longest-match-first so "search about" wins
+        // over bare "search" ("search about the news" → "the news", not "about the news").
+        let leads = leadingScaffolding.sorted { $0.count > $1.count }
+        while true {
+            var changed = false
+            for lead in leads {
+                let stripped = stripPrefixPhrase(s, lead)
+                if stripped != s { s = stripped; changed = true; break }
+            }
+            if !changed { break }
+        }
+        s = s.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
+            .trimmingCharacters(in: CharacterSet(charactersIn: " ?.!,"))
+        return s.isEmpty ? original : s
+    }
+
+    /// Connectors and lead-ins that carry no search signal, stripped from the front of a typed query.
+    /// Includes leading articles so "the latest happenings" distills to "latest happenings".
+    private static let leadingScaffolding = [
+        "or", "and", "so", "well", "okay", "ok", "let's", "lets",
+        "can you", "could you", "would you", "will you", "please",
+        "i want to", "i'd like to", "i would like to", "i wanna",
+        "how about", "what about", "tell me about",
+        "search about", "search for", "search", "look up", "find", "google",
+        "the", "a", "an",
+    ]
+
+    /// Trailing clauses aimed at the model ("…and tell me what you think"), stripped from the end.
+    private static let trailingScaffolding = [
+        "and you will tell me your thoughts about it", "and tell me what you think",
+        "and let me know what you think", "and let me know", "and give me your thoughts",
+        "what do you think", "tell me your thoughts about it", "tell me your thoughts", "please",
+    ]
+
+    /// Remove `phrase` from the front of `s` when it's a whole-word prefix (case-insensitive),
+    /// dropping the separator after it. Returns `s` unchanged when it doesn't match.
+    private static func stripPrefixPhrase(_ s: String, _ phrase: String) -> String {
+        let lower = s.lowercased(), p = phrase.lowercased()
+        guard lower == p || lower.hasPrefix(p + " ") else { return s }
+        return String(s.dropFirst(phrase.count)).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Remove `phrase` from the end of `s` when it's a whole-word suffix (case-insensitive), ignoring
+    /// trailing punctuation. Returns `s` unchanged when it doesn't match.
+    private static func stripSuffixPhrase(_ s: String, _ phrase: String) -> String {
+        let trimmed = s.trimmingCharacters(in: CharacterSet(charactersIn: " ?.!,"))
+        let lower = trimmed.lowercased(), p = phrase.lowercased()
+        guard lower == p || lower.hasSuffix(" " + p) else { return s }
+        return String(trimmed.dropLast(phrase.count))
+            .trimmingCharacters(in: CharacterSet(charactersIn: " ?.!,"))
+    }
+
+    /// Whether a query is asking for something time-sensitive, so the year should be pinned onto it.
+    private static func hasRecencyIntent(_ text: String) -> Bool {
+        let padded = " " + text.lowercased() + " "
+        let markers = ["latest", "news", "recent", "recently", "current", "currently",
+                       "today", "now", "nowadays", "happenings", "this year", "this week"]
+        return markers.contains { padded.contains(" \($0) ") }
     }
 
     /// First ~10 words of OCR text — enough for a brand/model without dumping a whole sign.
@@ -997,8 +1195,9 @@ final class ChatController {
         return """
         \(text)
 
-        [Web evidence gathered for this question — ground your answer in it; do not invent facts it \
-        doesn't support. Do NOT paste these URLs or add a Sources list — the app shows them separately:]
+        [Web evidence gathered for this question — it is more current than your training data, so for \
+        anything time-sensitive prefer it over your own memory. Ground your answer in it; do not invent \
+        facts it doesn't support. Do NOT paste these URLs or add a Sources list — the app shows them separately:]
         \(body)
         """
     }
