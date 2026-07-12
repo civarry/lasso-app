@@ -54,14 +54,8 @@ struct MarkdownView: View {
                 }
             }
 
-        case .code(let s):
-            HScroll {
-                Text(s)
-                    .font(.system(size: fontSize - 1, design: .monospaced))
-                    .textSelectable(selectable)
-                    .padding(8)
-            }
-            .background(RoundedRectangle(cornerRadius: 6).fill(.white.opacity(0.08)))
+        case .code(let language, let content):
+            CodeBlockView(language: language, content: content, fontSize: fontSize, selectable: selectable)
 
         case .table(let header, let rows):
             tableView(header: header, rows: rows)
@@ -108,6 +102,56 @@ private extension View {
     /// branch via @ViewBuilder.
     @ViewBuilder func textSelectable(_ on: Bool) -> some View {
         if on { textSelection(.enabled) } else { textSelection(.disabled) }
+    }
+}
+
+// MARK: - Code block (language header + per-block copy)
+
+/// A fenced code block rendered like established chat apps: a header row with the language label and a
+/// Copy button that copies ONLY this block's code, above the horizontally-scrollable monospaced body.
+private struct CodeBlockView: View {
+    let language: String?
+    let content: String
+    let fontSize: CGFloat
+    let selectable: Bool
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.left.forwardslash.chevron.right")
+                    .font(.system(size: fontSize - 4))
+                Text(language?.isEmpty == false ? language! : "code")
+                    .font(.system(size: fontSize - 3, weight: .medium))
+                Spacer()
+                Button {
+                    Pasteboard.copy(content)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+                } label: {
+                    Label(copied ? "Copied" : "Copy",
+                          systemImage: copied ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: fontSize - 3))
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(copied ? Color.green : Color.secondary)
+                .help("Copy this code block")
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.white.opacity(0.05))
+
+            HScroll {
+                Text(content)
+                    .font(.system(size: fontSize - 1, design: .monospaced))
+                    .textSelectable(selectable)
+                    .padding(8)
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 6).fill(.white.opacity(0.08)))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -178,7 +222,7 @@ enum MarkdownBlock {
     case heading(level: Int, text: String)
     case bullets([String])
     case numbered([(String, String)])
-    case code(String)
+    case code(language: String?, content: String)
     case table(header: [String], rows: [[String]])
 }
 
@@ -228,16 +272,18 @@ enum MarkdownParser {
             let raw = lines[i]
             let line = raw.trimmingCharacters(in: .whitespaces)
 
-            // Fenced code block.
+            // Fenced code block. The fence's info string (```swift) is the language, shown in the header.
             if line.hasPrefix("```") {
                 flushParagraph()
+                let info = line.dropFirst(3).trimmingCharacters(in: .whitespaces)
+                let language = info.isEmpty ? nil : String(info.split(whereSeparator: { $0.isWhitespace }).first ?? "")
                 var code: [String] = []
                 i += 1
                 while i < lines.count, !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("```") {
                     code.append(lines[i]); i += 1
                 }
                 i += 1 // closing fence
-                blocks.append(.code(code.joined(separator: "\n")))
+                blocks.append(.code(language: language, content: code.joined(separator: "\n")))
                 continue
             }
 
