@@ -21,6 +21,7 @@ struct SettingsView: View {
         var openAICustomBaseURL = "https://api.openai.com/v1"
         var openAIKeyByService: [String: String] = [:]      // shared by Text + Image, keyed by service
         var openAIModelByService: [String: String] = [:]    // Text models, per service
+        var openAIContextByService: [String: Int] = [:]     // manual context-window override, per service (0 = Auto)
         var anthropicBaseURL = "https://api.anthropic.com"
         var anthropicModel = "claude-3-5-haiku-latest"
         var anthropicKey = ""
@@ -76,6 +77,7 @@ struct SettingsView: View {
     @State private var embeddingCloudModels: [String] = []   // embedding catalog from the cloud endpoint
     @State private var draft = Draft()
     @State private var saved = Draft()
+    @State private var showContextInfo = false
     @State private var availableModels: [String] = []
     @State private var modelsLoaded = false
     @State private var testState: ConnectionTest.Outcome = .idle
@@ -643,6 +645,7 @@ struct SettingsView: View {
             cloudModelPicker(selection: openAITextModelField(draft.openAIService), models: openAIModels) {
                 await loadCloudModels(); return !openAIModels.isEmpty
             }
+            contextWindowControl(service: draft.openAIService, model: draft.openAIModel)
         case .anthropic:
             SecureKeyField("API key", text: $draft.anthropicKey)
             cloudModelPicker(selection: $draft.anthropicModel, models: anthropicModels) {
@@ -1168,6 +1171,82 @@ struct SettingsView: View {
         Binding(get: { draft.openAIModelByService[service] ?? "" },
                 set: { draft.openAIModelByService[service] = $0 })
     }
+
+    /// Context-window control for a cloud service: Auto (detect from /v1/models, else infer from the
+    /// model name) or a manual token count — for a custom gateway (e.g. Claude 200K/1M) that doesn't
+    /// advertise its window. Chat scales its budget to whatever this resolves to.
+    @ViewBuilder private func contextWindowControl(service: String, model: String) -> some View {
+        let value = draft.openAIContextByService[service] ?? 0
+        let manual = value > 0
+        let autoTokens = intelligence.cloudContextTokens
+            ?? IntelligenceCoordinator.inferContextFromModelName(model) ?? 32_000
+
+        VStack(alignment: .leading, spacing: 8) {
+            // Single row: label + always-on status on the left, info + toggle on the right.
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Set context window manually")
+                    Text(manual ? "Manual override active" : "Auto · \(autoTokens.formatted()) tokens detected")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { showContextInfo.toggle() } label: { Image(systemName: "info.circle") }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .popover(isPresented: $showContextInfo, arrowEdge: .bottom) {
+                        Text("Detected from your endpoint or inferred from the model name. Turn this on "
+                             + "if your gateway serves a big-context model but doesn't report it.")
+                            .font(.callout).foregroundStyle(.secondary)
+                            .frame(width: 250).padding(12)
+                    }
+                Toggle("", isOn: Binding(
+                    get: { manual },
+                    set: { on in
+                        showContextInfo = false
+                        draft.openAIContextByService[service] = on
+                            ? (IntelligenceCoordinator.inferContextFromModelName(model) ?? 200_000) : 0
+                    }))
+                    .labelsHidden()
+            }
+
+            // When on, a compact card: preset chips over a right-aligned token field + a one-line caption.
+            if manual {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 6) {
+                        ForEach([128_000, 200_000, 1_000_000], id: \.self) { preset in
+                            Button(Self.presetLabel(preset)) { draft.openAIContextByService[service] = preset }
+                                .buttonStyle(.bordered)
+                                .tint(value == preset ? Color.accentColor : nil)
+                                .controlSize(.small)
+                        }
+                        Spacer()
+                    }
+                    HStack {
+                        Text("Tokens").foregroundStyle(.secondary)
+                        Spacer()
+                        TextField("", value: Binding(get: { draft.openAIContextByService[service] ?? 0 },
+                                                     set: { draft.openAIContextByService[service] = max(0, $0) }),
+                                  format: .number)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 120)
+                    }
+                    Text("Up to ~128k tokens of history and sources included in chat.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.12)))
+            }
+        }
+    }
+
+    private static func presetLabel(_ n: Int) -> String {
+        switch n {
+        case 1_000_000: return "1M"
+        case 200_000:   return "200k"
+        case 128_000:   return "128k"
+        default:        return n.formatted()
+        }
+    }
     private func openAIVisionModelField(_ service: String) -> Binding<String> {
         Binding(get: { draft.visionOpenAIModelByService[service] ?? "" },
                 set: { draft.visionOpenAIModelByService[service] = $0 })
@@ -1304,6 +1383,7 @@ struct SettingsView: View {
         for s in Self.openAIServices {
             d.openAIKeyByService[s] = Keychain.get("openai.svc.\(s).key") ?? ""
             d.openAIModelByService[s] = UserDefaults.standard.string(forKey: "intelligence.openai.svc.\(s).model") ?? ""
+            d.openAIContextByService[s] = UserDefaults.standard.integer(forKey: "intelligence.openai.svc.\(s).context")
             d.visionOpenAIModelByService[s] = UserDefaults.standard.string(forKey: "intelligence.vision.openai.svc.\(s).model") ?? ""
         }
         // Migrate legacy single keys into the shared per-service store.
@@ -1388,6 +1468,7 @@ struct SettingsView: View {
         for s in Self.openAIServices {
             Keychain.set(draft.openAIKeyByService[s] ?? "", for: "openai.svc.\(s).key")
             UserDefaults.standard.set(draft.openAIModelByService[s] ?? "", forKey: "intelligence.openai.svc.\(s).model")
+            UserDefaults.standard.set(draft.openAIContextByService[s] ?? 0, forKey: "intelligence.openai.svc.\(s).context")
             UserDefaults.standard.set(draft.visionOpenAIModelByService[s] ?? "", forKey: "intelligence.vision.openai.svc.\(s).model")
         }
         UserDefaults.standard.set(draft.openAIService, forKey: "intelligence.openai.service")

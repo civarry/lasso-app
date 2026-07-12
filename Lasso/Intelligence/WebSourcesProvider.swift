@@ -67,22 +67,57 @@ struct WebSourcesProvider {
             hits = w.hits + web + red
         }
 
-        // Tavily and SerpApi are independent paid connectors — each runs on its own. Primary: Tavily
-        // (best results), budget-paced, its hits lead; SerpApi is the reserve when Tavily is empty/off.
+        hits = Self.deduped(hits)
+
+        // Tavily: primary paid source (best results + snippets), budget-paced — its hits lead.
         if tavilyOn, SearchQuota.canUse("tavily") {
-            let tav = await tavily(query)
-            hits = tav + hits
-            if tav.isEmpty, serpOn, SearchQuota.canUse("serpapi") {
-                hits = await serpAPI(query) + hits
-            }
-        } else if serpOn, SearchQuota.canUse("serpapi") {
-            hits = await serpAPI(query) + hits
+            hits = Self.deduped(await tavily(query) + hits)
+        }
+        // SerpApi: a top-up, not a strict reserve — fill only when the deduped set is thin (so a
+        // configured key actually helps), still gated by its small monthly quota.
+        if serpOn, hits.count < Self.serpTopUpThreshold, SearchQuota.canUse("serpapi") {
+            let serp = await serpAPI(query)
+            hits = Self.deduped(hits + serp)
         }
 
         SearchCache.set(cacheKey, abstract: abstract, hits: hits)
         var result = Result(abstract: abstract)
         result.hits = hits
         return result
+    }
+
+    /// Below this many distinct hits, pull SerpApi to top up (rather than only when Tavily is empty).
+    private static let serpTopUpThreshold = 5
+
+    /// Collapse duplicate results across sources by normalized URL (host+path, case/scheme/trailing-slash
+    /// and query/fragment insensitive), falling back to normalized title when there's no URL. Keeps the
+    /// FIRST occurrence — sources are concatenated highest-authority-first, so first-seen wins — and
+    /// adopts a snippet from a later duplicate if the kept hit lacks one (only Tavily carries snippets).
+    static func deduped(_ hits: [Hit]) -> [Hit] {
+        var seen: [String: Int] = [:]     // key → index in out
+        var out: [Hit] = []
+        for hit in hits {
+            let key = dedupKey(hit)
+            if let idx = seen[key] {
+                if (out[idx].snippet?.isEmpty ?? true), let s = hit.snippet, !s.isEmpty {
+                    out[idx].snippet = s
+                }
+            } else {
+                seen[key] = out.count
+                out.append(hit)
+            }
+        }
+        return out
+    }
+
+    private static func dedupKey(_ hit: Hit) -> String {
+        if let url = hit.url, let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+           let host = comps.host {
+            let path = comps.path.hasSuffix("/") && comps.path.count > 1
+                ? String(comps.path.dropLast()) : comps.path
+            return (host + path).lowercased()
+        }
+        return hit.title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: SerpApi (free 250/mo, needs an API key — real Google results)

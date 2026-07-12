@@ -59,6 +59,32 @@ struct ChatContextBuilder: Sendable {
         var maxRetrievedChars: Int = 1_500
 
         static let `default` = Budget()
+
+        /// Right-size the budget to the active model's window, differently for local vs cloud:
+        /// - **Local** (Ollama/MLX/Apple) pays in device RAM — a big context balloons the KV cache (a 4B
+        ///   model at 25K tokens is ~3.6 GB). So local uses a modest **sweet spot** (~8K tokens) that
+        ///   comfortably holds the real load — a web page of evidence + a screenshot's OCR + several
+        ///   turns — without eating memory; never above the model's own window.
+        /// - **Cloud** pays only in tokens, so it uses a large slice of its (often huge) window, bounded
+        ///   only to keep a 1M-window model from costing a fortune per turn.
+        /// Char-approx (~4/token); floor keeps tiny models safe; reserves scale with the total.
+        static let localSweetSpotTokens = 8_192
+        static let cloudCeilingTokens = 128_000
+
+        static func forContextTokens(_ tokens: Int, isLocal: Bool) -> Budget {
+            let usableTokens = max(2_048, tokens - 1_200)           // leave room for the model's output
+            let budgetTokens = isLocal
+                ? min(localSweetSpotTokens, usableTokens)
+                : min(cloudCeilingTokens, Int(Double(usableTokens) * 0.6))
+            let total = max(4_000, budgetTokens * 4)                // chars
+            var b = Budget()
+            b.total = total
+            b.recentTurns = min(16, max(6, total / 2_000))
+            b.maxRetrievedChars = total * 15 / 100
+            b.maxSummaryChars = total * 15 / 100
+            b.maxDurableChars = 800
+            return b
+        }
     }
 
     /// One piece of conversation history, already mapped from a `ChatMessage` (role + the exact text

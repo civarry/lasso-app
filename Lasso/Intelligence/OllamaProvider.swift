@@ -6,15 +6,20 @@ import Foundation
 struct OllamaProvider: IntelligenceProvider {
     let model: String
     let baseURL: URL
+    /// Context window to request (`options.num_ctx`). Ollama otherwise loads only ~4096 tokens no matter
+    /// the model, so this is what actually unlocks a large-context local model. nil = Ollama's default.
+    let numCtx: Int?
 
     var name: String { "Ollama · \(model)" }
     let isAppleOnDevice = false
     let isLocal = true
 
     init(model: String = "qwen3:4b",
-         baseURL: URL = OllamaEndpoint.baseURL) {
+         baseURL: URL = OllamaEndpoint.baseURL,
+         numCtx: Int? = nil) {
         self.model = model
         self.baseURL = baseURL
+        self.numCtx = numCtx
     }
 
     private static let systemPrompt = """
@@ -130,6 +135,7 @@ struct OllamaProvider: IntelligenceProvider {
         async throws -> (text: String, calls: [AssembledToolCall]) {
         var bodyDict: [String: Any] = ["model": model, "stream": true, "messages": messages]
         if !tools.isEmpty { bodyDict["tools"] = tools }
+        if let numCtx { bodyDict["options"] = ["num_ctx": numCtx] }
         guard let body = try? JSONSerialization.data(withJSONObject: bodyDict) else {
             throw IntelligenceError.server("Couldn't encode the request.")
         }
@@ -217,7 +223,8 @@ struct OllamaProvider: IntelligenceProvider {
         var request = URLRequest(url: baseURL.appendingPathComponent("api/chat"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body = ChatRequest(model: model, stream: true, messages: messages)
+        let body = ChatRequest(model: model, stream: true, messages: messages,
+                               options: numCtx.map { ChatRequest.Options(num_ctx: $0) })
         request.httpBody = try JSONEncoder().encode(body)
         return request
     }
@@ -231,9 +238,11 @@ private struct ChatRequest: Encodable {
         let content: String
         var images: [String]? = nil   // base64 JPEGs, for multimodal models
     }
+    struct Options: Encodable { let num_ctx: Int }
     let model: String
     let stream: Bool
     let messages: [Message]
+    var options: Options? = nil
 }
 
 private struct ChatChunk: Decodable {

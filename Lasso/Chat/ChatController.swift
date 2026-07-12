@@ -58,7 +58,7 @@ final class ChatController {
     private static let webSearchKey = "chat.webSearchOn"
 
     /// The budgeted assembler — char-based, provider-agnostic. Shared (stateless) across sessions.
-    private let contextBuilder = ChatContextBuilder()
+    private var contextBuilder = ChatContextBuilder()
 
     private init() {
         // Restore persisted conversations (Application Support — survives app updates/reinstall). The
@@ -393,6 +393,11 @@ final class ChatController {
         let nativeVision = await intelligence.textModelSupportsVision()
         imageInputAvailable = intelligence.visionAvailable || nativeVision
         webConnectorsAvailable = Self.computeWebAvailable()
+        // Detect the active model's real context window (Ollama /api/show, cloud /v1/models) and scale
+        // the budget to it + the user's budget mode. Small local models stay safe; large windows get
+        // more history + evidence. Recomputed here since this runs on model switch, panel open, and focus.
+        await intelligence.refreshContextWindow()
+        contextBuilder.budget = intelligence.contextBudget
         await refreshModels()
     }
 
@@ -911,7 +916,7 @@ final class ChatController {
         }
         if let evidence = await evidenceResult {
             userText = appendEvidence(userText, evidence)
-            let hits = Array(evidence.hits.prefix(6))
+            let hits = Array(evidence.hits.prefix(min(evidenceLimits.hits, 8)))
             update(assistantID) { $0.sources = hits }
             if let searchStepID {
                 var text = "Found \(hits.count) source\(hits.count == 1 ? "" : "s")"
@@ -1534,12 +1539,12 @@ final class ChatController {
             completeStep(assistantID, stepID, text: "No web results")
             return "No results found for \"\(q)\"."
         }
-        let hits = Array(evidence.hits.prefix(6))
+        let hits = Array(evidence.hits.prefix(min(evidenceLimits.hits, 8)))
         update(assistantID) { $0.sources = hits }
         var summary = "Found \(hits.count) source\(hits.count == 1 ? "" : "s")"
         if let guess = evidence.bestGuess, !guess.isEmpty { summary = "Identified “\(guess)” · " + summary }
         completeStep(assistantID, stepID, text: summary, links: hits)
-        let body = Self.formatEvidence(evidence)
+        let body = Self.formatEvidence(evidence, limits: evidenceLimits)
         guard !body.isEmpty else { return "No useful results found." }
         // Carry the grounding + no-URL-dump rule with the tool result (the heuristic path gets it via
         // appendEvidence), so it isn't a standing rule in the base system prompt on non-search turns.
@@ -1553,7 +1558,7 @@ final class ChatController {
 
     /// Fold gathered evidence into the turn as grounding context for the model (heuristic path).
     private func appendEvidence(_ text: String, _ evidence: Evidence) -> String {
-        let body = Self.formatEvidence(evidence)
+        let body = Self.formatEvidence(evidence, limits: evidenceLimits)
         guard !body.isEmpty else { return text }
         return """
         \(text)
@@ -1579,7 +1584,18 @@ final class ChatController {
     }
 
     /// Render gathered evidence as plain text — shared by the heuristic fold-in and the tool result.
-    private static func formatEvidence(_ evidence: Evidence) -> String {
+    /// How much grounding evidence to feed the model — scales with the context budget so a large cloud
+    /// window gets more/longer sources while a small local model stays lean and can't be overrun.
+    struct EvidenceLimits { let hits: Int; let snippet: Int; let abstract: Int }
+    var evidenceLimits: EvidenceLimits {
+        switch contextBuilder.budget.total {
+        case 40_000...: return EvidenceLimits(hits: 10, snippet: 600, abstract: 1_200)
+        case 24_000...: return EvidenceLimits(hits: 8, snippet: 420, abstract: 800)
+        default:        return EvidenceLimits(hits: 6, snippet: 280, abstract: 400)
+        }
+    }
+
+    private static func formatEvidence(_ evidence: Evidence, limits: EvidenceLimits) -> String {
         var lines: [String] = []
         if let g = evidence.bestGuess, !g.isEmpty {
             lines.append("Likely identification (reverse-image search): \(g)")
@@ -1587,16 +1603,19 @@ final class ChatController {
         if !evidence.entities.isEmpty {
             lines.append("Related entities: \(evidence.entities.prefix(6).joined(separator: ", "))")
         }
-        if let a = evidence.abstract, !a.isEmpty { lines.append("Reference summary: \(a)") }
+        // Truncate the abstract — the one previously-unbounded component of the block.
+        if let a = evidence.abstract, !a.isEmpty {
+            lines.append("Reference summary: \(a.prefix(limits.abstract))")
+        }
         if !evidence.hits.isEmpty {
             // Include short page extracts (snippets) where available, not just titles, so the model
             // grounds on facts.
-            let src = evidence.hits.prefix(6).map { hit -> String in
+            let src = evidence.hits.prefix(limits.hits).map { hit -> String in
                 var line = "- \(hit.title)"
                 if let url = hit.url { line += " (\(url.absoluteString))" }
                 if let snippet = hit.snippet?.trimmingCharacters(in: .whitespacesAndNewlines),
                    !snippet.isEmpty {
-                    line += "\n  \(snippet.prefix(280))"
+                    line += "\n  \(snippet.prefix(limits.snippet))"
                 }
                 return line
             }.joined(separator: "\n")

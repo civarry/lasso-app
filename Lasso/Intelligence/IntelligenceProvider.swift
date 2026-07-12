@@ -507,6 +507,105 @@ final class IntelligenceCoordinator {
         (PrivacyMode.localOnly && !preferred.isLocalKind) ? .onDevice : preferred
     }
 
+    /// Context length (tokens) detected at runtime for the active provider, when we could read it:
+    /// Ollama's `/api/show` and OpenAI-compatible `/v1/models` (Groq/OpenRouter expose it). Refreshed by
+    /// `refreshContextWindow()`; nil until then or when the API doesn't expose it.
+    private(set) var ollamaContextTokens: Int?
+    private(set) var cloudContextTokens: Int?
+
+    /// Approximate context-window length (in tokens) of the active text model, so the chat budget scales
+    /// to it. MLX reads the model's real `max_position_embeddings`; Ollama/cloud use the runtime-detected
+    /// value when available, else a conservative per-family default.
+    var effectiveContextTokens: Int {
+        switch effectivePreferred {
+        case .mlx:      return MLXProvider.maxSequenceLength(mlxModel)
+        case .onDevice: return 4_096                               // Apple on-device FM — small window
+        case .ollama:   return ollamaContextTokens ?? 8_192
+        case .openAICompatible:
+            // 4-tier: manual override → detected (/v1/models) → inferred from model name → conservative.
+            if openAIContextOverride > 0 { return openAIContextOverride }
+            return cloudContextTokens ?? Self.inferContextFromModelName(openAIModel) ?? 32_000
+        case .anthropic:
+            return cloudContextTokens ?? Self.inferContextFromModelName(anthropicModel) ?? 200_000
+        }
+    }
+
+    /// Manual context-window override (tokens) for the active OpenAI-compatible service; 0 = Auto. Set in
+    /// Settings for a custom gateway (e.g. Claude 200K/1M) whose `/v1/models` doesn't advertise the window.
+    var openAIContextOverride: Int {
+        UserDefaults.standard.integer(forKey: "intelligence.openai.svc.\(activeOpenAIService).context")
+    }
+
+    /// Best-effort context window from a model id when the endpoint doesn't report one — covers the
+    /// common families so a custom gateway serving Claude/GPT/Llama isn't wrongly clamped to the default.
+    static func inferContextFromModelName(_ model: String) -> Int? {
+        let m = model.lowercased()
+        if m.contains("1m") { return 1_000_000 }
+        if m.contains("gemini") { return 1_000_000 }
+        if m.contains("claude") { return 200_000 }
+        if m.contains("llama-3.1") || m.contains("llama-3.3") || m.contains("llama3.1") { return 131_072 }
+        if m.contains("gpt-4o") || m.contains("gpt-4.1") || m.contains("gpt-4-turbo")
+            || m.hasPrefix("o1") || m.hasPrefix("o3") || m.contains("gpt-4-1106") { return 128_000 }
+        if m.contains("mixtral") || m.contains("mistral") { return 32_000 }
+        return nil
+    }
+
+    /// The chat context budget for the active model — local uses a RAM-safe sweet spot, cloud a large
+    /// slice of its window. Single source of truth, shared by the builder and the Ollama `num_ctx`.
+    var contextBudget: ChatContextBuilder.Budget {
+        .forContextTokens(effectiveContextTokens, isLocal: effectivePreferred.isLocalKind)
+    }
+
+    /// `num_ctx` to request from Ollama = the input budget (tokens) + a little output headroom, never
+    /// above the model's real window. This is what actually lifts Ollama off its ~4096 default — kept
+    /// modest so the KV cache doesn't eat device RAM.
+    var ollamaNumCtx: Int {
+        min(effectiveContextTokens, contextBudget.total / 4 + 1_200)
+    }
+
+    /// Detect the active model's real context window (Ollama `/api/show`, cloud `/v1/models`) and cache
+    /// it. Best-effort: any failure leaves the conservative default in place. Never runs off-device work
+    /// in local-only mode beyond the local Ollama server.
+    func refreshContextWindow() async {
+        switch effectivePreferred {
+        case .ollama:
+            guard await OllamaEndpoint.isReachable(OllamaEndpoint.baseURL, maxAge: 30) else { return }
+            if let c = await OllamaEndpoint.contextLength(await resolvedTextModel()) { ollamaContextTokens = c }
+        case .openAICompatible:
+            guard !PrivacyMode.localOnly else { return }
+            if let c = await fetchOpenAIContextLength() { cloudContextTokens = c }
+        default:
+            break
+        }
+    }
+
+    /// GET `{baseURL}/models` and read the active model's context length where the provider exposes it
+    /// (Groq `context_window`, OpenRouter `context_length` / `top_provider.context_length`).
+    private func fetchOpenAIContextLength() async -> Int? {
+        guard let base = URL(string: openAIBaseURL) else { return nil }
+        let key = Keychain.getMigrating("openai.apiKey", legacyDefaultsKey: "openai.apiKey") ?? ""
+        var request = URLRequest(url: base.appendingPathComponent("models"))
+        if !key.isEmpty { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
+        request.timeoutInterval = 5
+        guard let (data, resp) = try? await URLSession.shared.data(for: request),
+              (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return Self.parseOpenAIContextLength(data, model: openAIModel)
+    }
+
+    /// Pull a context length out of an OpenAI-compatible `/v1/models` response for `model`. Internal for tests.
+    static func parseOpenAIContextLength(_ data: Data, model: String) -> Int? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let list = json["data"] as? [[String: Any]] else { return nil }
+        guard let entry = list.first(where: { ($0["id"] as? String) == model }) ?? list.first else { return nil }
+        for key in ["context_window", "context_length", "max_context_length", "max_input_tokens"] {
+            if let n = entry[key] as? Int, n > 0 { return n }
+        }
+        if let tp = entry["top_provider"] as? [String: Any], let n = tp["context_length"] as? Int, n > 0 {
+            return n
+        }
+        return nil
+    }
+
     /// True when the current config actually uses a local Ollama model (for text or image) — so we
     /// only probe / auto-start Ollama when it's relevant (no noise for cloud-only setups).
     var usesOllama: Bool {
@@ -533,7 +632,7 @@ final class IntelligenceCoordinator {
         case .onDevice:
             return onDevice
         case .ollama:
-            return OllamaProvider(model: await resolvedTextModel())
+            return OllamaProvider(model: await resolvedTextModel(), numCtx: ollamaNumCtx)
         case .mlx:
             return MLXProvider(modelID: mlxModel.isEmpty ? MLXProvider.defaultModelID : mlxModel)
         case .openAICompatible:

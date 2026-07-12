@@ -103,6 +103,32 @@ enum OllamaEndpoint {
         return ok
     }
 
+    /// The model's max context length (tokens) from `/api/show` (`model_info.<arch>.context_length`), or
+    /// nil if unreachable/unknown. This is the ceiling we may request via `num_ctx` — without it Ollama
+    /// loads only ~4096 tokens regardless of the model's real window (verified against qwen3:4b).
+    static func contextLength(_ model: String, baseURL: URL = OllamaEndpoint.baseURL) async -> Int? {
+        guard !model.isEmpty,
+              let body = try? JSONSerialization.data(withJSONObject: ["model": model]) else { return nil }
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/show"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        request.timeoutInterval = 4
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return parseContextLength(data)
+    }
+
+    /// Pull `<arch>.context_length` out of an `/api/show` response body. Internal for tests.
+    static func parseContextLength(_ data: Data) -> Int? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let info = json["model_info"] as? [String: Any] else { return nil }
+        for (key, value) in info where key.hasSuffix(".context_length") {
+            if let n = value as? Int, n > 0 { return n }
+        }
+        return nil
+    }
+
     /// User-facing connection status for Settings.
     struct Status: Sendable { let ok: Bool; let url: URL; let label: String }
 
