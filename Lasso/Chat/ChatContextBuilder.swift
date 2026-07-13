@@ -68,17 +68,30 @@ struct ChatContextBuilder: Sendable {
         /// - **Cloud** pays only in tokens, so it uses a large slice of its (often huge) window, bounded
         ///   only to keep a 1M-window model from costing a fortune per turn.
         /// Char-approx (~4/token); floor keeps tiny models safe; reserves scale with the total.
-        static let localSweetSpotTokens = 8_192
         static let cloudCeilingTokens = 128_000
 
         /// Tokens reserved for the model's reply so input + output fit the window (matters on small local
         /// models — a long answer must not truncate). Also the Ollama `num_ctx` output headroom.
         static let outputReserveTokens = 2_048
 
-        static func forContextTokens(_ tokens: Int, isLocal: Bool) -> Budget {
+        /// Local sweet spot (input tokens) by model parameter count — a small model at a big window
+        /// shouldn't get a huge, RAM-hungry context it can't use well; a bigger model earns more. Unknown
+        /// size → the safe middle. Always capped by the model's real window in `forContextTokens`.
+        static func localSweetSpot(paramsBillions p: Double?) -> Int {
+            guard let p else { return 8_192 }
+            switch p {
+            case ..<1.5: return 4_096      // 0.5–1B
+            case ..<5:   return 8_192      // 2–4B (incl. Apple's ~3B)
+            case ..<15:  return 12_288     // 7–14B
+            case ..<40:  return 16_384     // 20–32B
+            default:     return 24_576     // 70B+
+            }
+        }
+
+        static func forContextTokens(_ tokens: Int, isLocal: Bool, localSweetSpot: Int = 8_192) -> Budget {
             let usableTokens = max(2_048, tokens - outputReserveTokens)   // leave room for the model's reply
             let budgetTokens = isLocal
-                ? min(localSweetSpotTokens, usableTokens)
+                ? min(localSweetSpot, usableTokens)
                 : min(cloudCeilingTokens, Int(Double(usableTokens) * 0.6))
             let total = max(4_000, budgetTokens * 4)                // chars
             var b = Budget()

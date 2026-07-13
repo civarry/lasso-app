@@ -103,20 +103,39 @@ enum OllamaEndpoint {
         return ok
     }
 
-    /// The model's max context length (tokens) from `/api/show` (`model_info.<arch>.context_length`), or
-    /// nil if unreachable/unknown. This is the ceiling we may request via `num_ctx` — without it Ollama
-    /// loads only ~4096 tokens regardless of the model's real window (verified against qwen3:4b).
-    static func contextLength(_ model: String, baseURL: URL = OllamaEndpoint.baseURL) async -> Int? {
+    /// One `/api/show` call → the model's real context window (tokens) and its parameter count (billions),
+    /// both nil when unreachable/unknown. Context is the ceiling we may request via `num_ctx` (without it
+    /// Ollama loads only ~4096 regardless of the model); params size the local budget by model tier.
+    static func modelInfo(_ model: String, baseURL: URL = OllamaEndpoint.baseURL)
+        async -> (context: Int?, paramsBillions: Double?) {
         guard !model.isEmpty,
-              let body = try? JSONSerialization.data(withJSONObject: ["model": model]) else { return nil }
+              let body = try? JSONSerialization.data(withJSONObject: ["model": model]) else { return (nil, nil) }
         var request = URLRequest(url: baseURL.appendingPathComponent("api/show"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
         request.timeoutInterval = 4
         guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-        return parseContextLength(data)
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return (nil, nil) }
+        return (parseContextLength(data), parseParameterSize(data))
+    }
+
+    /// Parameter count in billions from an `/api/show` body (`details.parameter_size` like "4.0B", or
+    /// `model_info.general.parameter_count`). Internal for tests.
+    static func parseParameterSize(_ data: Data) -> Double? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        if let details = json["details"] as? [String: Any], let ps = details["parameter_size"] as? String {
+            let digits = ps.lowercased().replacingOccurrences(of: "b", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            if let n = Double(digits), n > 0 { return n }
+        }
+        if let info = json["model_info"] as? [String: Any] {
+            for (k, v) in info where k.hasSuffix("parameter_count") {
+                if let n = v as? Int, n > 0 { return Double(n) / 1_000_000_000 }
+                if let n = v as? Double, n > 0 { return n / 1_000_000_000 }
+            }
+        }
+        return nil
     }
 
     /// Pull `<arch>.context_length` out of an `/api/show` response body. Internal for tests.

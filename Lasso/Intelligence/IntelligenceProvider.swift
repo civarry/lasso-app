@@ -511,6 +511,7 @@ final class IntelligenceCoordinator {
     /// Ollama's `/api/show` and OpenAI-compatible `/v1/models` (Groq/OpenRouter expose it). Refreshed by
     /// `refreshContextWindow()`; nil until then or when the API doesn't expose it.
     private(set) var ollamaContextTokens: Int?
+    private(set) var ollamaParamsBillions: Double?
     private(set) var cloudContextTokens: Int?
 
     /// Approximate context-window length (in tokens) of the active text model, so the chat budget scales
@@ -550,10 +551,34 @@ final class IntelligenceCoordinator {
         return nil
     }
 
-    /// The chat context budget for the active model — local uses a RAM-safe sweet spot, cloud a large
-    /// slice of its window. Single source of truth, shared by the builder and the Ollama `num_ctx`.
+    /// Active model's parameter count (billions), when known — Ollama from `/api/show`, MLX from the
+    /// model id, Apple's on-device FM ~3B. Sizes the local budget by model tier (a 0.6B model shouldn't
+    /// get a huge context even on a big window).
+    var activeParamsBillions: Double? {
+        switch effectivePreferred {
+        case .mlx:      return Self.paramsFromModelName(mlxModel)
+        case .ollama:   return ollamaParamsBillions
+        case .onDevice: return 3.0
+        default:        return nil
+        }
+    }
+
+    /// Parse a parameter count in billions out of a model id ("Qwen2.5-7B" → 7, "Qwen3-0.6B" → 0.6).
+    static func paramsFromModelName(_ name: String) -> Double? {
+        let lower = name.lowercased()
+        guard let re = try? NSRegularExpression(pattern: #"(\d+(?:\.\d+)?)\s*b\b"#) else { return nil }
+        let ns = lower as NSString
+        guard let m = re.firstMatch(in: lower, range: NSRange(location: 0, length: ns.length)),
+              let r = Range(m.range(at: 1), in: lower), let n = Double(lower[r]), n > 0 else { return nil }
+        return n
+    }
+
+    /// The chat context budget for the active model — local uses a param-sized, RAM-safe sweet spot
+    /// (capped by the real window), cloud a large slice of its window. Single source of truth, shared by
+    /// the builder and the Ollama `num_ctx`.
     var contextBudget: ChatContextBuilder.Budget {
-        .forContextTokens(effectiveContextTokens, isLocal: effectivePreferred.isLocalKind)
+        .forContextTokens(effectiveContextTokens, isLocal: effectivePreferred.isLocalKind,
+                          localSweetSpot: ChatContextBuilder.Budget.localSweetSpot(paramsBillions: activeParamsBillions))
     }
 
     /// `num_ctx` to request from Ollama = the input budget (tokens) + a little output headroom, never
@@ -570,7 +595,9 @@ final class IntelligenceCoordinator {
         switch effectivePreferred {
         case .ollama:
             guard await OllamaEndpoint.isReachable(OllamaEndpoint.baseURL, maxAge: 30) else { return }
-            if let c = await OllamaEndpoint.contextLength(await resolvedTextModel()) { ollamaContextTokens = c }
+            let info = await OllamaEndpoint.modelInfo(await resolvedTextModel())
+            if let c = info.context { ollamaContextTokens = c }
+            if let p = info.paramsBillions { ollamaParamsBillions = p }
         case .openAICompatible:
             guard !PrivacyMode.localOnly else { return }
             if let c = await fetchOpenAIContextLength() { cloudContextTokens = c }

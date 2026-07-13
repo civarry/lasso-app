@@ -331,4 +331,29 @@ struct LassoTests {
         #expect(IntelligenceCoordinator.inferContextFromModelName("llama-3.1-8b-instant") == 131_072)
         #expect(IntelligenceCoordinator.inferContextFromModelName("some-unknown-model") == nil)
     }
+
+    /// Parameter count from a model id (MLX) and an Ollama /api/show body, driving the size tier.
+    @MainActor
+    @Test func parameterSizeDetection() {
+        #expect(IntelligenceCoordinator.paramsFromModelName("mlx-community/Qwen2.5-7B-Instruct-4bit") == 7)
+        #expect(IntelligenceCoordinator.paramsFromModelName("Qwen3-0.6B-4bit") == 0.6)
+        #expect(IntelligenceCoordinator.paramsFromModelName("llama-3.1-8b") == 8)
+        #expect(IntelligenceCoordinator.paramsFromModelName("nomic-embed-text") == nil)
+        let show = Data(#"{"details":{"parameter_size":"4.0B","quantization_level":"Q4_K_M"}}"#.utf8)
+        #expect(OllamaEndpoint.parseParameterSize(show) == 4.0)
+    }
+
+    /// Local sweet spot scales by parameter tier — a 0.6B model doesn't get a big RAM-hungry context; a
+    /// 7B earns more; unknown size uses the safe middle.
+    @Test func localSweetSpotByParamTier() {
+        #expect(ChatContextBuilder.Budget.localSweetSpot(paramsBillions: 0.6) == 4_096)
+        #expect(ChatContextBuilder.Budget.localSweetSpot(paramsBillions: 3) == 8_192)   // Apple ~3B tier
+        #expect(ChatContextBuilder.Budget.localSweetSpot(paramsBillions: 7) == 12_288)
+        #expect(ChatContextBuilder.Budget.localSweetSpot(paramsBillions: 32) == 16_384)
+        #expect(ChatContextBuilder.Budget.localSweetSpot(paramsBillions: 70) == 24_576)
+        #expect(ChatContextBuilder.Budget.localSweetSpot(paramsBillions: nil) == 8_192)
+        // A 0.6B model with a huge window is still capped to its small tier (RAM safety).
+        let tiny = ChatContextBuilder.Budget.forContextTokens(262_144, isLocal: true, localSweetSpot: 4_096)
+        #expect(tiny.total == 4_096 * 4)
+    }
 }
