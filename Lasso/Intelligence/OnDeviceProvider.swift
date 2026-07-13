@@ -13,6 +13,12 @@ struct OnDeviceProvider: IntelligenceProvider {
     Be concise, accurate, and do not invent facts that are not present in the provided context.
     """
 
+    /// Cap the reply length so input + output stay inside Apple's ~4096-token window. An *unbounded*
+    /// response grows until it overflows and the session hard-stops with `.exceededContextWindowSize`
+    /// (the "it just cuts off" behavior) — this makes it end cleanly at a sane length instead. Paired
+    /// with the chat input budget (which caps input to fit the window), input + output ≤ 4096.
+    private static let replyOptions = GenerationOptions(maximumResponseTokens: 2_048)
+
     func checkAvailability() async -> Bool {
         if case .available = SystemLanguageModel.default.availability { return true }
         return false
@@ -130,7 +136,7 @@ struct OnDeviceProvider: IntelligenceProvider {
                     }
                     let session = makeSession()
                     var emitted = ""
-                    for try await partial in session.streamResponse(to: prompt) {
+                    for try await partial in session.streamResponse(to: prompt, options: Self.replyOptions) {
                         let snapshot = partial.content
                         if snapshot.count >= emitted.count, snapshot.hasPrefix(emitted) {
                             let delta = String(snapshot.dropFirst(emitted.count))
