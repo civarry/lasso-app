@@ -29,3 +29,6 @@ dist/
 
 # Local scratch test plans (not product)
 PHASE2_TEST.md
+
+# Local scratch assets / exports (not product)
+/store/

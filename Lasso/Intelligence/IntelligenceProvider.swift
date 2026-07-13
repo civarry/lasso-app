@@ -560,7 +560,7 @@ final class IntelligenceCoordinator {
     /// above the model's real window. This is what actually lifts Ollama off its ~4096 default — kept
     /// modest so the KV cache doesn't eat device RAM.
     var ollamaNumCtx: Int {
-        min(effectiveContextTokens, contextBudget.total / 4 + 1_200)
+        min(effectiveContextTokens, contextBudget.total / 4 + ChatContextBuilder.Budget.outputReserveTokens)
     }
 
     /// Detect the active model's real context window (Ollama `/api/show`, cloud `/v1/models`) and cache

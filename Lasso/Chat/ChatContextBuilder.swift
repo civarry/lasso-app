@@ -71,8 +71,12 @@ struct ChatContextBuilder: Sendable {
         static let localSweetSpotTokens = 8_192
         static let cloudCeilingTokens = 128_000
 
+        /// Tokens reserved for the model's reply so input + output fit the window (matters on small local
+        /// models — a long answer must not truncate). Also the Ollama `num_ctx` output headroom.
+        static let outputReserveTokens = 2_048
+
         static func forContextTokens(_ tokens: Int, isLocal: Bool) -> Budget {
-            let usableTokens = max(2_048, tokens - 1_200)           // leave room for the model's output
+            let usableTokens = max(2_048, tokens - outputReserveTokens)   // leave room for the model's reply
             let budgetTokens = isLocal
                 ? min(localSweetSpotTokens, usableTokens)
                 : min(cloudCeilingTokens, Int(Double(usableTokens) * 0.6))
