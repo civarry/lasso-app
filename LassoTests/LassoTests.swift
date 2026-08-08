@@ -235,6 +235,11 @@ struct LassoTests {
             "Going back to Lasso, what were we discussing before?",
             "What's our current memory strategy?",
             "Earlier we talked about context budgeting, what did we settle on?",
+            // Regression: this exact phrasing missed every marker in the first pass — a real live-app
+            // run asked it, got zero recall-note injection, and answered by listing the assistant's own
+            // early suggestions as "decisions" instead of the two things actually decided.
+            "What decisions have we made so far?",
+            "What decisions did we make?",
         ]
         for q in recall {
             #expect(ChatController.hasRecallIntent(q), "expected recall intent for: \(q)")

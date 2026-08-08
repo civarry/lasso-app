@@ -171,6 +171,7 @@ enum MemoryCore {
     static func hasRecallIntent(_ text: String) -> Bool {
         let t = normalizeForIntent(text)
         let markers = ["what did we decide", "what have we decided", "what did we discuss",
+                       "decisions have we made", "decisions did we make", "decisions have we come to",
                        "what were the", "what was the", "what did i say", "what did you say",
                        "earlier we", "earlier i said", "before we", "what's our current",
                        "whats our current", "what is our current", "what have we discussed",

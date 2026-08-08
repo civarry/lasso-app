@@ -1514,6 +1514,7 @@ final class ChatController {
     nonisolated static func hasRecallIntent(_ text: String) -> Bool {
         let t = normalizeForIntent(text)
         let markers = ["what did we decide", "what have we decided", "what did we discuss",
+                       "decisions have we made", "decisions did we make", "decisions have we come to",
                        "what were the", "what was the", "what did i say", "what did you say",
                        "earlier we", "earlier i said", "before we", "what's our current",
                        "whats our current", "what is our current", "what have we discussed",
@@ -1763,7 +1764,7 @@ final class ChatController {
             guard coveredCount >= session.summarizedTurnCount else { return }
             session.memory = updated
             session.summarizedTurnCount = coveredCount
-            Log.chat.notice("memory updated: covers \(coveredCount, privacy: .public) turns, facts=\(updated.durableFacts.count, privacy: .public) topics=\(updated.topicTrace.count, privacy: .public) chars")
+            Log.chat.notice("memory updated: covers \(coveredCount, privacy: .public) turns, facts=\(updated.durableFacts.count, privacy: .public) decisions=\(updated.decisions.count, privacy: .public) topics=\(updated.topicTrace.count, privacy: .public) chars")
             self.persist(session)   // memory/title changed — persist the source of truth
         }
     }
