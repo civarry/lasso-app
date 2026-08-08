@@ -10,12 +10,20 @@ struct ConversationMemory: Sendable {
     /// Stable facts about the user and their goal/task/constraints (name, role, what they're building,
     /// standing preferences). Short, additive, deduped. PROTECTED — never clamped away.
     var durableFacts: String = ""
-    /// Running notes on what's been discussed: current topic sharp, older topics condensed to a line.
-    /// This is the churning track and the one the budget clamps.
+    /// Settled choices, each tagged with a status (active / rejected / superseded-by). PROTECTED, same
+    /// as durable facts — a decision is exactly the kind of thing that must survive compression, and
+    /// must never be confused with something merely *suggested*. Kept separate from `durableFacts` so
+    /// the summarizer prompt can hold the "suggestion ≠ decision" rule against a narrower target: only
+    /// promote something here when the user explicitly chose it ("let's use X", "we'll do X", "don't do
+    /// X") — never from the assistant floating an option ("you could try X", "one option is X").
+    var decisions: String = ""
+    /// Current working state: active topic/goal and recent direction, condensing older ground to a
+    /// line. This is the churning track and the one the budget clamps.
     var topicTrace: String = ""
 
     var isEmpty: Bool {
         durableFacts.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && decisions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && topicTrace.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
@@ -54,6 +62,9 @@ struct ChatContextBuilder: Sendable {
         /// Reserve for durable facts. Small and PROTECTED — these are never subject to the topic clamp,
         /// so a fact stated at turn 1 survives no matter how much recent chatter accumulates.
         var maxDurableChars: Int = 800
+        /// Reserve for decisions. Same protection as durable facts, and deliberately the same size —
+        /// settled choices are rare and short; there's no reason to budget more for them than for facts.
+        var maxDecisionChars: Int = 800
         /// Reserve for retrieved older exchanges (verbatim). Bounded so semantic recall can't crowd out
         /// the recent window on a small model. Whole chunks are fit within it, most-relevant first.
         var maxRetrievedChars: Int = 1_500
@@ -100,6 +111,7 @@ struct ChatContextBuilder: Sendable {
             b.maxRetrievedChars = total * 15 / 100
             b.maxSummaryChars = total * 15 / 100
             b.maxDurableChars = 800
+            b.maxDecisionChars = 800
             return b
         }
     }
@@ -148,20 +160,27 @@ struct ChatContextBuilder: Sendable {
         //    first), so the most recently learned facts survive; the topic trace is tail-clamped to its
         //    reserve (latest topic state matters most). Durable facts are NOT subject to the topic clamp.
         let facts = memory.durableFacts.trimmingCharacters(in: .whitespacesAndNewlines)
+        let decisions = memory.decisions.trimmingCharacters(in: .whitespacesAndNewlines)
         let topics = memory.topicTrace.trimmingCharacters(in: .whitespacesAndNewlines)
-        let haveMemory = (!facts.isEmpty || !topics.isEmpty) && !overflow.isEmpty
+        let haveMemory = (!facts.isEmpty || !decisions.isEmpty || !topics.isEmpty) && !overflow.isEmpty
         let factsBlock = haveMemory ? Self.clampHead(facts, to: budget.maxDurableChars) : ""
+        let decisionsBlock = haveMemory ? Self.clampHead(decisions, to: budget.maxDecisionChars) : ""
         let topicsBlock = haveMemory ? Self.clamp(topics, to: budget.maxSummaryChars) : ""
 
-        // Render the two tracks into one labeled system block, each clearly sub-labeled so even a tiny
-        // model treats them as background memory (not new instructions). Empty tracks are omitted.
+        // Render the three tracks into one labeled system block, each clearly sub-labeled so even a
+        // tiny model treats them as background memory (not new instructions). Empty tracks are omitted.
         func memoryTurn() -> ChatTurn? {
             guard haveMemory else { return nil }
             var body = ""
             if !factsBlock.isEmpty { body += "Durable facts about the user:\n\(factsBlock)" }
+            if !decisionsBlock.isEmpty {
+                if !body.isEmpty { body += "\n\n" }
+                body += "Decisions made so far (status noted per line — a suggestion the user hasn't " +
+                        "confirmed is NOT a decision and won't appear here):\n\(decisionsBlock)"
+            }
             if !topicsBlock.isEmpty {
                 if !body.isEmpty { body += "\n\n" }
-                body += "What's been discussed:\n\(topicsBlock)"
+                body += "Current state of the conversation:\n\(topicsBlock)"
             }
             guard !body.isEmpty else { return nil }
             return .init(role: .system, text: Self.summaryPreamble + body)

@@ -118,6 +118,139 @@ struct LassoTests {
         #expect(parsed.topicTrace == "new topic only")
     }
 
+    // MARK: - Memory update sanity gate (rejects ungrounded / hallucinated summarizer output)
+
+    /// New content that shares real vocabulary with the actual exchange is accepted.
+    @Test func groundedUpdateIsAccepted() {
+        let prior = ConversationMemory()
+        let updated = ConversationMemory(
+            durableFacts: "- The user is building Lasso, a local-first macOS assistant.",
+            decisions: "", topicTrace: "Discussing Lasso's chat architecture.")
+        let transcript = "User: I'm building Lasso, a local-first AI assistant for macOS."
+        #expect(ChatController.isNewContentGrounded(updated: updated, prior: prior, transcript: transcript))
+    }
+
+    /// New content built from vocabulary that appears nowhere in the real exchange (or prior memory) —
+    /// exactly what a hallucinating summarizer produces — is rejected. This is the regression test for
+    /// the compounding-drift bug: fabricated "advanced NLP techniques / machine learning / feedback
+    /// loop" content sharing zero overlap with a conversation that was actually about Lasso/macOS.
+    @Test func fabricatedUpdateIsRejected() {
+        let prior = ConversationMemory(durableFacts: "- The user is building Lasso for macOS.")
+        let updated = ConversationMemory(
+            durableFacts: "- The user is building Lasso for macOS.\n"
+                + "- Implement advanced NLP techniques.\n- Use machine learning for intent detection.\n"
+                + "- Incorporate a user feedback loop.",
+            decisions: "- Develop algorithms for response generation. — status: active",
+            topicTrace: "Personalization based on user interactions.")
+        let transcript = "User: The three most important things are adaptive memory, context budgeting, "
+            + "and conversation state."
+        #expect(!ChatController.isNewContentGrounded(updated: updated, prior: prior, transcript: transcript))
+    }
+
+    /// Empty new content (nothing changed) is trivially accepted — nothing to ground.
+    @Test func noNewContentIsTriviallyGrounded() {
+        let prior = ConversationMemory(durableFacts: "- name is Sam")
+        let updated = ConversationMemory(durableFacts: "- name is Sam")
+        #expect(ChatController.isNewContentGrounded(updated: updated, prior: prior, transcript: "irrelevant"))
+    }
+
+    // MARK: - ConversationMemory: DECISIONS track (fact vs. suggestion vs. decision)
+
+    /// Decisions get the same protection as durable facts: they must survive a topic-trace clamp intact.
+    @Test func decisionsSurviveTopicOverflow() {
+        var builder = ChatContextBuilder()
+        builder.budget.maxSummaryChars = 100   // tiny topic reserve to force the clamp
+        builder.budget.maxDecisionChars = 800
+
+        let memory = ConversationMemory(
+            durableFacts: "- name is Sam",
+            decisions: "- Use structured summaries, not semantic retrieval. — status: active",
+            topicTrace: "Discussed apples. " + String(repeating: "Discussed oranges in detail. ", count: 20))
+        let history = (1...8).map { userTurn("msg \($0)") }
+
+        let out = builder.build(systemPrompt: "SYS", memory: memory, history: history,
+                                currentUserText: "now what?", currentImageBase64s: [])
+
+        let memoryBlock = out.turns.first { $0.role == .system && $0.text.contains("structured summaries") }
+        #expect(memoryBlock != nil)
+        #expect(memoryBlock?.text.contains("status: active") == true)
+        #expect(memoryBlock?.text.contains("Discussed apples") == false)   // topic track still clamped
+    }
+
+    /// A well-formed three-section reply (FACTS/DECISIONS/TOPICS) parses all three tracks, and the
+    /// decisions text is never mistaken for topic notes.
+    @Test func wellFormedSummaryParsesThreeTracks() {
+        let prior = ConversationMemory()
+        let output = """
+        FACTS:
+        - The user's name is Sam.
+        DECISIONS:
+        - Use structured summaries for chat memory. — status: active
+        - Semantic retrieval for old turns. — status: rejected
+        TOPICS:
+        Currently discussing the chat context pipeline.
+        """
+        let parsed = ChatController.parseMemory(from: output, prior: prior)
+        #expect(parsed.durableFacts.contains("name is Sam"))
+        #expect(parsed.decisions.contains("structured summaries"))
+        #expect(parsed.decisions.contains("status: rejected"))
+        #expect(parsed.topicTrace.contains("chat context pipeline"))
+        #expect(!parsed.topicTrace.contains("DECISIONS"))
+        #expect(!parsed.decisions.contains("TOPICS"))
+    }
+
+    /// Partial output (only TOPICS, no DECISIONS label) must not wipe a previously recorded decision —
+    /// same "carry forward what's missing" rule the facts track already relies on.
+    @Test func partialSummaryPreservesPriorDecisions() {
+        let prior = ConversationMemory(decisions: "- Use structured summaries. — status: active", topicTrace: "old")
+        let parsed = ChatController.parseMemory(from: "TOPICS:\nnew topic only", prior: prior)
+        #expect(parsed.decisions == "- Use structured summaries. — status: active")
+        #expect(parsed.topicTrace == "new topic only")
+    }
+
+    /// Labels in a non-default order (model reorders sections) still slice cleanly into three tracks —
+    /// the parser sorts by label position rather than assuming FACTS/DECISIONS/TOPICS order.
+    @Test func reorderedLabelsStillParseCorrectly() {
+        let prior = ConversationMemory()
+        let output = """
+        TOPICS:
+        Discussing memory architecture.
+        DECISIONS:
+        - Ship the DECISIONS track. — status: active
+        FACTS:
+        - The user is building Lasso.
+        """
+        let parsed = ChatController.parseMemory(from: output, prior: prior)
+        #expect(parsed.durableFacts.contains("building Lasso"))
+        #expect(parsed.decisions.contains("Ship the DECISIONS track"))
+        #expect(parsed.topicTrace.contains("memory architecture"))
+    }
+
+    /// The recall-intent heuristic that widens memory retrieval: meta-questions about the conversation's
+    /// own state should trigger it, ordinary fresh questions should not.
+    @Test func recallIntentDetectsMetaQuestionsOnly() {
+        let recall = [
+            "What did we decide?",
+            "what were the three things we identified as the priority?",
+            "Going back to Lasso, what were we discussing before?",
+            "What's our current memory strategy?",
+            "Earlier we talked about context budgeting, what did we settle on?",
+        ]
+        for q in recall {
+            #expect(ChatController.hasRecallIntent(q), "expected recall intent for: \(q)")
+        }
+
+        let fresh = [
+            "What's the difference between TCP and UDP?",
+            "Explain what a hash table is.",
+            "I like minimalist interfaces.",
+            "Give me three ideas for a desktop productivity app.",
+        ]
+        for q in fresh {
+            #expect(!ChatController.hasRecallIntent(q), "did not expect recall intent for: \(q)")
+        }
+    }
+
     // MARK: - Web search: context building, reply parsing, routing (0.7.3)
 
     private func msg(_ role: ChatMessage.Role, _ text: String) -> ChatMessage {

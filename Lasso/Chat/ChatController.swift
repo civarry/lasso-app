@@ -576,7 +576,8 @@ final class ChatController {
     }
 
     /// Lowercased, trimmed, with surrounding whitespace/punctuation stripped — for whole-message matching.
-    private static func normalizeForIntent(_ s: String) -> String {
+    /// `nonisolated`: pure string transform, safe to call from off-main-actor contexts (e.g. tests).
+    private nonisolated static func normalizeForIntent(_ s: String) -> String {
         s.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: " \t\n.!?,…"))
     }
 
@@ -1503,6 +1504,24 @@ final class ChatController {
             .trimmingCharacters(in: CharacterSet(charactersIn: " ?.!,"))
     }
 
+    /// Whether the user is asking to recall the conversation's own state ("what did we decide",
+    /// "what were the three things") rather than asking a fresh question. These meta-questions are
+    /// exactly the case where a wrong answer is most damaging (the model reporting a fabricated
+    /// "decision" back with confidence), and exactly the case where the retrieved *original* exchange —
+    /// not just the running summary — should be given more room to actually turn up. Heuristic, not a
+    /// model call: cheap enough to run on every turn without adding latency. Internal and `nonisolated`
+    /// (not private) so it's unit-testable off the main actor, matching `parseMemory`.
+    nonisolated static func hasRecallIntent(_ text: String) -> Bool {
+        let t = normalizeForIntent(text)
+        let markers = ["what did we decide", "what have we decided", "what did we discuss",
+                       "what were the", "what was the", "what did i say", "what did you say",
+                       "earlier we", "earlier i said", "before we", "what's our current",
+                       "whats our current", "what is our current", "what have we discussed",
+                       "what did we agree", "remind me what", "recap what", "what have we decided on",
+                       "what did we settle on", "going back to", "back to what we"]
+        return markers.contains { t.contains($0) }
+    }
+
     /// Whether a query is asking for something time-sensitive, so the year should be pinned onto it.
     private static func hasRecencyIntent(_ text: String) -> Bool {
         let padded = " " + text.lowercased() + " "
@@ -1648,7 +1667,23 @@ final class ChatController {
         // everything's already represented, so steady-state turns cost nothing extra.
         scheduleSummaryUpdate(overflow: out.overflow)
 
-        return out.turns
+        var turns = out.turns
+        if Self.hasRecallIntent(newUserText) {
+            // The general system prompt deliberately tells the model to "provide your best
+            // interpretation rather than declining" on ambiguous questions — good policy for ordinary
+            // questions, but exactly backwards for "what did we decide?": guessing under uncertainty is
+            // how a suggestion gets reported back as a settled decision. Override narrowly, only on
+            // recall turns, by inserting right before the current question so it's the most recent
+            // instruction the model sees.
+            let note = ChatTurn(role: .system, text: """
+                This question asks about the conversation's own history or decisions. Answer strictly \
+                from the Decisions/Facts memory above (if present) and the visible conversation — do \
+                NOT apply "provide your best interpretation": if something isn't recorded there as \
+                decided, say plainly that it wasn't decided rather than guessing one.
+                """)
+            turns.insert(note, at: max(0, turns.count - 1))
+        }
+        return turns
     }
 
     /// Map visible `ChatMessage`s to the context builder's `HistoryTurn`s — the exact text the model
@@ -1713,6 +1748,17 @@ final class ChatController {
             // small-model response (never loses prior facts, never crashes).
             let updated = Self.parseMemory(from: cleaned, prior: priorMemory)
             guard !updated.isEmpty else { return }
+            // Sanity gate: repeated re-summarization compounds — each cycle's output becomes the next
+            // cycle's "prior," so an ungrounded hallucination doesn't just linger, it can displace real
+            // content and then get reinforced as fact next cycle. Reject a cycle whose *new* content
+            // shares essentially no vocabulary with the actual new exchanges (or what was already known)
+            // — a cheap signal that this cycle invented content rather than summarizing it. Don't advance
+            // `summarizedTurnCount` on rejection, so the same turns retry next cycle instead of the drift
+            // being locked in.
+            guard Self.isNewContentGrounded(updated: updated, prior: priorMemory, transcript: transcript) else {
+                Log.chat.notice("memory update REJECTED — new content ungrounded in the actual exchange, keeping prior memory (will retry)")
+                return
+            }
             // Commit to the session; guard against a `/clear` having raced in (count reset shorter).
             guard coveredCount >= session.summarizedTurnCount else { return }
             session.memory = updated
@@ -1737,42 +1783,64 @@ final class ChatController {
         guard !text.isEmpty else { return prior }
 
         // Case-insensitive search for the section labels at a line start (tolerant of "FACTS:" /
-        // "Facts:" / leading whitespace).
+        // "Facts:" / leading whitespace). Three labels now (FACTS/DECISIONS/TOPICS); sorted by position
+        // so any label order the model produces still slices cleanly into three ranges.
         func labelRange(_ label: String) -> Range<String.Index>? {
             text.range(of: label, options: [.caseInsensitive])
         }
-        let factsLabel = labelRange("FACTS:")
-        let topicsLabel = labelRange("TOPICS:")
+        let labels: [(name: String, range: Range<String.Index>)] = [
+            ("FACTS", labelRange("FACTS:")),
+            ("DECISIONS", labelRange("DECISIONS:")),
+            ("TOPICS", labelRange("TOPICS:")),
+        ].compactMap { name, range in range.map { (name, $0) } }
+        .sorted { $0.range.lowerBound < $1.range.lowerBound }
+
+        guard !labels.isEmpty else {
+            // No structure at all — treat as current-state notes, keep prior facts/decisions protected.
+            return ConversationMemory(durableFacts: prior.durableFacts, decisions: prior.decisions, topicTrace: text)
+        }
 
         func clean(_ s: Substring) -> String {
             s.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
-        switch (factsLabel, topicsLabel) {
-        case let (.some(f), .some(t)) where f.upperBound <= t.lowerBound:
-            // FACTS … TOPICS (expected order).
-            let facts = clean(text[f.upperBound..<t.lowerBound])
-            let topics = clean(text[t.upperBound...])
-            return ConversationMemory(durableFacts: facts.isEmpty ? prior.durableFacts : facts,
-                                      topicTrace: topics.isEmpty ? prior.topicTrace : topics)
-        case let (.some(f), .some(t)):
-            // TOPICS … FACTS (reordered).
-            let topics = clean(text[t.upperBound..<f.lowerBound])
-            let facts = clean(text[f.upperBound...])
-            return ConversationMemory(durableFacts: facts.isEmpty ? prior.durableFacts : facts,
-                                      topicTrace: topics.isEmpty ? prior.topicTrace : topics)
-        case let (.some(f), .none):
-            let facts = clean(text[f.upperBound...])
-            return ConversationMemory(durableFacts: facts.isEmpty ? prior.durableFacts : facts,
-                                      topicTrace: prior.topicTrace)
-        case let (.none, .some(t)):
-            let topics = clean(text[t.upperBound...])
-            return ConversationMemory(durableFacts: prior.durableFacts,
-                                      topicTrace: topics.isEmpty ? prior.topicTrace : topics)
-        case (.none, .none):
-            // No structure at all — treat as topic notes, keep prior facts protected.
-            return ConversationMemory(durableFacts: prior.durableFacts, topicTrace: text)
+        var sections: [String: String] = [:]
+        for (i, label) in labels.enumerated() {
+            let start = label.range.upperBound
+            let end = i + 1 < labels.count ? labels[i + 1].range.lowerBound : text.endIndex
+            sections[label.name] = clean(text[start..<end])
         }
+
+        let facts = sections["FACTS"] ?? ""
+        let decisions = sections["DECISIONS"] ?? ""
+        let topics = sections["TOPICS"] ?? ""
+        return ConversationMemory(durableFacts: facts.isEmpty ? prior.durableFacts : facts,
+                                  decisions: decisions.isEmpty ? prior.decisions : decisions,
+                                  topicTrace: topics.isEmpty ? prior.topicTrace : topics)
+    }
+
+    /// Lowercased content words (≥4 chars) — a cheap, tokenizer-free stand-in for "meaningful vocabulary."
+    nonisolated static func significantWords(_ s: String) -> Set<String> {
+        Set(s.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+            .filter { $0.count >= 4 })
+    }
+
+    /// Whether a freshly parsed memory's *new* content plausibly came from the actual new exchange,
+    /// rather than being invented. Compares the words in `updated` that aren't already in `prior`
+    /// against the words in the real `transcript` (plus `prior`, since carried-forward content
+    /// legitimately doesn't need to reappear in just this cycle's new turns). A cycle whose new content
+    /// shares almost no vocabulary with anything real is rejected by the caller rather than committed —
+    /// see `scheduleSummaryUpdate`. Threshold is deliberately loose (catches wholesale fabrication, not
+    /// paraphrasing) since this runs with no model call and no ground truth beyond the transcript itself.
+    nonisolated static func isNewContentGrounded(updated: ConversationMemory, prior: ConversationMemory,
+                                                 transcript: String) -> Bool {
+        let newWords = significantWords([updated.durableFacts, updated.decisions, updated.topicTrace].joined(separator: "\n"))
+        guard !newWords.isEmpty else { return true }
+        let allowed = significantWords(transcript)
+            .union(significantWords([prior.durableFacts, prior.decisions, prior.topicTrace].joined(separator: "\n")))
+        let grounded = newWords.intersection(allowed)
+        return Double(grounded.count) / Double(newWords.count) >= 0.25
     }
 
     /// Extract the `TITLE:` line the summarizer emits (kept separate from the FACTS/TOPICS memory).
@@ -1794,17 +1862,27 @@ final class ChatController {
         .joined(separator: "\n\n")
     }
 
-    /// Tight summarization instruction: evolve the two-track memory with the new exchanges. Emits a
-    /// strict two-section contract (FACTS / TOPICS) so the parser is reliable even on a 0.6B model.
-    /// Deliberately small and concrete — a tiny model can follow it.
+    /// Tight summarization instruction: evolve the three-track memory with the new exchanges. Emits a
+    /// strict three-section contract (FACTS / DECISIONS / TOPICS) so the parser is reliable even on a
+    /// 0.6B model. Deliberately small and concrete — a tiny model can follow it.
+    ///
+    /// DECISIONS exists to fix a specific, observed failure: a model asked to recap "what's been
+    /// discussed" will happily report something it merely *suggested* ("maybe try X") back as something
+    /// the user *decided* ("we're using X") once that suggestion has scrolled out of the recent window.
+    /// The instruction below is deliberately conservative about what counts as a decision, and requires
+    /// a status per line so a later "what did we decide?" can't resurrect something that was rejected.
     private static func summarizationPrompt(prior: ConversationMemory, newTranscript: String) -> String {
         let priorFacts = prior.durableFacts.trimmingCharacters(in: .whitespacesAndNewlines)
+        let priorDecisions = prior.decisions.trimmingCharacters(in: .whitespacesAndNewlines)
         let priorTopics = prior.topicTrace.trimmingCharacters(in: .whitespacesAndNewlines)
-        let priorBlock = (priorFacts.isEmpty && priorTopics.isEmpty)
+        let priorBlock = (priorFacts.isEmpty && priorDecisions.isEmpty && priorTopics.isEmpty)
             ? "There is no earlier memory yet."
             : """
             Current FACTS so far:
             \(priorFacts.isEmpty ? "(none yet)" : priorFacts)
+
+            Current DECISIONS so far:
+            \(priorDecisions.isEmpty ? "(none yet)" : priorDecisions)
 
             Current TOPICS so far:
             \(priorTopics.isEmpty ? "(none yet)" : priorTopics)
@@ -1817,20 +1895,36 @@ final class ChatController {
         TITLE: <a 2–5 word name for this whole conversation, no quotes>
         FACTS:
         - <one durable fact per line>
+        DECISIONS:
+        - <one settled choice per line> — status: active | rejected | superseded by <what replaced it>
         TOPICS:
-        <running notes on what's been discussed>
+        <current state: active topic/goal and recent direction>
 
         FACTS = stable facts about the user and their goal: their name, role, what they're building, \
         and standing preferences or constraints. Carry every prior fact forward, add any new durable \
         ones, merge duplicates, and drop nothing important. No greetings or filler. Keep it short — \
-        well under 150 words; if it grows too long, merge and prune wording, never drop a real fact.
+        well under 150 words; if it grows too long, merge and prune wording, never drop a real fact. \
+        Same rule as DECISIONS: an approach, technique, or tool the assistant merely suggested or \
+        recommended is NOT a fact about what the project actually uses — don't record it here as if \
+        it were settled unless the user actually confirmed it.
 
-        TOPICS = what has been discussed. Keep the CURRENT topic detailed; condense each OLDER topic \
-        to a single short line so the notes shrink over time instead of piling up — but always leave a \
-        thin trace of every past topic so earlier points can still be referenced. Under 200 words.
+        DECISIONS = choices the user explicitly settled on — "let's use X", "we'll do X", "don't do \
+        X", "I decided X". A decision must have a status: "active" if it still stands, "rejected" if \
+        the user turned it down (note why if they said why, otherwise just "rejected"), or "superseded \
+        by <new choice>" if a later decision replaced it — never delete a superseded or rejected line, \
+        just mark it so. Carry every prior decision forward, updating status as needed. CRITICAL: an \
+        option the assistant merely floated or recommended ("you could try X", "one option is X", \
+        "maybe X would work") is a suggestion, NOT a decision — do not add it here unless the user \
+        actually chose it. When genuinely nothing has been decided yet, leave this section empty. \
+        Under 150 words.
+
+        TOPICS = the CURRENT state of the conversation, not a transcript of everything discussed: what \
+        the active topic and goal are right now, and the recent direction. Condense anything no longer \
+        active to a single short line so this shrinks over time instead of piling up — but leave a \
+        thin trace of past topics so earlier points can still be referenced. Under 200 words.
 
         Output ONLY those sections — no preamble, no "here is", no markdown headings beyond the \
-        TITLE:/FACTS:/TOPICS: labels.
+        TITLE:/FACTS:/DECISIONS:/TOPICS: labels.
 
         \(priorBlock)
 
@@ -1970,7 +2064,11 @@ final class ChatController {
         // Question = the resolved/explicit current text (primary signal); context adds the last couple of
         // turns so pronoun-y follow-ups ("continue that") still match, without diluting the question.
         let context = (recentContext + [question]).joined(separator: "\n")
-        let retrieved = await memoryIndex.retrieve(question: question, context: context, excluding: recentIDs)
+        // A meta-question about the conversation's own state ("what did we decide?") gets more retrieval
+        // candidates — the DECISIONS summary line should already answer it, but widening here gives the
+        // model the actual original exchange to check itself against, rather than trusting its own recap.
+        let k = Self.hasRecallIntent(currentUserText) ? 4 : 2
+        let retrieved = await memoryIndex.retrieve(question: question, context: context, excluding: recentIDs, k: k)
         // Soft entity preference: prefer chunks that name the subject, but fall back to the full set when
         // none do — the semantic/keyword gate already qualified these, so never drop all recall to a
         // stricter substring test.

@@ -53,6 +53,9 @@ enum ConversationStore {
         var autoTitle: String?
         var summarizedTurnCount: Int
         var durableFacts: String
+        /// Optional so older saved conversations (pre-DECISIONS) decode cleanly — Codable synthesis
+        /// treats a missing key on an Optional as `nil` automatically, no migration needed.
+        var decisions: String?
         var topicTrace: String
         var anchorSelection: String?
         var messages: [MessageDTO]
@@ -210,6 +213,7 @@ extension ConversationStore {
             autoTitle: c.autoTitle,
             summarizedTurnCount: c.summarizedTurnCount,
             durableFacts: c.memory.durableFacts,
+            decisions: c.memory.decisions,
             topicTrace: c.memory.topicTrace,
             anchorSelection: anchorSelection,
             messages: messages)
@@ -234,7 +238,8 @@ extension ConversationStore {
         c.kind = Conversation.Kind(rawValue: dto.kind) ?? .general
         c.autoTitle = dto.autoTitle
         c.summarizedTurnCount = dto.summarizedTurnCount
-        c.memory = ConversationMemory(durableFacts: dto.durableFacts, topicTrace: dto.topicTrace)
+        c.memory = ConversationMemory(durableFacts: dto.durableFacts, decisions: dto.decisions ?? "",
+                                      topicTrace: dto.topicTrace)
         if let sel = dto.anchorSelection { c.anchor = .selection(sel) }
         c.messages = dto.messages.map { md in
             var msg = ChatMessage(role: md.role == "user" ? .user : .assistant, text: md.text)
