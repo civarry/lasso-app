@@ -27,6 +27,10 @@ struct WebSourcesProvider {
 
     struct Result {
         var abstract: String?      // DDG abstract text for synthesis context
+        /// What the abstract is *about* (the Wikipedia article title, or the engine name). Without this
+        /// the abstract reads as an answer to the question rather than as a summary of whatever page
+        /// happened to rank first, which is how "Mars Hill University" became a Mars presidency.
+        var abstractSource: String?
         var hits: [Hit] = []       // related links (DDG + Reddit) for display + synthesis
     }
 
@@ -37,6 +41,15 @@ struct WebSourcesProvider {
     ///   3. Tavily proactively when daily+monthly budget allows (its results lead the list).
     ///   4. SerpApi only as a reserve (Tavily empty / no Tavily budget), since its quota is tiny.
     /// Reddit (search.json) is fetched here too. Everything is embedding-ranked in IdentifyView.
+    /// Time one source. Purely observational: the work is unchanged and still runs concurrently with
+    /// its siblings, so this reports the real wall clock each connector contributes to a turn.
+    private static func timed<T>(_ name: String, _ work: () async -> T) async -> T {
+        let t0 = Date()
+        let out = await work()
+        Log.chat.notice("web source · \(name, privacy: .public) \(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public)ms")
+        return out
+    }
+
     func lookup(_ query: String) async -> Result {
         // Defense in depth: local-only mode contacts nothing but the model endpoint.
         guard !PrivacyMode.localOnly else { return Result() }
@@ -48,40 +61,76 @@ struct WebSourcesProvider {
         // Cache per active config — otherwise enabling/disabling a source would replay stale hits.
         let cacheKey = "w\(freeOn ? 1 : 0)t\(tavilyOn ? 1 : 0)s\(serpOn ? 1 : 0)|\(query)"
         if let cached = SearchCache.get(cacheKey) {
-            var result = Result(abstract: cached.abstract)
+            // Logged so a cached turn is never mistaken for a fast network (it was: a repeated query
+            // returned in 264ms and a fresh one took 3.4s on the same connectors).
+            Log.chat.notice("web source · CACHE HIT (\(cached.hits.count, privacy: .public) hits)")
+            var result = Result(abstract: cached.abstract, abstractSource: cached.abstractSource)
             result.hits = cached.hits
             return result
         }
 
         var abstract: String?
+        var abstractSource: String?
         var hits: [Hit] = []
+        // Phase clock. The per-source timings above cover only the concurrent free block; a real run
+        // showed max(source)=1255ms against fetch=3048ms, so ~1.8s was being spent somewhere these
+        // numbers could not see. Everything below is on the critical path and now says so.
+        let tStart = Date()
+        func since(_ t: Date) -> Int { Int(Date().timeIntervalSince(t) * 1000) }
+        var freeMs = 0, dedupMs = 0, tavilyMs = 0, serpMs = 0
+
+        // Tavily reads none of the free results — its hits are simply merged in front of them — so it
+        // has no reason to wait for them. Measured on a real turn: the whole concurrent free block
+        // cost 1136ms and Tavily then added 2605ms of pure serial time after it. Started here, that
+        // cost overlaps instead of stacking. SerpApi genuinely depends on the deduped hit count
+        // (it only tops up a thin set), so that one stays where it is.
+        var tavilyTask: Task<[Hit], Never>?
+        if tavilyOn, SearchQuota.canUse("tavily") {
+            tavilyTask = Task { await tavily(query) }
+        }
 
         // Free baseline (Wikipedia / DuckDuckGo / Reddit) — only when the Web search connector is on.
         if freeOn {
-            async let wiki = wikipedia(query)
-            async let instant = duckDuckGo(query)
-            async let webResults = duckDuckGoWeb(query)
-            async let redditResults = reddit(query)
+            // Timed individually. These four run concurrently, so the fetch costs whatever the
+            // *slowest* one costs, and an aggregate number can't tell you which to fix.
+            async let wiki = Self.timed("wikipedia") { await wikipedia(query) }
+            async let instant = Self.timed("ddg-instant") { await duckDuckGo(query) }
+            async let webResults = Self.timed("ddg-web") { await duckDuckGoWeb(query) }
+            async let redditResults = Self.timed("reddit") { await reddit(query) }
             let (w, inst, web, red) = await (wiki, instant, webResults, redditResults)
             abstract = w.abstract ?? inst.abstract     // prefer Wikipedia (stable)
+            // Only Wikipedia has a *subject* distinct from the query (the article that ranked first),
+            // which is the thing the abstract gate needs to check. DuckDuckGo's instant answer is
+            // derived from the query itself, so it has no separate subject and stays nil.
+            abstractSource = w.title
             hits = w.hits + web + red
+            freeMs = since(tStart)
         }
 
+        let tDedup = Date()
         hits = Self.deduped(hits)
+        dedupMs = since(tDedup)
 
         // Tavily: primary paid source (best results + snippets), budget-paced — its hits lead.
-        if tavilyOn, SearchQuota.canUse("tavily") {
-            hits = Self.deduped(await tavily(query) + hits)
+        // `tavilyMs` is now the *remaining* wait after the overlap, which is the number that matters:
+        // it is what Tavily still adds to the turn, not what it costs in isolation.
+        if let tavilyTask {
+            let t = Date()
+            hits = Self.deduped(await tavilyTask.value + hits)
+            tavilyMs = since(t)
         }
         // SerpApi: a top-up, not a strict reserve — fill only when the deduped set is thin (so a
         // configured key actually helps), still gated by its small monthly quota.
         if serpOn, hits.count < Self.serpTopUpThreshold, SearchQuota.canUse("serpapi") {
+            let t = Date()
             let serp = await serpAPI(query)
             hits = Self.deduped(hits + serp)
+            serpMs = since(t)
         }
 
-        SearchCache.set(cacheKey, abstract: abstract, hits: hits)
-        var result = Result(abstract: abstract)
+        Log.chat.notice("lookup · free=\(freeMs, privacy: .public)ms dedup=\(dedupMs, privacy: .public)ms tavily=\(tavilyMs, privacy: .public)ms serp=\(serpMs, privacy: .public)ms total=\(since(tStart), privacy: .public)ms")
+        SearchCache.set(cacheKey, abstract: abstract, abstractSource: abstractSource, hits: hits)
+        var result = Result(abstract: abstract, abstractSource: abstractSource)
         result.hits = hits
         return result
     }
@@ -145,17 +194,17 @@ struct WebSourcesProvider {
 
     // MARK: Wikipedia (official, free, no key — the stable core)
 
-    private func wikipedia(_ query: String) async -> (abstract: String?, hits: [Hit]) {
+    private func wikipedia(_ query: String) async -> (abstract: String?, title: String?, hits: [Hit]) {
         guard let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
               let url = URL(string: "https://en.wikipedia.org/w/api.php?action=query&list=search"
-                            + "&srsearch=\(q)&format=json&srlimit=3") else { return (nil, []) }
+                            + "&srsearch=\(q)&format=json&srlimit=3") else { return (nil, nil, []) }
         var request = URLRequest(url: url)
         request.setValue("Lasso/0.1 (on-device identify)", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 6
         guard let (data, _) = try? await URLSession.shared.data(for: request),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let queryObj = json["query"] as? [String: Any],
-              let results = queryObj["search"] as? [[String: Any]] else { return (nil, []) }
+              let results = queryObj["search"] as? [[String: Any]] else { return (nil, nil, []) }
 
         let titles = results.compactMap { $0["title"] as? String }
         let hits = titles.compactMap { title -> Hit? in
@@ -163,7 +212,7 @@ struct WebSourcesProvider {
         }
         var abstract: String?
         if let top = titles.first { abstract = await wikiSummary(top) }
-        return (abstract, hits)
+        return (abstract, abstract == nil ? nil : titles.first, hits)
     }
 
     private func wikiSummary(_ title: String) async -> String? {
@@ -337,13 +386,14 @@ struct Evidence {
     var bestGuess: String?                          // e.g. "adrien brody the pianist"
     var entities: [String] = []                     // recognized web entities, ranked
     var abstract: String?                           // encyclopedic context
+    var abstractSource: String?                     // the page/engine the abstract came from
     var hits: [WebSourcesProvider.Hit] = []         // related links
     var error: String?                              // surfaced when a configured source fails
 
     mutating func merge(_ other: Evidence) {
         if (bestGuess?.isEmpty ?? true), let b = other.bestGuess, !b.isEmpty { bestGuess = b }
         entities += other.entities
-        if abstract == nil { abstract = other.abstract }
+        if abstract == nil { abstract = other.abstract; abstractSource = other.abstractSource }
         hits += other.hits
         if error == nil { error = other.error }
     }

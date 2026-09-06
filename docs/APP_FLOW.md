@@ -95,7 +95,21 @@ model** — each a `Provider` picker + per-provider config), staged in a `Draft`
   (`effectivePreferred` / `effectiveVisionEngine` / `effectiveEmbeddingProvider`) — cloud options are also
   hidden in the pickers — so nothing leaves the Mac regardless of what's stored (see §8).
 - **Tools** (`Intelligence/Tools/`): a model-decided `web_search` tool for Chat on tool-capable
-  backends; others fall back to heuristic grounding.
+  backends; others fall back to heuristic grounding. Which tools a turn actually *sees* is chosen by
+  `Harness/Toolbelt` — registration and exposure are separate, and the menu is capped at
+  `maxExposed` (3), because tool-choice accuracy falls off as the menu grows.
+- **Harness** (`Intelligence/Harness/`) — the app's own reasoning, kept off the answer model:
+  - **`UtilityModel`** (`utilityModel()`): the model the *harness* thinks with. Apple on-device when
+    available, else the user's active provider (never a third-party endpoint they didn't choose).
+    Utility calls bypass `streamWithFailover`, so they never touch the attribution footer or the
+    privacy badge; a non-local fallback flags `noteOffDeviceUse()`.
+  - **`StructuredOutput` + `StructuredRunner`**: one typed request, four rungs, tried in order —
+    **guided** (Apple `@Generable`, constrained decoding, malformed output impossible) → **jsonSchema**
+    (`respondJSON`: Ollama `format`, OpenAI `response_format` with a `json_object` downgrade,
+    Anthropic forced tool use) → **lineFormat** (labeled lines, parsed leniently; MLX's only rung) →
+    **none** (caller applies its own deterministic fallback). The runner never throws.
+  - **`ModelText`**: shared lenient reading of model output (`<think>` stripping, first balanced JSON
+    object, "NONE"-aware field reads).
 
 **Settings → resolution** (how a stored choice becomes the backend that actually runs):
 ```mermaid
@@ -192,6 +206,13 @@ attach (button / ⌘V / drag / capture seed; up to `maxAttachments`), two-track 
 models get an image array per turn; text-only models get per-image "Image N:" captions + OCR. Grounds via the same keyless web search; reverse-image is the one-tap Lens
 escalation, not a silent per-turn API call.
 
+**Search planning:** on the heuristic route (Apple / MLX / tool-less Ollama), `planSearch` rewrites
+the turn into one self-contained query with references resolved. It runs on the **utility model**, not
+the chat model, through the structured ladder — so the plan is a typed `SearchPlan` on every backend,
+and an MLX chat model no longer serializes a planning pass ahead of the answer it is about to stream.
+`SearchPlan` (`Chat/Harness/SearchPlan.swift`) owns its own parsing for all rungs; `ChatController`
+keeps `repair` / `fallbackSearchPlan` (the deterministic floor) and the entity guardrails.
+
 **Context memory (three speeds):** recent 6 turns verbatim → two-track running summary (durable facts
 + topic trace) → **semantic retrieval** (`ChatMemoryIndex`, Phase 1). The index embeds completed
 *exchanges* (user + assistant) in the background; at send it retrieves the top-K most relevant *older*
@@ -281,7 +302,9 @@ Framed by the three "engineerings" — prompt / context / loop. **Prompt and con
 (an external review scored the memory/context work ~9.7 and advised *freezing* it); **loop engineering is
 the next frontier.**
 
-**Loop engineering — highest leverage next** (what the app *can do*, beyond a single pass + one tool call):
+**Loop engineering — highest leverage next** (what the app *can do*, beyond a single pass + one tool call).
+**Full design + phasing now lives in [`docs/HARNESS.md`](HARNESS.md)** (utility model, structured-output
+ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A lightweight **plan → act → check** loop for multi-step chat requests (builds on the `web_search` tool loop).
 - **Self-verification** on grounded answers — does the answer actually follow from the retrieved evidence?
 - Beyond the single `streamWithFailover` hop: retry-with-correction, a small planner / task queue, agentic workflows.
@@ -305,6 +328,40 @@ the next frontier.**
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Web-evidence trust model** (hallucination hardening). Retrieved content is now framed as untrusted
+  data rather than a reference: the Wikipedia abstract carries the article title it summarises and is
+  dropped when that article shares no significant term with the query (`abstractIsOnTopic`); the
+  "Reference summary:" label and the "prefer it over your own memory" framing are gone; both grounding
+  paths share one `fencedEvidence` wrapper that marks the block as data, never instructions, permits
+  saying no reliable evidence was found, and states that the user's own context outranks it. The
+  system prompt keeps "best interpretation rather than declining" for ambiguity but now allows
+  rejecting a false premise without inventing a replacement.
+- **Plan grounding**: `repair` drops a `resolvedEntity` that appears nowhere in the user's message or
+  the recent transcript. An invented entity was being prepended to the query and then enforced by the
+  source gate, so the search returned material corroborating the invention (observed: `entity=Neil
+  Armstrong` for a question that never mentioned him).
+- **Declarative statements skip search** (`isDeclarativeContext`): a message with no question, no
+  interrogative, and either a memory lead-in or a `key = value` assignment routes `.skip`. Previously
+  "Remember: Project = Phoenix, Version = 7" was rewritten into a web query and answered instead of
+  stored. Deliberately narrow (`=` only, never `:`) so real queries like "Swift error: cannot find
+  type in scope" still ground.
+- **Search cache is v2**: v1 entries predate abstract provenance and would bypass the abstract gate.
+- **Plan normalization**: `repair` now drops a *non-constraining* resolved entity (a single lowercase
+  token the query already contains, e.g. `entity=telescope` for query `telescope`). Gating on one
+  matched every hit while reading like a working gate, and on a partial match it dropped hits for no
+  reason. The source-entity log line now says `NO-OP, matched everything` when the gate constrains
+  nothing, so the two cases are distinguishable in a trace.
+- **Connector latency**: Tavily now starts *alongside* the free fan-out instead of after it (it reads
+  none of the free results). Measured before the change: free block 1136ms, then Tavily 2605ms serial,
+  on every uncached grounded turn. SerpApi stays serial because it only tops up a thin deduped set.
+  `lookup ·` and `web source ·` log lines make the split visible.
+- **Harness P0** (`Intelligence/Harness/`, `Chat/Harness/`): a `UtilityModel` for the app's own
+  reasoning, a four-rung `StructuredOutput` ladder with `respondJSON` on Ollama / OpenAI-compatible /
+  Anthropic and `OnDeviceProvider.generate` for Apple guided generation, `SearchPlan` migrated onto
+  both, and a `Toolbelt` registry/exposure split around the existing `web_search`. Verified live on
+  the guided rung; the query hygiene it exposed (`tidyModelQuery`: question framing and command words
+  survive constrained decoding) is now part of `repair`, and `prewarmUtility()` warms the on-device
+  model when the chat panel opens. Design + phasing: [`docs/HARNESS.md`](HARNESS.md).
 - **MLX embedding backend**: a fourth Chat-memory embedder (`EmbeddingProviderKind.mlx`) via the
   `MLXEmbedders` library (same package as the Language/Image MLX models). `MLXEmbeddings` +
   `MLXEmbedderCache` (load-coalescing, memory-pressure eviction) load BERT-style encoders (bge / e5 /
