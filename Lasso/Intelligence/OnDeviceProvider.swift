@@ -186,6 +186,38 @@ struct OnDeviceProvider: IntelligenceProvider {
         """
     }
 
+    /// Warm the on-device model's resources ahead of the harness's first guided call. Measured on a
+    /// real run, the first `search_plan` call cost 1455ms and later ones settled to ~830ms; this is
+    /// aimed at that gap, not at the steady-state cost.
+    func prewarm() {
+        guard case .available = SystemLanguageModel.default.availability else { return }
+        LanguageModelSession().prewarm()
+    }
+
+    // MARK: - Guided generation (constrained decoding)
+
+    /// Fill a `@Generable` type directly. Constrained decoding makes malformed output *impossible*,
+    /// not merely unlikely, which is what lets the harness put its own reasoning (routing, planning,
+    /// verification) on a 3B on-device model and trust the result. See `StructuredRunner` rung 1.
+    ///
+    /// Tool-free and token-bounded by design: this window is ~4k, and attaching tools to it overflows
+    /// (`supportsTools`).
+    func generate<Value: Generable>(_ type: Value.Type, prompt: String, instructions: String?,
+                                    maxTokens: Int) async throws -> Value {
+        guard case .available = SystemLanguageModel.default.availability else {
+            throw IntelligenceError.unavailable("Apple Intelligence is off or unsupported on this Mac.")
+        }
+        let session = instructions.map { LanguageModelSession(instructions: $0) }
+            ?? LanguageModelSession()
+        do {
+            return try await session.respond(
+                to: prompt, generating: type,
+                options: GenerationOptions(temperature: 0, maximumResponseTokens: maxTokens)).content
+        } catch {
+            throw Self.friendly(error)
+        }
+    }
+
     // MARK: - Guided table generation
 
     /// Produce a table reliably via guided generation (the small on-device model is poor at

@@ -30,6 +30,17 @@ protocol IntelligenceProvider: Sendable {
     /// answer as deltas. Default impl ignores tools (so non-tool backends transparently fall back).
     func respond(messages: [ChatTurn], tools: [ChatTool],
                  execute: @escaping ToolExecutor) -> AsyncThrowingStream<String, Error>
+
+    /// One-shot **structured** completion: ask for a JSON object conforming to `schemaJSON` using the
+    /// backend's own JSON-schema mode (Ollama `format`, OpenAI `response_format`, Anthropic forced
+    /// tool use). Returns the raw JSON text, or nil when this backend has no native mode — the caller
+    /// then drops a rung to the line format (`StructuredRunner`). Non-streaming: these replies are
+    /// tiny and nobody watches them arrive.
+    ///
+    /// The schema crosses as a *string* so it stays Sendable under strict concurrency; each provider
+    /// decodes it where its wire format needs it.
+    func respondJSON(prompt: String, schemaName: String, schemaJSON: String,
+                     maxTokens: Int) async throws -> String?
 }
 
 /// One message in a chat conversation, sent to a provider. A user turn may carry an image — encoded
@@ -53,6 +64,10 @@ extension IntelligenceProvider {
     /// Most backends don't (yet) do native tool calling — the Chat panel handles those via the
     /// heuristic grounding path instead.
     var supportsTools: Bool { false }
+
+    /// Default: no native JSON-schema mode. The structured runner falls to the line-format rung.
+    func respondJSON(prompt: String, schemaName: String, schemaJSON: String,
+                     maxTokens: Int) async throws -> String? { nil }
 
     /// Default: ignore tools and answer normally. Providers that set `supportsTools = true` override.
     func respond(messages: [ChatTurn], tools: [ChatTool],
@@ -245,7 +260,9 @@ final class IntelligenceCoordinator {
     private(set) var lastProviderIsAppleOnDevice = true
     private(set) var lastProviderIsLocal = true
 
-    private let onDevice = OnDeviceProvider()
+    /// Internal (not private) so the harness's `utilityModel()` can prefer it for its own
+    /// thinking without going through `activeProvider()`.
+    let onDevice = OnDeviceProvider()
 
     static let defaultsKey = "intelligence.provider"
     static let modelKey = "intelligence.ollamaModel"
@@ -822,6 +839,11 @@ final class IntelligenceCoordinator {
     }
 
     // MARK: - Streaming with transient-error failover
+
+    /// Flag that something left the device outside the normal `respond` path (the harness's utility
+    /// model, when it has to borrow a cloud provider). Lives here because `usedOffDeviceThisSession`
+    /// has a file-private setter.
+    func noteOffDeviceUse() { usedOffDeviceThisSession = true }
 
     /// Record which provider actually served a request (drives the result-footer attribution and the
     /// privacy badge). Called again after a failover so the UI reflects the model that truly answered.

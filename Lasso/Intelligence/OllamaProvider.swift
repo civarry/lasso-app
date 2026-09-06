@@ -184,6 +184,45 @@ struct OllamaProvider: IntelligenceProvider {
         var argumentsObject: [String: Any] = [:]
     }
 
+    // MARK: - Structured output (native JSON-schema mode)
+
+    /// Ollama's `format` field accepts a JSON Schema and constrains decoding to it, so this is a real
+    /// guarantee about the shape rather than a request the model may ignore. Non-streaming, tool-free,
+    /// and with no system prompt: harness prompts are self-contained, and the chat persona would only
+    /// add tokens and tempt the model into prose.
+    func respondJSON(prompt: String, schemaName: String, schemaJSON: String,
+                     maxTokens: Int) async throws -> String? {
+        guard let schemaData = schemaJSON.data(using: .utf8),
+              let schema = try? JSONSerialization.jsonObject(with: schemaData) as? [String: Any]
+        else { return nil }
+
+        var options: [String: Any] = ["temperature": 0, "num_predict": maxTokens]
+        if let numCtx { options["num_ctx"] = numCtx }
+        let bodyDict: [String: Any] = [
+            "model": model,
+            "stream": false,
+            "format": schema,
+            "options": options,
+            "messages": [["role": "user", "content": prompt]],
+        ]
+        guard let body = try? JSONSerialization.data(withJSONObject: bodyDict) else { return nil }
+
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/chat"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        request.timeoutInterval = 30
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let message = json["message"] as? [String: Any],
+              let content = message["content"] as? String,
+              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return content
+    }
+
     private func stream(messages: [ChatRequest.Message]) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {

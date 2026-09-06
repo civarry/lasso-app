@@ -234,6 +234,63 @@ struct OpenAICompatibleProvider: IntelligenceProvider {
         var argumentsJSON = ""
     }
 
+    // MARK: - Structured output (native JSON-schema mode)
+
+    /// Strict `json_schema` first, then plain `json_object`, then nil. "OpenAI-compatible" is a wide
+    /// church: Groq, OpenRouter, LM Studio and llama.cpp all differ on which response formats they
+    /// accept, and an endpoint that rejects one may serve the other perfectly. Falling through the
+    /// options here is what keeps the rung usable instead of all-or-nothing.
+    func respondJSON(prompt: String, schemaName: String, schemaJSON: String,
+                     maxTokens: Int) async throws -> String? {
+        guard let schemaData = schemaJSON.data(using: .utf8),
+              let schema = try? JSONSerialization.jsonObject(with: schemaData) as? [String: Any]
+        else { return nil }
+
+        if let strict = try await completeJSON(
+            prompt: prompt, maxTokens: maxTokens,
+            responseFormat: ["type": "json_schema",
+                             "json_schema": ["name": schemaName, "schema": schema, "strict": true]]) {
+            return strict
+        }
+        // `json_object` mode requires the word "json" to appear in the messages.
+        return try await completeJSON(
+            prompt: prompt + "\n\nReply with a single JSON object and nothing else.",
+            maxTokens: maxTokens,
+            responseFormat: ["type": "json_object"])
+    }
+
+    /// One non-streaming completion. Returns nil when the endpoint rejects the request (so the caller
+    /// can try a simpler response format); transport failures still throw.
+    private func completeJSON(prompt: String, maxTokens: Int,
+                              responseFormat: [String: Any]) async throws -> String? {
+        let bodyDict: [String: Any] = [
+            "model": model,
+            "stream": false,
+            "temperature": 0,
+            "max_tokens": maxTokens,
+            "response_format": responseFormat,
+            "messages": [["role": "user", "content": prompt]],
+        ]
+        guard let body = try? JSONSerialization.data(withJSONObject: bodyDict) else { return nil }
+
+        var request = URLRequest(url: Self.chatCompletionsURL(base: baseURL))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !apiKey.isEmpty { request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
+        request.httpBody = body
+        request.timeoutInterval = 30
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choice = (json["choices"] as? [[String: Any]])?.first,
+              let message = choice["message"] as? [String: Any],
+              let content = message["content"] as? String,
+              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return content
+    }
+
     private func stream(messages: [[String: Any]]) -> AsyncThrowingStream<String, Error> {
         // Encode the body up front so the (non-Sendable) message dictionaries don't cross into the
         // stream's Task closure.

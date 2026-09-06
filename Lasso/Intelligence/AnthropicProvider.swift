@@ -223,6 +223,48 @@ struct AnthropicProvider: IntelligenceProvider {
         }
     }
 
+    // MARK: - Structured output (forced tool use)
+
+    /// Anthropic has no `response_format`, but forcing a single tool is equivalent and stronger: the
+    /// schema becomes the tool's `input_schema` and `tool_choice` makes calling it the only legal
+    /// move, so the reply arrives as a validated `tool_use` block rather than prose to be salvaged.
+    func respondJSON(prompt: String, schemaName: String, schemaJSON: String,
+                     maxTokens: Int) async throws -> String? {
+        guard let schemaData = schemaJSON.data(using: .utf8),
+              let schema = try? JSONSerialization.jsonObject(with: schemaData) as? [String: Any]
+        else { return nil }
+
+        let bodyDict: [String: Any] = [
+            "model": model,
+            "max_tokens": maxTokens,
+            "temperature": 0,
+            "messages": [["role": "user", "content": prompt]],
+            "tools": [["name": schemaName,
+                       "description": "Record the result in structured fields.",
+                       "input_schema": schema]],
+            "tool_choice": ["type": "tool", "name": schemaName],
+        ]
+        guard let body = try? JSONSerialization.data(withJSONObject: bodyDict) else { return nil }
+
+        var request = URLRequest(url: Self.messagesURL(base: baseURL))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        request.httpBody = body
+        request.timeoutInterval = 30
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let content = json["content"] as? [[String: Any]],
+              let use = content.first(where: { ($0["type"] as? String) == "tool_use" }),
+              let input = use["input"] as? [String: Any],
+              let encoded = try? JSONSerialization.data(withJSONObject: input)
+        else { return nil }
+        return String(data: encoded, encoding: .utf8)
+    }
+
     private func stream(messages: [[String: Any]], system: String = systemPrompt) -> AsyncThrowingStream<String, Error> {
         // Encode up front so the (non-Sendable) message dictionaries don't cross into the Task closure.
         let body = try? JSONSerialization.data(withJSONObject: [
