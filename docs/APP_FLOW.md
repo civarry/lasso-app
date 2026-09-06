@@ -328,6 +328,13 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Summarisation waits for the answer.** `scheduleSummaryUpdate` used to fire during context
+  assembly, so the summariser's own generation raced the answer for the same local model. Observed on
+  Qwen2.5-7B: `respond(messages)` and `respond(prompt)` started 3ms apart, hit `join in-flight load`,
+  and the turn paid an eviction cycle. The overflow is now captured during assembly and flushed after
+  the stream finishes (`flushPendingSummary`, logged as `summary · scheduled after answer`), which
+  also keeps a failed or cancelled exchange out of durable memory. Pending overflow is picked up by
+  the next successful turn, since scheduling works from `summarizedTurnCount`.
 - **System prompt: stop disclaiming conversation memory.** A tool-capable model answered "I don't
   retain information across separate conversations" to "Remember: Project = Phoenix…", then used those
   values correctly on the next turn. The disclaimer was wrong about the app (`ConversationStore` saves

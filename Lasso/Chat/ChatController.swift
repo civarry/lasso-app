@@ -1101,6 +1101,27 @@ final class ChatController {
         }
         Log.chat.notice("runTurn ✓ stream DONE deltas=\(deltas, privacy: .public) chars=\(chars, privacy: .public) (+\(ms(), privacy: .public)ms)")
         finishStreaming(assistantID)
+        flushPendingSummary()
+    }
+
+    /// Overflow captured while assembling the current turn, held until the answer is done.
+    ///
+    /// Scheduling the summary during assembly meant the summariser's own generation raced the answer
+    /// for the same local model. Observed on Qwen2.5-7B: `respond(messages)` and `respond(prompt)`
+    /// started 3ms apart, hit `join in-flight load`, and the turn paid an eviction cycle
+    /// (`mem 5048→4906MB`). On a 3B it was invisible; at 7B it costs seconds of the user's turn.
+    ///
+    /// Deferring also keeps a failed or cancelled exchange out of durable memory: both paths return
+    /// before this runs, and the next successful turn picks up the pending overflow, since
+    /// `scheduleSummaryUpdate` works from `summarizedTurnCount` rather than from what it was handed.
+    private var pendingSummaryOverflow: [ChatContextBuilder.HistoryTurn] = []
+
+    private func flushPendingSummary() {
+        let overflow = pendingSummaryOverflow
+        pendingSummaryOverflow = []
+        guard overflow.count > active.summarizedTurnCount else { return }
+        Log.chat.notice("summary · scheduled after answer (\(overflow.count, privacy: .public) overflow turns)")
+        scheduleSummaryUpdate(overflow: overflow)
     }
 
     // MARK: - Web / connector grounding
@@ -1984,9 +2005,9 @@ final class ChatController {
         // kept as a dev-facing log signal.
         if out.didCompress { Log.chat.notice("context compressed — older turns folded into summary/retrieval") }
 
-        // Fold the now-out-of-window turns into the rolling summary off the send path. No-op when
-        // everything's already represented, so steady-state turns cost nothing extra.
-        scheduleSummaryUpdate(overflow: out.overflow)
+        // Captured now, summarised only once the answer has finished streaming. See
+        // `flushPendingSummary`.
+        pendingSummaryOverflow = out.overflow
 
         var turns = out.turns
         if Self.hasRecallIntent(newUserText) {
