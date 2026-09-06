@@ -22,6 +22,8 @@ nothing leaves your machine unless you decide it should.
 - **Identify** — point it at an object, product, place, or screenshot and it
   tells you what it is, with sources and a confidence rating.
 - **Scan QR / barcodes**, and **pick a color** from any pixel.
+- **Search with Lens** — send the selection to Google Lens for a reverse image
+  search. Opt-in, and hidden entirely in Local-only mode.
 
 <p align="center"><img src="screenshots/actions.png" alt="The full set of things Lasso can do with a selection"></p>
 
@@ -42,8 +44,9 @@ grounds its answers with real sources when you want.
 ## Privacy
 
 Out of the box everything runs on your Mac — text via **Apple Intelligence**,
-vision and ranking via a local **Ollama** model. The only thing that leaves your
-Mac is the optional web lookup in Identify, and it's off until you turn it on.
+vision and ranking via a local **Ollama** model. The only things that leave your
+Mac are the optional web lookup in Identify and the optional Google Lens search,
+and both stay off until you turn them on.
 There's a **Local-only mode** that forces a local model and blocks every
 incidental network call. Cloud models (OpenAI, Groq, Anthropic, custom) are
 supported too, but strictly opt-in; API keys live in the macOS Keychain.
@@ -52,7 +55,7 @@ supported too, but strictly opt-in; API keys live in the macOS Keychain.
 
 ## Install
 
-1. Download **`Lasso.dmg`** from the [Releases](../../releases) page.
+1. Download the **`.dmg`** from the [Releases](../../releases) page.
 2. Open it and drag **Lasso** to Applications.
 3. First launch: **right-click the app → Open**. macOS warns it can't verify the
    developer — that's expected, the build isn't notarized. After opening once, it
