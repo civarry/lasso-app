@@ -444,8 +444,11 @@ struct SettingsView: View {
                 TextField("Base URL", text: $draft.embeddingOpenAICustomBaseURL)
             }
             SecureKeyField("API key", text: openAIKeyField(draft.embeddingOpenAIService))
+            if isLocalBaseURL(draft.embeddingOpenAIBaseURL) {
+                caption("Not required for a local server.")
+            }
             cloudModelPicker(selection: openAIEmbeddingModelField(draft.embeddingOpenAIService),
-                             models: embeddingCloudModels) {
+                             models: embeddingCloudModels, isLocal: isLocalBaseURL(draft.embeddingOpenAIBaseURL)) {
                 await loadEmbeddingCloudModels(); return !embeddingCloudModels.isEmpty
             }
             caption("Shares the API key with your language/image model for the same service.")
@@ -642,7 +645,11 @@ struct SettingsView: View {
                 TextField("Base URL", text: $draft.openAICustomBaseURL)
             }
             SecureKeyField("API key", text: openAIKeyField(draft.openAIService))
-            cloudModelPicker(selection: openAITextModelField(draft.openAIService), models: openAIModels) {
+            if isLocalBaseURL(draft.openAIBaseURL) {
+                caption("Not required for a local server.")
+            }
+            cloudModelPicker(selection: openAITextModelField(draft.openAIService), models: openAIModels,
+                             isLocal: isLocalBaseURL(draft.openAIBaseURL)) {
                 await loadCloudModels(); return !openAIModels.isEmpty
             }
             contextWindowControl(service: draft.openAIService, model: draft.openAIModel)
@@ -676,7 +683,11 @@ struct SettingsView: View {
                 TextField("Base URL", text: $draft.visionOpenAICustomBaseURL)
             }
             SecureKeyField("API key", text: openAIKeyField(draft.visionOpenAIService))
-            cloudModelPicker(selection: openAIVisionModelField(draft.visionOpenAIService), models: visionOpenAIModels) {
+            if isLocalBaseURL(draft.visionOpenAIBaseURL) {
+                caption("Not required for a local server.")
+            }
+            cloudModelPicker(selection: openAIVisionModelField(draft.visionOpenAIService), models: visionOpenAIModels,
+                             isLocal: isLocalBaseURL(draft.visionOpenAIBaseURL)) {
                 await loadVisionModels(); return !visionOpenAIModels.isEmpty
             }
             caption("Shares the API key with your language model for the same service.")
@@ -760,14 +771,14 @@ struct SettingsView: View {
     /// -loads the provider's catalog (with a reload button); falls back to a text field when there's
     /// no catalog yet (no key, or a custom endpoint that doesn't expose `/models`).
     @ViewBuilder
-    private func cloudModelPicker(selection: Binding<String>, models: [String],
+    private func cloudModelPicker(selection: Binding<String>, models: [String], isLocal: Bool = false,
                                   reload: @escaping () async -> Bool) -> some View {
         if models.isEmpty {
             LabeledContent("Model") {
                 HStack(spacing: 6) {
                     TextField("Model", text: selection, prompt: Text("type a model name"))
                         .labelsHidden().multilineTextAlignment(.trailing).textFieldStyle(.plain)
-                    reloadButton(reload)
+                    reloadButton(reload, isLocal: isLocal)
                 }
             }
         } else {
@@ -783,7 +794,7 @@ struct SettingsView: View {
                         ForEach(models, id: \.self) { Text($0).tag($0) }
                     }
                     .labelsHidden().fixedSize()
-                    reloadButton(reload)
+                    reloadButton(reload, isLocal: isLocal)
                 }
             }
         }
@@ -791,13 +802,17 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private func reloadButton(_ reload: @escaping () async -> Bool) -> some View {
+    private func reloadButton(_ reload: @escaping () async -> Bool, isLocal: Bool = false) -> some View {
         Button {
             Task {
                 loadingModels = true; modelLoadNote = nil
                 let found = await reload()
                 loadingModels = false
-                modelLoadNote = found ? nil : "No models returned — check the base URL and API key."
+                // A local server needs no key (see OpenAICompatibleProvider.checkAvailability), so don't
+                // send the user hunting for an API key that was never required.
+                modelLoadNote = found ? nil : (isLocal
+                    ? "No models returned — check the base URL and that the server is running."
+                    : "No models returned — check the base URL and API key.")
             }
         } label: {
             if loadingModels { ProgressView().controlSize(.small) }
@@ -1133,18 +1148,22 @@ struct SettingsView: View {
         ("Qwen2.5-VL 7B · 4-bit", "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"),
     ]
 
+    /// A custom base URL is free-typed/pasted, so it needs the same whitespace/scheme tolerance as
+    /// Ollama's custom URL field — otherwise a stray leading/trailing space makes `URL(string:)` fail
+    /// downstream (Test, model loading, and the local/cloud privacy label all silently misbehave).
+    /// Reuses `OllamaEndpoint.normalized` rather than re-implementing the same trim-and-validate logic.
     nonisolated static func openAIServiceURL(_ service: String, custom: String) -> String {
         switch service {
         case "openai": "https://api.openai.com/v1"
         case "groq": "https://api.groq.com/openai/v1"
         case "openrouter": "https://openrouter.ai/api/v1"
-        default: custom.isEmpty ? "https://api.openai.com/v1" : custom
+        default: OllamaEndpoint.normalized(custom)?.absoluteString ?? "https://api.openai.com/v1"
         }
     }
 
     /// Infer the service id from a stored base URL (for migration / first load).
     static func openAIServiceID(forURL urlString: String) -> String {
-        let host = (URL(string: urlString)?.host ?? "").lowercased()
+        let host = (URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines))?.host ?? "").lowercased()
         if host.contains("groq") { return "groq" }
         if host.contains("openrouter") { return "openrouter" }
         if host.contains("openai") { return "openai" }
@@ -1254,28 +1273,61 @@ struct SettingsView: View {
 
     private var privacyLine: String {
         if draft.localOnly, !draft.provider.isLocalKind {
-            return "Local-only is on, but \(serviceName(draft.openAIBaseURL)) is a cloud model — your "
+            let service = serviceName(draft.openAIBaseURL)
+            if service == Self.unrecognizedServiceName {
+                return "Local-only is on, but the base URL doesn't look valid — check it in Settings."
+            }
+            return "Local-only is on, but \(service) is a cloud model — your "
                 + "selection still goes to that endpoint. Use Apple or Ollama for full isolation."
         }
         switch draft.provider {
         case .onDevice, .ollama, .mlx:
             return "Runs on this Mac — nothing leaves your device."
         case .openAICompatible:
-            return serviceName(draft.openAIBaseURL) == "a local server"
-                ? "Local server — stays on this Mac."
-                : "Cloud — your selection is sent to \(serviceName(draft.openAIBaseURL)). Use a multimodal model for image questions."
+            let service = serviceName(draft.openAIBaseURL)
+            switch service {
+            case "a local server":
+                return "Local server — stays on this Mac."
+            case Self.unrecognizedServiceName:
+                // Never fall through to a "Cloud" claim when the URL simply failed to parse (e.g. a
+                // pasted-in leading/trailing space) — that previously told local-server users their data
+                // was going to "the provider" when it wasn't going anywhere at all.
+                return "Base URL doesn't look valid — check it before this model can be used."
+            default:
+                return "Cloud — your selection is sent to \(service). Use a multimodal model for image questions."
+            }
         case .anthropic:
             return "Cloud — your selection is sent to Anthropic. A vision Claude model also handles images."
         }
     }
 
+    /// Sentinel returned by `serviceName` when the URL couldn't be parsed at all — kept distinct from
+    /// "the provider" (a genuine, just-unrecognized cloud host) so callers never mistake "couldn't
+    /// parse" for "cloud".
+    private static let unrecognizedServiceName = "an unrecognized address"
+
     private func serviceName(_ urlString: String) -> String {
-        let host = (URL(string: urlString)?.host ?? "").lowercased()
+        guard let host = URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines))?.host?.lowercased(),
+              !host.isEmpty else { return Self.unrecognizedServiceName }
         if host.contains("groq") { return "Groq" }
         if host.contains("openrouter") { return "OpenRouter" }
         if host.contains("openai") { return "OpenAI" }
-        if host == "localhost" || host == "127.0.0.1" { return "a local server" }
+        if isLocalHost(host) { return "a local server" }
         return "the provider"
+    }
+
+    /// True for loopback hosts — mirrors `OpenAICompatibleProvider.isLocal`, used both by the privacy
+    /// label above and by the API-key caption/reload-message below so "local" means the same thing
+    /// everywhere in Settings.
+    private func isLocalHost(_ host: String) -> Bool {
+        host == "localhost" || host == "127.0.0.1" || host == "::1"
+    }
+
+    /// Whether a (possibly untrimmed) base URL string resolves to a local host.
+    private func isLocalBaseURL(_ urlString: String) -> Bool {
+        guard let host = URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines))?.host?.lowercased()
+        else { return false }
+        return isLocalHost(host)
     }
 
     private var noModels: Bool { modelsLoaded && availableModels.isEmpty }
@@ -1455,11 +1507,13 @@ struct SettingsView: View {
         Task { await OllamaEndpoint.autodetect() }   // re-resolve the effective server after a change
         intelligence.visionModel = draft.visionModel
         intelligence.visionMLXModel = draft.visionMLXModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        intelligence.anthropicBaseURL = draft.anthropicBaseURL
+        // Not user-editable in this UI today, but trimmed for the same reason as the OpenAI-compatible
+        // custom URL: a stray space would otherwise make `URL(string:)` fail wherever this is read back.
+        intelligence.anthropicBaseURL = draft.anthropicBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         intelligence.anthropicModel = draft.anthropicModel
         Keychain.set(draft.anthropicKey, for: "anthropic.apiKey")
         intelligence.visionEngine = draft.visionEngine
-        intelligence.visionAnthropicBaseURL = draft.visionAnthropicBaseURL
+        intelligence.visionAnthropicBaseURL = draft.visionAnthropicBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         intelligence.visionAnthropicModel = draft.visionAnthropicModel
         Keychain.set(draft.visionAnthropicKey, for: "vision.anthropic.apiKey")
 
@@ -1472,9 +1526,11 @@ struct SettingsView: View {
             UserDefaults.standard.set(draft.visionOpenAIModelByService[s] ?? "", forKey: "intelligence.vision.openai.svc.\(s).model")
         }
         UserDefaults.standard.set(draft.openAIService, forKey: "intelligence.openai.service")
-        UserDefaults.standard.set(draft.openAICustomBaseURL, forKey: "intelligence.openai.customBaseURL")
+        UserDefaults.standard.set(draft.openAICustomBaseURL.trimmingCharacters(in: .whitespacesAndNewlines),
+                                  forKey: "intelligence.openai.customBaseURL")
         UserDefaults.standard.set(draft.visionOpenAIService, forKey: "intelligence.vision.openai.service")
-        UserDefaults.standard.set(draft.visionOpenAICustomBaseURL, forKey: "intelligence.vision.openai.customBaseURL")
+        UserDefaults.standard.set(draft.visionOpenAICustomBaseURL.trimmingCharacters(in: .whitespacesAndNewlines),
+                                  forKey: "intelligence.vision.openai.customBaseURL")
         // Active text config
         intelligence.openAIBaseURL = Self.openAIServiceURL(draft.openAIService, custom: draft.openAICustomBaseURL)
         intelligence.openAIModel = draft.openAIModelByService[draft.openAIService] ?? ""
@@ -1516,7 +1572,8 @@ struct SettingsView: View {
             UserDefaults.standard.set(draft.embeddingOpenAIModelByService[s] ?? "", forKey: "intelligence.embedding.openai.svc.\(s).model")
         }
         UserDefaults.standard.set(draft.embeddingOpenAIService, forKey: "intelligence.embedding.openai.service")
-        UserDefaults.standard.set(draft.embeddingOpenAICustomBaseURL, forKey: "intelligence.embedding.openai.customBaseURL")
+        UserDefaults.standard.set(draft.embeddingOpenAICustomBaseURL.trimmingCharacters(in: .whitespacesAndNewlines),
+                                  forKey: "intelligence.embedding.openai.customBaseURL")
         intelligence.embeddingOpenAIBaseURL = Self.openAIServiceURL(draft.embeddingOpenAIService, custom: draft.embeddingOpenAICustomBaseURL)
         intelligence.embeddingOpenAIModel = (draft.embeddingOpenAIModelByService[draft.embeddingOpenAIService] ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
