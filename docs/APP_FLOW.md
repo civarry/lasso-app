@@ -328,6 +328,34 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Hybrid retrieval for web sources**: BM25 (`Intelligence/Harness/HybridRanking.swift`) runs over the
+  turn's candidate pool alongside the existing vector ranking, and the two are combined with
+  Reciprocal Rank Fusion (`RankFusion`, k = 60) to decide the **order** evidence reaches the model,
+  which matters because `evidenceLimits.hits` truncates. Raw BM25 and cosine are never summed, only
+  their ranks. Storage-free by design: no SQLite/FTS5 exists in Lasso and a pool is 10-15 short
+  documents. BM25 needs no model, so it is independent of the selected embedding provider; the vector
+  side reads the same resolved `ChatEmbedder` as before (Apple / Ollama / MLX / OpenAI-compatible).
+  **Admission stays a vector decision** and RRF is not a substitute for it: measured, BM25 over a pool
+  retrieved *for* the query has compressed IDF, and its strongest signal on "who is the CEO of
+  Anthropic" excluded the document that answers it. **Zero evidence is now a valid outcome**
+  (`minKeep: 0` at the call site): two irrelevant results are worse than none.
+- **Web evidence is ephemeral context, not conversation history.** It used to be folded into
+  `userText`, which becomes `promptText`, which is replayed as the user's own message by
+  `historyTurns`, summarised into durable memory, read by the search planner, embedded for semantic
+  recall, and written to disk. One grounded turn contaminated all five (observed: context growing
+  3566 → 15041 chars over six turns). It now travels through `ChatContextBuilder.build(evidence:)`
+  as its own **system** turn placed immediately before the question, so it is the most recent thing
+  the model reads, stays distinguishable from the user's words, and is gone next turn. The
+  "no results right now" note is ephemeral for the same reason. Trade-off: a follow-up turn no longer
+  sees the previous turn's sources, only the assistant's answer.
+- **Weak relevance is reported, not acted on.** `minKeep: 2` does guarantee two survivors even when
+  nothing clears the bar, but the score cannot separate a real question from a false premise: measured
+  live, "who is the CEO of Anthropic" is rescued by the floor (top 0.389, one hit clearing) while
+  "first human to walk on Mars in 1987" clears it with three (top 0.357, led by an unrelated Le Guin
+  story). Deleting evidence on that signal starves the real question and keeps the fake one. So
+  `relevanceIsWeak` now marks the block instead: the model is told nothing scored as clearly relevant
+  and that reporting no reliable information is the right answer. Logged as `WEAK, nothing cleared
+  the bar`.
 - **Web-evidence trust model** (hallucination hardening). Retrieved content is now framed as untrusted
   data rather than a reference: the Wikipedia abstract carries the article title it summarises and is
   dropped when that article shares no significant term with the query (`abstractIsOnTopic`); the

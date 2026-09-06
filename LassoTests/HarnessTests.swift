@@ -464,6 +464,217 @@ struct HarnessTests {
         #expect(ChatController.webIntent(typed: "search the web for Project = Phoenix", hasImage: false) == .search)
     }
 
+    // MARK: - Evidence is ephemeral, not conversation history
+
+    /// The contamination this prevents: evidence used to be folded into `userText`, which becomes
+    /// `promptText`, which is replayed as the user's own message by `historyTurns`, summarised into
+    /// durable memory, read by the search planner, embedded for semantic recall, and written to disk.
+    /// Observed live: context grew 3566 -> 5687 -> 8216 -> 11163 -> 13036 -> 15041 chars over six turns.
+    @MainActor
+    @Test func evidenceTravelsAsItsOwnSystemTurnBeforeTheQuestion() {
+        let builder = ChatContextBuilder(budget: .default)
+        let out = builder.build(systemPrompt: "SYS",
+                                memory: ConversationMemory(),
+                                history: [],
+                                evidence: "<<<WEB_EVIDENCE sources EVIDENCE>>>",
+                                currentUserText: "who is the CEO of Anthropic?",
+                                currentImageBase64s: [])
+        // Last turn is the user's question; the evidence sits immediately before it, as system.
+        #expect(out.turns.last?.role == .user)
+        #expect(out.turns.last?.text == "who is the CEO of Anthropic?")
+        let beforeLast = out.turns[out.turns.count - 2]
+        #expect(beforeLast.role == .system)
+        #expect(beforeLast.text.contains("WEB_EVIDENCE"))
+        // The user's own message never carries it.
+        #expect(!(out.turns.last?.text.contains("WEB_EVIDENCE") ?? true))
+    }
+
+    /// Turn 1 grounded, turn 2 unrelated, turn 3 grounded. Turn 1's evidence must not appear in the
+    /// later turns' context at all, and the user's canonical messages stay clean.
+    @MainActor
+    @Test func evidenceFromAnEarlierTurnDoesNotLeakIntoLaterTurns() {
+        let builder = ChatContextBuilder(budget: .default)
+        let evidence1 = "<<<WEB_EVIDENCE Dario Amodei is CEO. UNIQUE_MARKER_T1 EVIDENCE>>>"
+
+        // Turn 1: grounded. History is what gets persisted afterwards: the user's words only.
+        let t1 = builder.build(systemPrompt: "SYS", memory: ConversationMemory(), history: [],
+                               evidence: evidence1,
+                               currentUserText: "who is the CEO of Anthropic?", currentImageBase64s: [])
+        #expect(t1.turns.contains { $0.text.contains("UNIQUE_MARKER_T1") })
+
+        let historyAfterT1: [ChatContextBuilder.HistoryTurn] = [
+            .init(role: .user, text: "who is the CEO of Anthropic?", imageBase64s: []),
+            .init(role: .assistant, text: "Dario Amodei.", imageBase64s: []),
+        ]
+
+        // Turn 2: unrelated, no evidence.
+        let t2 = builder.build(systemPrompt: "SYS", memory: ConversationMemory(),
+                               history: historyAfterT1, evidence: nil,
+                               currentUserText: "write me a haiku about rain", currentImageBase64s: [])
+        #expect(!t2.turns.contains { $0.text.contains("UNIQUE_MARKER_T1") })
+        #expect(!t2.turns.contains { $0.text.contains("WEB_EVIDENCE") })
+
+        // Turn 3: grounded again, with its own evidence only.
+        let historyAfterT2 = historyAfterT1 + [
+            .init(role: .user, text: "write me a haiku about rain", imageBase64s: []),
+            .init(role: .assistant, text: "Rain falls.", imageBase64s: []),
+        ]
+        let t3 = builder.build(systemPrompt: "SYS", memory: ConversationMemory(),
+                               history: historyAfterT2,
+                               evidence: "<<<WEB_EVIDENCE typhoon news UNIQUE_MARKER_T3 EVIDENCE>>>",
+                               currentUserText: "latest typhoon news?", currentImageBase64s: [])
+        #expect(t3.turns.contains { $0.text.contains("UNIQUE_MARKER_T3") })
+        #expect(!t3.turns.contains { $0.text.contains("UNIQUE_MARKER_T1") })
+    }
+
+    // MARK: - Weak relevance is reported, not acted on
+
+    /// Measured against live results with this embedder, and the reason `minKeep` is not simply
+    /// removed. The most legitimate query in the suite is rescued by the floor while a false-premise
+    /// query clears the bar on its own, so deleting evidence on this signal starves the real question
+    /// and keeps the fake one.
+    @MainActor
+    @Test func relevanceFloorCannotSeparateRealQuestionsFromFalsePremises() {
+        func hit(_ t: String) -> WebSourcesProvider.Hit {
+            .init(title: t, url: nil, source: "test")
+        }
+        // "who is the CEO of Anthropic": only the top hit clears max(0.30, 0.389-0.18)=0.30.
+        let anthropic = [(hit("Anthropic"), 0.389), (hit("Dario Amodei"), 0.269),
+                         (hit("DoD dispute"), 0.267), (hit("Claude (AI)"), 0.220)]
+            .map { (hit: $0.0, score: $0.1) }
+        #expect(ChatController.relevanceIsWeak(anthropic))          // a REAL question trips the floor
+        #expect(ChatController.selectRelevant(anthropic).count == 2) // and is rescued by minKeep
+
+        // "first human to walk on Mars in 1987": three clear max(0.30, 0.357-0.18)=0.30.
+        let mars = [(hit("The Ones Who Walk Away from Omelas"), 0.357),
+                    (hit("List of Apollo astronauts"), 0.322), (hit("Mars trilogy"), 0.318),
+                    (hit("List of crewed Mars mission plans"), 0.207)]
+            .map { (hit: $0.0, score: $0.1) }
+        #expect(!ChatController.relevanceIsWeak(mars))              // a FALSE premise does not
+    }
+
+    /// When the floor fired, the block says so before anything else, and tells the model that
+    /// reporting no reliable information is the right answer.
+    @MainActor
+    @Test func weakEvidenceIsLabelledAtTheTopOfTheBlock() {
+        var evidence = Evidence()
+        evidence.hits = [.init(title: "Something tangential", url: nil, source: "test")]
+        evidence.relevanceIsWeak = true
+        let out = ChatController.formatEvidence(evidence, limits: .init(hits: 6, snippet: 280, abstract: 400))
+        #expect(out.hasPrefix("NOTE: no source here scored as clearly relevant"))
+        #expect(out.contains("no reliable information was found"))
+
+        evidence.relevanceIsWeak = false
+        let clean = ChatController.formatEvidence(evidence, limits: .init(hits: 6, snippet: 280, abstract: 400))
+        #expect(!clean.contains("NOTE: no source"))
+    }
+
+    // MARK: - Hybrid retrieval: BM25 + vector, fused with RRF
+
+    private func doc(_ t: String) -> WebSourcesProvider.Hit {
+        .init(title: t, url: nil, source: "test")
+    }
+
+    /// A: lexical-only. The exact identifier appears in one document and nowhere else, so BM25 ranks
+    /// it first even though an embedding would see three similar-looking titles.
+    @MainActor
+    @Test func hybridLexicalOnlyMatchRanksFirstOnBM25() {
+        let docs = ["Ecto adapter configuration for PostgreSQL",
+                    "General database tuning advice",
+                    "Notes on relational storage engines"]
+        let scores = LexicalRanker.bm25(query: "Ecto adapter PostgreSQL", documents: docs)
+        #expect(RankFusion.ranks(of: scores).first == 1)
+        #expect(scores[0] > scores[1] && scores[0] > scores[2])
+    }
+
+    /// B: semantic-only. The document that answers the question shares none of its words. Measured
+    /// live: "Dario Amodei" scores 0.00 on BM25 for "who is the CEO of Anthropic", which is precisely
+    /// why lexical evidence orders candidates and never admits them.
+    @MainActor
+    @Test func hybridSemanticOnlyMatchScoresZeroLexically() {
+        let scores = LexicalRanker.bm25(query: "who is the CEO of Anthropic",
+                                        documents: ["Dario Amodei", "Anthropic", "Claude (AI)"])
+        #expect(scores[0] == 0)
+        // Fusion still ranks it, via the vector ranking's contribution alone.
+        let fused = RankFusion.fuse([RankFusion.ranks(of: scores), [3, 2, 1]], count: 3)
+        #expect(fused[0] > 0)
+    }
+
+    /// C: strong in both rankings beats strong in only one.
+    @MainActor
+    @Test func hybridDocumentStrongInBothWinsFusion() {
+        let lexical = [1, 2, 3]        // doc0 best lexically
+        let vector = [1, 3, 2]         // doc0 best semantically too
+        let fused = RankFusion.fuse([lexical, vector], count: 3)
+        #expect(fused[0] > fused[1])
+        #expect(fused[0] > fused[2])
+        // A document ranked top by one strategy only still scores, just less.
+        let split = RankFusion.fuse([[1, 2, 3], [3, 2, 1]], count: 3)
+        #expect(split[0] == split[2])
+        #expect(split[1] < split[0])
+    }
+
+    /// D: an irrelevant document sharing words must not become evidence on lexical strength alone.
+    /// Admission is a vector decision; RRF only decides order.
+    @MainActor
+    @Test func hybridIrrelevantLexicalMatchIsNotAdmitted() {
+        // Live fixture: "United States" scores 2.34 on BM25 for the Mars-president query, second only
+        // to the actors list, while its cosine is 0.250 and never clears the bar.
+        let scored = [(hit: doc("List of actors who have played the president of the United States"), score: 0.557),
+                      (hit: doc("United States"), score: 0.250),
+                      (hit: doc("Mars Hill University"), score: 0.245)]
+        let kept = ChatController.selectRelevant(scored, minKeep: 0).map(\.title)
+        #expect(!kept.contains("United States"))
+        #expect(!kept.contains("Mars Hill University"))
+    }
+
+    /// E: an irrelevant but semantically close document is likewise held to the bar.
+    @MainActor
+    @Test func hybridIrrelevantSemanticMatchIsNotAdmitted() {
+        let scored = [(hit: doc("Anthropic"), score: 0.389),
+                      (hit: doc("Anthropic-United States DoD dispute"), score: 0.267),
+                      (hit: doc("Claude (AI)"), score: 0.220)]
+        let kept = ChatController.selectRelevant(scored, minKeep: 0).map(\.title)
+        #expect(kept == ["Anthropic"])   // the near neighbours do not ride along
+    }
+
+    /// F: neither ranking finds anything relevant, so the answer is no evidence at all. Two irrelevant
+    /// results are worse than none.
+    @MainActor
+    @Test func hybridZeroRelevantEvidenceIsAValidOutcome() {
+        let scored = [(hit: doc("a"), score: 0.20), (hit: doc("b"), score: 0.10),
+                      (hit: doc("c"), score: 0.05)]
+        #expect(ChatController.selectRelevant(scored, minKeep: 0).isEmpty)
+        // The old floor would have forced two through.
+        #expect(ChatController.selectRelevant(scored, minKeep: 2).count == 2)
+    }
+
+    /// Stopwords carry no signal but do carry weight in a small pool, where a common word looks rare.
+    /// Measured on the live Mars-1987 pool, removing them cut the Le Guin story's BM25 score from 3.45
+    /// to 1.36. It did not dethrone it, because "walk" is genuinely in the query and genuinely rare in
+    /// that pool, which is part of why lexical evidence orders candidates and never admits them.
+    @MainActor
+    @Test func lexicalRankerIgnoresStopwords() {
+        // A document made only of stopwords scores nothing; one carrying a content term scores.
+        let scores = LexicalRanker.bm25(query: "who was the first human on Mars",
+                                        documents: ["The first who was on the", "Mars mission"])
+        #expect(scores[0] == 0)
+        #expect(scores[1] > 0)
+        #expect(LexicalRanker.tokens("who was the first").isEmpty)
+        #expect(LexicalRanker.tokens("Mars mission plans") == ["mars", "mission", "plans"])
+    }
+
+    /// RRF never mixes raw scales: it consumes ranks only, and k is a named constant.
+    @MainActor
+    @Test func rankFusionUsesRanksNotRawScores() {
+        #expect(RankFusion.k == 60)
+        // Wildly different score magnitudes, identical ranks, identical fusion.
+        let a = RankFusion.ranks(of: [900.0, 5.0, 1.0])
+        let b = RankFusion.ranks(of: [0.9, 0.005, 0.001])
+        #expect(a == b)
+        #expect(RankFusion.fuse([a], count: 3) == RankFusion.fuse([b], count: 3))
+    }
+
     // MARK: - Toolbelt exposure
 
     @Test func toolbeltOffersNothingWithoutNativeToolCalling() {

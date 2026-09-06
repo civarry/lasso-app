@@ -146,6 +146,7 @@ struct ChatContextBuilder: Sendable {
                memory: ConversationMemory,
                history: [HistoryTurn],
                retrieved: [String] = [],
+               evidence: String? = nil,
                currentUserText: String,
                currentImageBase64s: [String]) -> Output {
 
@@ -213,6 +214,13 @@ struct ChatContextBuilder: Sendable {
             }
             for h in recentTurns {
                 turns.append(.init(role: h.role, text: h.text, imageBase64s: h.imageBase64s))
+            }
+            // Retrieved web evidence is *this turn's* context, not something the user said. It goes in
+            // as its own system turn immediately before the question, so it is the most recent thing
+            // the model reads, stays distinguishable from the user's words, and — because it lives
+            // nowhere in `history` — is gone next turn instead of accumulating.
+            if let evidence, !evidence.isEmpty {
+                turns.append(.init(role: .system, text: evidence))
             }
             turns.append(.init(role: .user, text: currentUserText, imageBase64s: currentImageBase64s))
             return turns

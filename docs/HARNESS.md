@@ -171,6 +171,25 @@ with `entity=Dario Amodei`. Two things the trace also showed, both now fixed:
   (`…Dario Amodei? 2026`), and once the framing is stripped the word "latest" disappears with it, so
   recency now comes from the structured `intent` rather than from the cleaned query text.
 
+**Field results after hybrid retrieval (2026-09-07).** Six grounding regression prompts, MLX
+Qwen2.5-3B-4bit, web ON. Score went from 3/7 to 6/7 clean plus one partial over the course of this
+work. The decisive line:
+
+```
+rank · Remembering John Hanson, First President of the Original Uni  bm25=#1/2.20 vec=#3/0.247  dropped
+source ranking: bm25+vector→rrf, kept 0/7 — ZERO relevant evidence
+```
+
+That is the exact source of the original "John Hanson was the first president of the United States of
+Mars" hallucination, now ranked first lexically and dropped anyway, because admission is a vector
+decision. The zero-evidence path fired in the field for the first time, and the model answered "no
+reliable information exists to answer this question".
+
+Unobtanium passed for the first time (evidence described it as fictional rather than supplying a
+symbol). Mars-1987 stopped naming a person, but invented an attribution to a source that had been
+*dropped* from evidence, which is a pure model confabulation and reachable only by claim-level
+verification. Measured cost of the hybrid: lexical 0-1ms, RRF 0ms, against a vector stage of 120-409ms.
+
 **Not yet verified against a live backend.** Rung 2's wire format is exercised by unit tests and
 compiles against each provider, but no Ollama server or cloud key was available in the session that
 wrote it, so `format` / `response_format` / forced-tool-use have not been round-tripped for real. That

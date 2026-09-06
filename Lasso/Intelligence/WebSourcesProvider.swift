@@ -387,6 +387,9 @@ struct Evidence {
     var entities: [String] = []                     // recognized web entities, ranked
     var abstract: String?                           // encyclopedic context
     var abstractSource: String?                     // the page/engine the abstract came from
+    /// True when no source actually cleared the relevance bar and the closest ones were kept anyway.
+    /// Surfaced to the model rather than used to delete evidence: see `relevanceIsWeak`.
+    var relevanceIsWeak = false
     var hits: [WebSourcesProvider.Hit] = []         // related links
     var error: String?                              // surfaced when a configured source fails
 

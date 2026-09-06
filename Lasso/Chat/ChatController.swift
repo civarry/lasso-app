@@ -842,6 +842,8 @@ final class ChatController {
             Log.chat.notice("runTurn · folded app context (\(appContext.count, privacy: .public) chars)")
         }
         var imageBase64s: [String] = []
+        /// This turn's web evidence, passed to the builder as its own block and never persisted.
+        var turnEvidence: String?
         let multi = attachments.count > 1
 
         // Grounding uses at most one image (reverse-image is out anyway) — box the first for the tool path.
@@ -977,7 +979,12 @@ final class ChatController {
             Log.chat.notice("runTurn · awaiting web evidence (+\(ms(), privacy: .public)ms)")
         }
         if let evidence = await evidenceResult {
-            userText = appendEvidence(userText, evidence)
+            // NOT folded into `userText`. That text becomes `promptText`, which is replayed as the
+            // user's own message by `historyTurns`, summarised into durable memory, read by the
+            // search planner, embedded for semantic recall, and written to disk. One grounded turn
+            // used to contaminate all five (observed: context growing 3566 -> 15041 chars across six
+            // turns). Evidence is this turn's context, so it travels as its own ephemeral block.
+            turnEvidence = Self.fencedEvidence(Self.formatEvidence(evidence, limits: evidenceLimits))
             let hits = Array(evidence.hits.prefix(min(evidenceLimits.hits, 8)))
             update(assistantID) { $0.sources = hits }
             if let searchStepID {
@@ -989,9 +996,10 @@ final class ChatController {
         } else if let searchStepID {
             // A search was intended (heuristic path) but came back empty — the free sources are flaky.
             // Tell the model so it says it couldn't find current info, rather than claiming it has no
-            // internet access (which reads as "search is off" and misleads the user).
+            // internet access (which reads as "search is off" and misleads the user). Ephemeral too:
+            // "no results right now" must not be replayed as a standing fact on later turns.
             completeStep(assistantID, searchStepID, text: "No web results")
-            userText = Self.appendEmptySearchNote(userText)
+            turnEvidence = Self.emptySearchNote
         }
 
         // Persist what was actually sent so the description / image carries into follow-up turns.
@@ -1013,7 +1021,8 @@ final class ChatController {
         }
 
         let textLabel = intelligence.textEngineLabel
-        let turns = buildTurns(newUserText: userText, imageBase64s: imageBase64s, retrieved: retrieved)
+        let turns = buildTurns(newUserText: userText, imageBase64s: imageBase64s,
+                               retrieved: retrieved, evidence: turnEvidence)
         let totalChars = turns.reduce(0) { $0 + $1.text.count }
         Log.chat.notice("runTurn · built \(turns.count, privacy: .public) turns, \(totalChars, privacy: .public) chars, toolPath=\(toolPath, privacy: .public) — stream START (+\(ms(), privacy: .public)ms)")
         if Task.isCancelled { Log.chat.notice("runTurn · cancelled before stream"); return }
@@ -1438,8 +1447,10 @@ final class ChatController {
             // Drop hits that are topically irrelevant to the query (the free search matches loose tokens
             // like the appended year — "2026 Tumbler Ridge shooting" for an OpenAI query). One embedding
             // pass here filters the Sources UI, the step links, and the model's grounding at once.
+            weakRelevance = false
             evidence.hits = await filterRelevantHits(evidence.hits, to: query,
                                                      requiredEntity: plan?.resolvedEntity)
+            evidence.relevanceIsWeak = weakRelevance
             // The abstract used to be the one component that reached the model unfiltered, printed
             // first and labelled as a summary of the answer. Gate it on what it is actually *about*.
             if let a = evidence.abstract, !a.isEmpty,
@@ -1508,13 +1519,18 @@ final class ChatController {
     /// embedder as memory) and drop the clearly-irrelevant ones. Returns the hits unchanged when there's
     /// nothing to gain (≤1 hit, empty query) or when the embedder is unavailable/errors — grounding is
     /// never lost to a filter hiccup.
+    /// Set by `filterRelevantHits` for the turn in flight: true when no hit actually cleared the
+    /// relevance bar and `minKeep` kept the closest ones anyway. Read by `gatherEvidence` to mark the
+    /// evidence block weak. Per-turn scratch, not state.
+    private var weakRelevance = false
+
     private func filterRelevantHits(_ hits: [WebSourcesProvider.Hit],
                                     to query: String,
                                     requiredEntity: String? = nil) async -> [WebSourcesProvider.Hit] {
         // Entity match is a SOFT preference, not a hard gate: on the free path only titles are matchable
         // and titles routinely omit the subject, so we restrict to entity-matching hits only when at
-        // least two survive — otherwise keep all hits and let the embedding filter judge. This never
-        // strands grounding (the old hard `return []` could zero out a search that did find results).
+        // least two survive — otherwise keep all hits and let the ranking judge. Position and semantics
+        // unchanged by the hybrid work: it still narrows the pool before ranking.
         var pool = hits
         if let entity = requiredEntity?.trimmingCharacters(in: .whitespacesAndNewlines), !entity.isEmpty {
             let matched = hits.filter { Self.hitMatchesEntity($0, entity: entity) }
@@ -1524,16 +1540,71 @@ final class ChatController {
             let verdict = matched.count == hits.count ? " — NO-OP, matched everything" : ""
             Log.chat.notice("source entity filter: \(matched.count, privacy: .public)/\(hits.count, privacy: .public) matched \"\(entity, privacy: .public)\" (pool=\(pool.count, privacy: .public))\(verdict, privacy: .public)")
         }
-        guard pool.count > 1 else { return pool }
+        guard !pool.isEmpty else { return [] }
+
         // Rank against the query minus its trailing recency year, so a generic "2026" doesn't pull the
         // query embedding toward the year and reward year-almanac pages.
         let rankQuery = Self.stripTrailingYear(query).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !rankQuery.isEmpty, let embedder = await memoryIndex.embedder() else { return pool }
-        let texts = [rankQuery] + pool.map { $0.snippet ?? $0.title }
-        guard let vecs = await embedder.embed(texts), vecs.count == texts.count else { return pool }
-        let scored = zip(pool, vecs.dropFirst()).map { (hit: $0, score: OllamaEmbeddings.cosine(vecs[0], $1)) }
-        let kept = Self.selectRelevant(scored)
-        Log.chat.notice("source relevance filter: kept \(kept.count, privacy: .public)/\(pool.count, privacy: .public)")
+        guard !rankQuery.isEmpty else { return pool }
+        let documents = pool.map { hit -> String in
+            let snippet = hit.snippet?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return snippet.isEmpty ? hit.title : "\(hit.title) \(snippet)"
+        }
+
+        // --- Lexical ranking. No model, no index, always available. ---
+        let lexicalStart = Date()
+        let lexicalScores = LexicalRanker.bm25(query: rankQuery, documents: documents)
+        let lexicalRanks = RankFusion.ranks(of: lexicalScores)
+        let lexicalMs = Int(Date().timeIntervalSince(lexicalStart) * 1000)
+
+        // --- Vector ranking, through whichever embedding provider the user selected. The hybrid work
+        // adds no embedding model and no second provider system; it reads the same resolved embedder
+        // the chat memory index uses, so Apple / Ollama / MLX / OpenAI-compatible all flow through here
+        // unchanged. Absent embedder (or a failed call) simply means the lexical ranking stands alone.
+        let vectorStart = Date()
+        var vectorScores: [Double]?
+        if let embedder = await memoryIndex.embedder(),
+           let vectors = await embedder.embed([rankQuery] + documents),
+           vectors.count == documents.count + 1 {
+            vectorScores = vectors.dropFirst().map { OllamaEmbeddings.cosine(vectors[0], $0) }
+        }
+        let vectorMs = Int(Date().timeIntervalSince(vectorStart) * 1000)
+
+        // --- Reciprocal Rank Fusion decides the ORDER. Raw BM25 and cosine are never added together;
+        // only their ranks are combined. Ordering matters because `evidenceLimits.hits` truncates,
+        // so fusion picks which few of a dozen candidates the model actually reads.
+        let fusionStart = Date()
+        var rankings = [lexicalRanks]
+        if let vectorScores { rankings.append(RankFusion.ranks(of: vectorScores)) }
+        let fused = RankFusion.fuse(rankings, count: pool.count)
+        let fusedOrder = (0..<pool.count).sorted { fused[$0] > fused[$1] }
+        let fusionMs = Int(Date().timeIntervalSince(fusionStart) * 1000)
+
+        // --- Admission stays a VECTOR decision, and RRF is explicitly not a substitute for it.
+        // Measured on live results: BM25 over a pool retrieved *for* the query has compressed IDF and
+        // cannot separate a real question from a false premise, and its strongest signal on
+        // "who is the CEO of Anthropic" excluded the very document that answers it ("Dario Amodei"
+        // contains none of the query's words). Lexical evidence orders; it does not admit.
+        guard let vectorScores else {
+            Log.chat.notice("source ranking: bm25-only (no embedder) — \(pool.count, privacy: .public) kept, lexical=\(lexicalMs, privacy: .public)ms")
+            return fusedOrder.map { pool[$0] }
+        }
+        let scored = zip(pool, vectorScores).map { (hit: $0, score: $1) }
+        let admitted = Set(Self.selectRelevant(scored, minKeep: 0).map(\.id))
+        weakRelevance = Self.relevanceIsWeak(scored)
+
+        // Why each candidate survived or did not. Debug level: useful when chasing a bad answer,
+        // invisible in normal use.
+        for index in fusedOrder {
+            Log.chat.debug("""
+                rank · \(String(pool[index].title.prefix(60)), privacy: .public)                 bm25=#\(lexicalRanks[index], privacy: .public)/\(String(format: "%.2f", lexicalScores[index]), privacy: .public)                 vec=#\(RankFusion.ranks(of: vectorScores)[index], privacy: .public)/\(String(format: "%.3f", vectorScores[index]), privacy: .public)                 rrf=\(String(format: "%.5f", fused[index]), privacy: .public)                 \(admitted.contains(pool[index].id) ? "KEPT" : "dropped", privacy: .public)
+                """)
+        }
+
+        let kept = fusedOrder.map { pool[$0] }.filter { admitted.contains($0.id) }
+        let verdict = kept.isEmpty ? " — ZERO relevant evidence"
+            : (weakRelevance ? " — WEAK, nothing cleared the bar" : "")
+        Log.chat.notice("source ranking: bm25+vector→rrf, kept \(kept.count, privacy: .public)/\(pool.count, privacy: .public) (lexical=\(lexicalMs, privacy: .public)ms vector=\(vectorMs, privacy: .public)ms rrf=\(fusionMs, privacy: .public)ms)\(verdict, privacy: .public)")
         return kept
     }
 
@@ -1605,6 +1676,27 @@ final class ChatController {
         let kept = ranked.filter { $0.score >= bar }
         let survivors = kept.count >= minKeep ? kept : Array(ranked.prefix(minKeep))
         return survivors.map(\.hit)
+    }
+
+    /// Did `minKeep` have to rescue the result, i.e. did fewer than `minKeep` hits actually clear the
+    /// relevance bar? When true the surviving hits are the closest available rather than genuinely
+    /// relevant ones, and the model is told so.
+    ///
+    /// This is reported rather than acted on because the score cannot tell the two cases apart.
+    /// Measured against live results with this embedder: "who is the CEO of Anthropic", the most
+    /// legitimate query in the suite, clears the bar with only ONE hit (top 0.389) and is rescued by
+    /// the floor, while "who was the first human to walk on Mars in 1987" clears it with THREE (top
+    /// 0.357, led by the Le Guin story "The Ones Who Walk Away from Omelas"). Deleting evidence on
+    /// this signal would starve the real question and keep the false one. A false premise is
+    /// topically coherent by construction, which is exactly what an embedding measures.
+    static func relevanceIsWeak(_ scored: [(hit: WebSourcesProvider.Hit, score: Double)],
+                                absFloor: Double = 0.30, margin: Double = 0.18,
+                                minKeep: Int = 2) -> Bool {
+        guard !scored.isEmpty else { return false }
+        let ranked = scored.sorted { $0.score > $1.score }
+        guard let top = ranked.first?.score else { return false }
+        let bar = Swift.max(absFloor, top - margin)
+        return ranked.filter { $0.score >= bar }.count < minKeep
     }
 
     /// Build the strongest web query by fusing signals: reverse-image identity, any text seen in the
@@ -1765,11 +1857,7 @@ final class ChatController {
     }
 
     /// Fold gathered evidence into the turn as grounding context for the model (heuristic path).
-    private func appendEvidence(_ text: String, _ evidence: Evidence) -> String {
-        let body = Self.formatEvidence(evidence, limits: evidenceLimits)
-        guard !body.isEmpty else { return text }
-        return "\(text)\n\n\(Self.fencedEvidence(body))"
-    }
+
 
     /// Marker delimiting retrieved content. Stripped out of the body before fencing so a page cannot
     /// close the fence early and have the rest of itself read as instructions.
@@ -1806,15 +1894,11 @@ final class ChatController {
     /// Note folded in when a search ran but returned nothing (flaky free sources). Steers the model away
     /// from "I have no internet access" — which misreads as the feature being off — toward an honest
     /// "couldn't find current info right now."
-    private static func appendEmptySearchNote(_ text: String) -> String {
-        """
-        \(text)
-
+    static let emptySearchNote = """
         [A web search was attempted for this question but returned no usable results right now. Tell the \
-        user you couldn't find up-to-date information at the moment and they can try again or rephrase — \
-        do NOT claim you lack internet access or real-time ability, since a search did run.]
+        user you couldn't find up-to-date information at the moment and they can try again or rephrase. \
+        Do NOT claim you lack internet access or real-time ability, since a search did run.]
         """
-    }
 
     /// Render gathered evidence as plain text — shared by the heuristic fold-in and the tool result.
     /// How much grounding evidence to feed the model — scales with the context budget so a large cloud
@@ -1830,6 +1914,12 @@ final class ChatController {
 
     static func formatEvidence(_ evidence: Evidence, limits: EvidenceLimits) -> String {
         var lines: [String] = []
+        if evidence.relevanceIsWeak {
+            // First line, because it changes how everything below should be read.
+            lines.append("NOTE: no source here scored as clearly relevant to the question. These are "
+                + "the closest matches found, and they may not be about the subject at all. If they "
+                + "do not answer the question, say that no reliable information was found.")
+        }
         if let g = evidence.bestGuess, !g.isEmpty {
             lines.append("Likely identification (reverse-image search): \(g)")
         }
@@ -1867,7 +1957,8 @@ final class ChatController {
     /// the new (folded) user turn. Delegates layout/budget to `ChatContextBuilder`; older turns that
     /// fall outside the recent window are represented by `rollingSummary` (kept fresh in the
     /// background) instead of being dropped.
-    private func buildTurns(newUserText: String, imageBase64s: [String], retrieved: [String] = []) -> [ChatTurn] {
+    private func buildTurns(newUserText: String, imageBase64s: [String], retrieved: [String] = [],
+                            evidence: String? = nil) -> [ChatTurn] {
         // Map the prior history (excluding the just-appended user-display + assistant-placeholder)
         // to the builder's history turns, using each message's persisted `promptText` so folded
         // image/evidence context carries. Assistant thoughts are stripped — they're UI affordances.
@@ -1877,6 +1968,7 @@ final class ChatController {
                                        memory: memory,
                                        history: history,
                                        retrieved: retrieved,
+                                       evidence: evidence,
                                        currentUserText: newUserText,
                                        currentImageBase64s: imageBase64s)
         // Not surfaced in the UI anymore (older turns aren't lost — they're summarized + retrievable);

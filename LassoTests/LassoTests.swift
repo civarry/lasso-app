@@ -395,10 +395,11 @@ struct LassoTests {
         #expect(kept.map(\.title) == ["OpenAI Raises $122B", "OpenAI News 2026"])
     }
 
-    /// Safety floor: when everything scores low, it still returns the top `minKeep` — never empty, so
-    /// grounding is never stranded.
+    /// The `minKeep` floor is now opt-in. It remains the function's default, but the retrieval
+    /// pipeline calls it with `minKeep: 0`, because two irrelevant results are worse than none: see
+    /// `hybridZeroRelevantEvidenceIsAValidOutcome`.
     @MainActor
-    @Test func selectRelevantNeverReturnsEmpty() {
+    @Test func selectRelevantHonoursTheMinKeepFloorWhenAsked() {
         let kept = ChatController.selectRelevant([
             (hit: hit("a"), score: 0.20),
             (hit: hit("b"), score: 0.10),
