@@ -382,6 +382,20 @@ struct HarnessTests {
         #expect(out.contains("[fence]"))
     }
 
+    /// A tool-capable model answered "I don't retain information across separate conversations" to
+    /// "Remember: Project = Phoenix...", then correctly used those values on the very next turn. The
+    /// disclaimer was wrong about the app: conversations are saved and restored by `ConversationStore`.
+    /// The clause has to be precise in both directions, since cross-conversation memory genuinely does
+    /// not exist.
+    @MainActor
+    @Test func systemPromptForbidsDisclaimingConversationMemory() {
+        let prompt = ChatController.systemPrompt
+        #expect(prompt.contains("never say you cannot remember things"))
+        #expect(prompt.contains("use it for the rest of this conversation"))
+        // ...without overclaiming memory the app does not have.
+        #expect(prompt.contains("separate* conversation"))
+    }
+
     /// The false-premise carve-out has to coexist with the best-interpretation rule, not replace it.
     @MainActor
     @Test func systemPromptAllowsRejectingFalsePremises() {

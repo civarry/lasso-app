@@ -328,6 +328,12 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **System prompt: stop disclaiming conversation memory.** A tool-capable model answered "I don't
+  retain information across separate conversations" to "Remember: Project = Phoenix…", then used those
+  values correctly on the next turn. The disclaimer was wrong about the app (`ConversationStore` saves
+  and restores conversations), and it reads as a bug to a user who just told it something. The prompt
+  now says to acknowledge such statements and use them for the rest of the conversation, while staying
+  accurate that nothing carries into a *separate* conversation.
 - **Hybrid retrieval for web sources**: BM25 (`Intelligence/Harness/HybridRanking.swift`) runs over the
   turn's candidate pool alongside the existing vector ranking, and the two are combined with
   Reciprocal Rank Fusion (`RankFusion`, k = 60) to decide the **order** evidence reaches the model,
