@@ -329,24 +329,41 @@ struct HarnessTests {
             evidence, limits: .init(hits: 6, snippet: 280, abstract: 400))
         #expect(!out.contains("Reference summary"))
         #expect(out.contains("Mars Hill University"))
-        #expect(out.lowercased().contains("unverified"))
+        #expect(out.lowercased().contains("check it is about the same subject"))
+        // No quotable status label here either.
+        #expect(!out.lowercased().contains("unverified"))
     }
 
-    /// The wrapper both grounding paths share. Each expectation is a requirement the old preamble
+    /// The wrapper both grounding paths share. Each expectation is a requirement the original preamble
     /// failed: it granted authority by recency, never admitted the evidence could be wrong, gave no
-    /// permission to decline, and had no data/instruction boundary at all.
+    /// permission to decline, and had no data/instruction boundary at all. Asserted by *behaviour*
+    /// rather than by any single label, because a label is precisely what the model learned to recite.
     @MainActor
     @Test func evidenceWrapperFramesRetrievedTextAsUntrustedData() {
         let out = ChatController.fencedEvidence("Sources:\n- Example")
         let lower = out.lowercased()
-        #expect(lower.contains("untrusted"))
         #expect(lower.contains("data") && lower.contains("never") && lower.contains("instructions"))
+        #expect(lower.contains("unchecked"))
         #expect(lower.contains("different subject"))
-        #expect(lower.contains("could not find reliable evidence"))
-        #expect(lower.contains("outranks"))
+        #expect(lower.contains("could not find reliable information"))
+        #expect(lower.contains("takes priority"))
         // The authority-by-recency framing is gone.
         #expect(!lower.contains("prefer it over your own memory"))
         #expect(!lower.contains("more current than your training data"))
+    }
+
+    /// Regression: the model recited the block's own label back in five of seven answers ("According
+    /// to the unverified web evidence..."), the same failure as the old "Reference summary" label one
+    /// layer over. The wrapper must not hand it a quotable name for the block, and must ask for the
+    /// answer in the model's own voice.
+    @MainActor
+    @Test func evidenceWrapperGivesTheModelNothingToRecite() {
+        let lower = ChatController.fencedEvidence("Sources:\n- Example").lowercased()
+        #expect(!lower.contains("unverified web evidence"))
+        #expect(!lower.contains("untrusted web evidence"))
+        #expect(!lower.contains("unverified"))
+        #expect(lower.contains("in your own voice"))
+        #expect(lower.contains("do not open by describing where the information came from"))
     }
 
     /// Retrieved text must not be able to close the fence and have the remainder read as instructions.
