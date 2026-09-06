@@ -32,3 +32,6 @@ PHASE2_TEST.md
 
 # Local scratch assets / exports (not product)
 /store/
+
+# Agent worktrees are scratch, never committed
+.claude/worktrees/

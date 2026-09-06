@@ -53,12 +53,19 @@ final class LensPanelController: NSObject, NSWindowDelegate {
     }
 
     func close() {
+        // Ordering the window out does not dismantle the SwiftUI hierarchy, so the queued Lens upload
+        // would otherwise still reach Google after the card is gone. `present()` routes through here
+        // too, so starting a new search also drops the previous one's pending request.
+        LensSession.cancelPendingUpload()
         panel?.delegate = nil
         panel?.orderOut(nil)
         panel = nil
     }
 
-    func windowWillClose(_ notification: Notification) { panel = nil }
+    func windowWillClose(_ notification: Notification) {
+        LensSession.cancelPendingUpload()
+        panel = nil
+    }
 
     /// Below the selection, flipping above if it would clip; clamped on-screen.
     private func origin(for size: NSSize, anchor: CGRect?) -> NSPoint {
