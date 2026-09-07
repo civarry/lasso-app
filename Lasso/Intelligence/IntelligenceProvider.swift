@@ -103,7 +103,7 @@ enum ProviderKind: String, CaseIterable, Identifiable, Sendable {
         case .onDevice: "Apple Intelligence"
         case .ollama: "Ollama (local)"
         case .mlx: "MLX (local)"
-        case .openAICompatible: "OpenAI-compatible"
+        case .openAICompatible: "Custom"
         case .anthropic: "Anthropic"
         }
     }
@@ -129,7 +129,7 @@ enum VisionEngine: String, CaseIterable, Identifiable, Sendable {
         case .matchText: "Same as language model"
         case .ollama: "Ollama (local)"
         case .mlx: "MLX (local)"
-        case .openAICompatible: "OpenAI-compatible"
+        case .openAICompatible: "Custom"
         case .anthropic: "Anthropic"
         }
     }
@@ -155,7 +155,7 @@ enum EmbeddingProviderKind: String, CaseIterable, Identifiable, Sendable {
         case .apple: "Apple"
         case .ollama: "Ollama (local)"
         case .mlx: "MLX (local)"
-        case .openAICompatible: "OpenAI-compatible"
+        case .openAICompatible: "Custom"
         }
     }
     /// Local kinds never leave the Mac — cloud is forced back to `automatic` in local-only mode.
@@ -210,6 +210,26 @@ final class IntelligenceCoordinator {
     /// Cloud / custom provider config (non-secret; API keys live in the Keychain).
     var openAIBaseURL: String {
         didSet { UserDefaults.standard.set(openAIBaseURL, forKey: "intelligence.openai.baseURL") }
+    }
+    /// Which protocol the connection behind the selected model speaks. Travels with the flattened
+    /// effective config (URL + model + key) because that config alone can't say whether to build an
+    /// OpenAI-compatible request or a native Gemini one — Google serves both from the same host.
+    var openAIConnectionKind: ConnectionKind {
+        didSet { UserDefaults.standard.set(openAIConnectionKind.rawValue, forKey: Self.langKindKey) }
+    }
+    var visionOpenAIConnectionKind: ConnectionKind {
+        didSet { UserDefaults.standard.set(visionOpenAIConnectionKind.rawValue, forKey: Self.visionKindKey) }
+    }
+    var embeddingOpenAIConnectionKind: ConnectionKind {
+        didSet { UserDefaults.standard.set(embeddingOpenAIConnectionKind.rawValue, forKey: Self.embeddingKindKey) }
+    }
+
+    static let langKindKey = "intelligence.openai.connectionKind"
+    static let visionKindKey = "intelligence.vision.openai.connectionKind"
+    static let embeddingKindKey = "intelligence.embedding.openai.connectionKind"
+
+    private static func storedKind(_ key: String) -> ConnectionKind {
+        ConnectionKind(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .openAICompatible
     }
     var openAIModel: String {
         didSet { UserDefaults.standard.set(openAIModel, forKey: "intelligence.openai.model") }
@@ -291,6 +311,9 @@ final class IntelligenceCoordinator {
         self.embeddingOpenAIBaseURL = defaults.string(forKey: "intelligence.embedding.openai.baseURL") ?? "https://api.openai.com/v1"
         self.visionOpenAIBaseURL = defaults.string(forKey: "intelligence.vision.openai.baseURL") ?? "https://api.openai.com/v1"
         self.visionOpenAIModel = defaults.string(forKey: "intelligence.vision.openai.model") ?? "gpt-4o"
+        self.openAIConnectionKind = Self.storedKind(Self.langKindKey)
+        self.visionOpenAIConnectionKind = Self.storedKind(Self.visionKindKey)
+        self.embeddingOpenAIConnectionKind = Self.storedKind(Self.embeddingKindKey)
         self.visionAnthropicBaseURL = defaults.string(forKey: "intelligence.vision.anthropic.baseURL") ?? "https://api.anthropic.com"
         self.visionAnthropicModel = defaults.string(forKey: "intelligence.vision.anthropic.model") ?? "claude-3-5-sonnet-latest"
         // Vision engine: stored choice, else migrate from the legacy "Image model" override (a set
@@ -304,7 +327,9 @@ final class IntelligenceCoordinator {
 
     /// Display name for the OpenAI-compatible provider, inferred from its base URL.
     func openAIDisplayName() -> String {
+        if openAIConnectionKind == .gemini { return "Google Gemini" }
         let host = (URL(string: openAIBaseURL)?.host ?? "").lowercased()
+        if host.contains("googleapis") { return "Google" }
         if host.contains("groq") { return "Groq" }
         if host.contains("openrouter") { return "OpenRouter" }
         if host.contains("openai") { return "OpenAI" }
@@ -338,6 +363,7 @@ final class IntelligenceCoordinator {
                                   : registry.key(withID: keyID)
         if let entry {
             openAIBaseURL = entry.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            openAIConnectionKind = entry.kind
             Keychain.set(Keychain.get(entry.keychainAccount) ?? "", for: "openai.apiKey")
         }
         openAIModel = model
@@ -451,11 +477,15 @@ final class IntelligenceCoordinator {
         case .openAICompatible:
             // Embedding's own endpoint + key (independent of the Language model).
             let key = Keychain.get("embedding.openai.apiKey") ?? ""
-            let model = embeddingOpenAIModel.isEmpty ? "text-embedding-3-small" : embeddingOpenAIModel
+            let isGemini = embeddingOpenAIConnectionKind == .gemini
+            let fallbackModel = isGemini ? "text-embedding-004" : "text-embedding-3-small"
+            let model = embeddingOpenAIModel.isEmpty ? fallbackModel : embeddingOpenAIModel
             guard !key.isEmpty, let url = URL(string: embeddingOpenAIBaseURL) else {
                 Log.chat.notice("embedder: cloud embedding not configured → Apple"); return apple()
             }
-            let e = OpenAIEmbedder(baseURL: url, apiKey: key, model: model)
+            let e: ChatEmbedder = isGemini
+                ? GeminiEmbedder(apiKey: key, model: model)
+                : OpenAIEmbedder(baseURL: url, apiKey: key, model: model)
             if await probe(e) {
                 usedOffDeviceThisSession = true   // conversation text is being sent off-device
                 Log.chat.notice("embedder: cloud \(model, privacy: .public)"); return e
@@ -670,11 +700,15 @@ final class IntelligenceCoordinator {
         case .mlx:
             return MLXProvider(modelID: mlxModel.isEmpty ? MLXProvider.defaultModelID : mlxModel)
         case .openAICompatible:
+            let key = Keychain.getMigrating("openai.apiKey", legacyDefaultsKey: "openai.apiKey") ?? ""
+            // Same registry, two wire formats: the selected model's connection decides which.
+            if openAIConnectionKind == .gemini {
+                return GeminiProvider(apiKey: key, model: openAIModel,
+                                      displayName: openAIDisplayName())
+            }
             let url = URL(string: openAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
             return OpenAICompatibleProvider(
-                baseURL: url,
-                apiKey: Keychain.getMigrating("openai.apiKey", legacyDefaultsKey: "openai.apiKey") ?? "",
-                model: openAIModel, displayName: openAIDisplayName())
+                baseURL: url, apiKey: key, model: openAIModel, displayName: openAIDisplayName())
         case .anthropic:
             let url = URL(string: anthropicBaseURL) ?? URL(string: "https://api.anthropic.com")!
             return AnthropicProvider(
@@ -708,9 +742,12 @@ final class IntelligenceCoordinator {
             let provider = MLXVisionProvider(modelID: visionMLXModel)
             return await provider.isAvailable() ? provider : nil
         case .openAICompatible:
-            let url = URL(string: visionOpenAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
-            let cloud = OpenAICompatibleVisionProvider(
-                baseURL: url, apiKey: Keychain.get("vision.openai.apiKey") ?? "", model: visionOpenAIModel)
+            let key = Keychain.get("vision.openai.apiKey") ?? ""
+            let cloud: VisionProvider = visionOpenAIConnectionKind == .gemini
+                ? GeminiVisionProvider(apiKey: key, model: visionOpenAIModel)
+                : OpenAICompatibleVisionProvider(
+                    baseURL: URL(string: visionOpenAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!,
+                    apiKey: key, model: visionOpenAIModel)
             if await cloud.isAvailable() { usedOffDeviceThisSession = true; return cloud }
             return nil
         case .anthropic:

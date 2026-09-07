@@ -316,6 +316,8 @@ struct SettingsView: View {
             providers: availableProviders.map { ProviderChoice(id: $0.rawValue, label: $0.label) },
             providerID: Binding(get: { draft.provider.rawValue },
                                 set: { draft.provider = ProviderKind(rawValue: $0) ?? .onDevice }),
+            providerCaption: draft.provider == .openAICompatible
+                ? "Your configured endpoints, each with its own provider" : nil,
             showsModelRow: draft.provider != .onDevice,
             modelCaption: draft.provider == .openAICompatible
                 ? "Available from all configured connections" : nil,
@@ -646,9 +648,12 @@ struct SettingsView: View {
                     ? (true, "“\(entry.name)” needs a key — using Apple on-device instead.")
                     : (false, "“\(entry.name)” needs a key and no on-device embedder — \(appleNote).")
             }
-            let url = URL(string: entry.baseURL) ?? URL(string: "https://api.openai.com/v1")!
-            let ok = (await OpenAIEmbedder(baseURL: url, apiKey: key, model: model)
-                .embed(["probe"]))?.first?.isEmpty == false
+            let embedder: ChatEmbedder = entry.kind == .gemini
+                ? GeminiEmbedder(apiKey: key, model: model)
+                : OpenAIEmbedder(baseURL: URL(string: entry.baseURL)
+                                 ?? URL(string: "https://api.openai.com/v1")!,
+                                 apiKey: key, model: model)
+            let ok = (await embedder.embed(["probe"]))?.first?.isEmpty == false
             if ok {
                 return (true, "Active — cloud \(model) via “\(entry.name)”. Conversation text is sent to your provider.")
             }
@@ -1124,12 +1129,9 @@ struct SettingsView: View {
             let start = Date()
             var failed: [String] = []
             for entry in entries {
-                let key = registryKeyValue(entry.id)
-                if !entry.keyNotRequired, key.isEmpty { failed.append(entry.name); continue }
-                let models = await OpenAICompatibleProvider.availableModels(
-                    baseURL: URL(string: entry.baseURL) ?? URL(string: "https://api.openai.com/v1")!,
-                    apiKey: key)
-                if models.isEmpty, !entry.isLocal { failed.append(entry.name) }
+                if !(await KeysRegistry.reachable(entry, apiKey: registryKeyValue(entry.id))) {
+                    failed.append(entry.name)
+                }
             }
             let ms = max(1, Int(Date().timeIntervalSince(start) * 1000))
             if failed.isEmpty {
@@ -1148,12 +1150,10 @@ struct SettingsView: View {
     /// (Re)discover a connection's models from its endpoint, tag their capabilities, and store them
     /// on the entry. Every section's picker reads the union of these, so one refresh serves all three.
     private func discoverModels(forKeyID keyID: String) async {
-        guard let entry = draft.registry.key(withID: keyID),
-              let url = URL(string: entry.baseURL) else { return }
+        guard let entry = draft.registry.key(withID: keyID) else { return }
         discoveringKeyIDs.insert(keyID)
         defer { discoveringKeyIDs.remove(keyID) }
-        let ids = await OpenAICompatibleProvider.discoverModels(baseURL: url,
-                                                               apiKey: registryKeyValue(keyID))
+        let ids = await KeysRegistry.discoverModels(for: entry, apiKey: registryKeyValue(keyID))
         guard let idx = draft.registry.entries.firstIndex(where: { $0.id == keyID }) else { return }
         draft.registry.entries[idx].models = ids.map { RegistryModel(name: $0) }
         // Newly discovered models may satisfy a section that was empty; heal selections + status.
@@ -1694,6 +1694,7 @@ struct SettingsView: View {
     private func serviceName(_ urlString: String) -> String {
         guard let host = URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines))?.host?.lowercased(),
               !host.isEmpty else { return Self.unrecognizedServiceName }
+        if host.contains("googleapis") { return "Google" }
         if host.contains("groq") { return "Groq" }
         if host.contains("openrouter") { return "OpenRouter" }
         if host.contains("openai") { return "OpenAI" }
@@ -1934,12 +1935,16 @@ struct SettingsView: View {
         if let lang = resolveRegistrySelection(draft.langSelection, capability: .language), let key = lang.key {
             intelligence.openAIBaseURL = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
             intelligence.openAIModel = lang.model
+            // The connection's protocol travels with the flattened config, because that's what
+            // decides which transport `buildProvider()` constructs.
+            intelligence.openAIConnectionKind = key.kind
             Keychain.set(registryKeyValues[key.id] ?? "", for: "openai.apiKey")
         }
         // Effective image config (resolving "same as language" against the language selection).
         if let vis = resolveRegistrySelection(draft.visionSelection, capability: .vision), let key = vis.key {
             intelligence.visionOpenAIBaseURL = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
             intelligence.visionOpenAIModel = vis.model
+            intelligence.visionOpenAIConnectionKind = key.kind
             Keychain.set(registryKeyValues[key.id] ?? "", for: "vision.openai.apiKey")
         }
 
@@ -1973,6 +1978,7 @@ struct SettingsView: View {
         if let emb = resolveRegistrySelection(draft.embeddingSelection, capability: .embedding), let key = emb.key {
             intelligence.embeddingOpenAIBaseURL = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
             intelligence.embeddingOpenAIModel = emb.model.trimmingCharacters(in: .whitespacesAndNewlines)
+            intelligence.embeddingOpenAIConnectionKind = key.kind
             Keychain.set(registryKeyValues[key.id] ?? "", for: "embedding.openai.apiKey")
         }
         if embeddingChanged { ChatController.shared.embeddingConfigChanged() }

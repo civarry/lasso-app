@@ -13,6 +13,34 @@ enum ModelCapability: String, Codable, Sendable, CaseIterable {
     case language, vision, embedding
 }
 
+/// The wire protocol a connection speaks. This is the *transport*, chosen per connection — not a
+/// separate model pool: connections of both kinds live in the same registry and their models merge
+/// into one picker, so picking a model is still what selects the endpoint (see `KeysRegistry`).
+enum ConnectionKind: String, Codable, Sendable, CaseIterable, Identifiable {
+    case openAICompatible
+    case gemini
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .openAICompatible: "OpenAI-compatible"
+        case .gemini: "Google Gemini"
+        }
+    }
+
+    /// Gemini's endpoint is fixed by the provider, so the form never asks for one. OpenAI-compatible
+    /// keeps its Base URL field — including for Google's own `/v1beta/openai/` shim, which stays a
+    /// perfectly valid OpenAI-compatible connection.
+    var hasEditableBaseURL: Bool { self == .openAICompatible }
+
+    /// A connection of this kind always needs a credential.
+    var alwaysRequiresKey: Bool { self == .gemini }
+
+    /// Base URL to store when the user can't type one.
+    var fixedBaseURL: String? { self == .gemini ? GeminiAPI.baseURL : nil }
+}
+
 /// One model advertised by (or manually added to) a registered key. `capabilities` drives which
 /// card(s) the model appears in. Codable so the whole registry round-trips through UserDefaults as
 /// JSON.
@@ -40,21 +68,37 @@ struct RegisteredKey: Codable, Equatable, Sendable, Identifiable {
     var keyNotRequired: Bool
     var enabled: Bool
     var models: [RegistryModel]
+    /// Which wire protocol to speak. Decoded leniently so registries written before native Gemini
+    /// existed keep working — everything back then was OpenAI-compatible.
+    var kind: ConnectionKind
 
     /// Keychain account for this key's secret.
     var keychainAccount: String { "keys.registry.\(id).key" }
 
-    /// A localhost/loopback endpoint needs no API key.
-    var isLocal: Bool { KeysRegistry.isLocalURL(baseURL) }
+    /// A localhost/loopback endpoint needs no API key. Gemini is always remote.
+    var isLocal: Bool { kind == .openAICompatible && KeysRegistry.isLocalURL(baseURL) }
 
     init(id: String = UUID().uuidString, name: String, baseURL: String,
-         keyNotRequired: Bool, enabled: Bool = true, models: [RegistryModel] = []) {
+         keyNotRequired: Bool, enabled: Bool = true, models: [RegistryModel] = [],
+         kind: ConnectionKind = .openAICompatible) {
         self.id = id
         self.name = name
-        self.baseURL = baseURL
-        self.keyNotRequired = keyNotRequired
+        self.baseURL = kind.fixedBaseURL ?? baseURL
+        self.keyNotRequired = kind.alwaysRequiresKey ? false : keyNotRequired
         self.enabled = enabled
         self.models = models
+        self.kind = kind
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        baseURL = try container.decode(String.self, forKey: .baseURL)
+        keyNotRequired = try container.decode(Bool.self, forKey: .keyNotRequired)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        models = try container.decodeIfPresent([RegistryModel].self, forKey: .models) ?? []
+        kind = try container.decodeIfPresent(ConnectionKind.self, forKey: .kind) ?? .openAICompatible
     }
 }
 
@@ -154,6 +198,31 @@ struct KeysRegistry: Codable, Equatable, Sendable {
     }
 
     var hasAnyEnabledKey: Bool { entries.contains { $0.enabled } }
+
+    /// Models a connection serves, discovered through whichever protocol it speaks. One place, so
+    /// adding a transport doesn't mean hunting down every discovery call site.
+    static func discoverModels(for entry: RegisteredKey, apiKey: String) async -> [String] {
+        switch entry.kind {
+        case .gemini:
+            return await GeminiAPI.availableModels(apiKey: apiKey)
+        case .openAICompatible:
+            guard let url = URL(string: entry.baseURL) else { return [] }
+            return await OpenAICompatibleProvider.discoverModels(baseURL: url, apiKey: apiKey)
+        }
+    }
+
+    /// Whether a connection answers right now — the Connections row's test, per protocol.
+    static func reachable(_ entry: RegisteredKey, apiKey: String) async -> Bool {
+        if !entry.keyNotRequired, apiKey.isEmpty { return false }
+        switch entry.kind {
+        case .gemini:
+            return !(await GeminiAPI.availableModels(apiKey: apiKey)).isEmpty
+        case .openAICompatible:
+            guard let url = URL(string: entry.baseURL) else { return false }
+            let models = await OpenAICompatibleProvider.availableModels(baseURL: url, apiKey: apiKey)
+            return !models.isEmpty || entry.isLocal
+        }
+    }
 
     // MARK: - Static utilities
 

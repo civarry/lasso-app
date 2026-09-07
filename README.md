@@ -82,6 +82,10 @@ Settings → Intelligence lets you pick where the thinking happens:
   what each one serves. The Model dropdown is the union of every connection's models, grouped by
   connection, so picking a model is what decides where the request goes. Connections are managed in
   one place, under "Manage connections".
+- **Google Gemini** — Google's native Gemini API. Add it as a connection with just a name and an API
+  key; the endpoint is built in. Its models join the same dropdown as everything else. (You can still
+  reach Gemini through the OpenAI-compatible route instead, using Google's compatibility layer at
+  `https://generativelanguage.googleapis.com/v1beta/openai/` — both work, side by side.)
 - **Anthropic** — Claude, via your API key.
 
 Image and Embedding are their own sections with the same layout as Language. Image starts out

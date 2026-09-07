@@ -27,6 +27,7 @@ struct ConnectionsSheet: View {
     }
 
     @State private var editor: Editor = .none
+    @State private var kind: ConnectionKind = .openAICompatible
     @State private var name = ""
     @State private var url = ""
     @State private var secret = ""
@@ -101,7 +102,14 @@ struct ConnectionsSheet: View {
     private func connectionRow(_ entry: RegisteredKey) -> some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(entry.name).font(SettingsFont.label)
+                HStack(spacing: 6) {
+                    Text(entry.name).font(SettingsFont.label)
+                    Text(entry.kind.label)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(RoundedRectangle(cornerRadius: 4).fill(.secondary.opacity(0.15)))
+                }
                 Text(subtitle(for: entry))
                     .font(SettingsFont.sub).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle)
@@ -119,10 +127,12 @@ struct ConnectionsSheet: View {
 
     /// "<host path> · N models" — the two facts that say whether a connection is pulling its weight.
     private func subtitle(for entry: RegisteredKey) -> String {
-        if discovering.contains(entry.id) { return "\(entry.baseURL) · discovering models…" }
+        // A Gemini connection has no endpoint the user chose, so showing one would be noise.
+        let endpoint = entry.kind.hasEditableBaseURL ? entry.baseURL : "Google Gemini API"
+        if discovering.contains(entry.id) { return "\(endpoint) · discovering models…" }
         let count = entry.models.count
         let models = count == 0 ? "no models yet" : "\(count) model\(count == 1 ? "" : "s")"
-        return "\(entry.baseURL) · \(models)"
+        return "\(endpoint) · \(models)"
     }
 
     // MARK: Add / edit form
@@ -134,34 +144,54 @@ struct ConnectionsSheet: View {
                    showsClose: false)
 
             VStack(spacing: 0) {
-                SettingsRow("Name") {
-                    TextField("", text: $name, prompt: Text("e.g. Google, Groq, Work AI"))
-                        .textFieldStyle(.roundedBorder)
-                        .settingsFieldWidth()
-                }
-                SettingsRow("Base URL") {
-                    TextField("", text: $url, prompt: Text("https://api.example.com/v1"))
-                        .textFieldStyle(.roundedBorder)
-                        .settingsFieldWidth()
-                        .onChange(of: url) { _, new in
-                            // A loopback endpoint needs no credential; only guess for a new one, so
-                            // we never overrule a choice already made on an existing connection.
-                            if editor == .adding { requiresKey = !KeysRegistry.isLocalURL(new) }
-                        }
-                }
-                SettingsRow("Authentication") {
-                    Picker("", selection: $requiresKey) {
-                        Text("API key").tag(true)
-                        Text("None").tag(false)
+                SettingsRow("Provider", caption: kind == .gemini
+                            ? "Google's native Gemini API. The endpoint is built in."
+                            : "Any endpoint that speaks the OpenAI chat API, including Google's "
+                              + "OpenAI compatibility layer.") {
+                    Picker("", selection: $kind) {
+                        ForEach(ConnectionKind.allCases) { Text($0.label).tag($0) }
                     }
-                    .pickerStyle(.segmented)
                     .labelsHidden()
                     .fixedSize()
+                    .onChange(of: kind) { _, new in
+                        // Gemini's endpoint is fixed and its key mandatory, so those fields go away
+                        // rather than sitting there inert.
+                        if let fixed = new.fixedBaseURL { url = fixed }
+                        if new.alwaysRequiresKey { requiresKey = true }
+                    }
+                }
+                SettingsRow("Name") {
+                    TextField("", text: $name, prompt: Text(kind == .gemini
+                                                            ? "e.g. Gemini" : "e.g. Groq, Work AI"))
+                        .textFieldStyle(.roundedBorder)
+                        .settingsFieldWidth()
+                }
+                if kind.hasEditableBaseURL {
+                    SettingsRow("Base URL") {
+                        TextField("", text: $url, prompt: Text("https://api.example.com/v1"))
+                            .textFieldStyle(.roundedBorder)
+                            .settingsFieldWidth()
+                            .onChange(of: url) { _, new in
+                                // A loopback endpoint needs no credential; only guess for a new one,
+                                // so we never overrule a choice made on an existing connection.
+                                if editor == .adding { requiresKey = !KeysRegistry.isLocalURL(new) }
+                            }
+                    }
+                    SettingsRow("Authentication") {
+                        Picker("", selection: $requiresKey) {
+                            Text("API key").tag(true)
+                            Text("None").tag(false)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .fixedSize()
+                    }
                 }
                 if requiresKey {
                     SettingsRow("API Key", caption: "Stored in your Mac's Keychain and shared by "
                                 + "every model routed through this connection.") {
-                        SettingsKeyField(text: $secret, placeholder: "Paste your API key")
+                        SettingsKeyField(text: $secret, placeholder: kind == .gemini
+                                         ? "Paste your Gemini API key" : "Paste your API key")
                             .settingsFieldWidth()
                     }
                 }
@@ -182,8 +212,10 @@ struct ConnectionsSheet: View {
     }
 
     private var canCommit: Bool {
-        !name.trimmingCharacters(in: .whitespaces).isEmpty
-            && !url.trimmingCharacters(in: .whitespaces).isEmpty
+        guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
+        // Gemini supplies its own endpoint, so the only thing it needs from the user is the key.
+        if kind == .gemini { return !secret.trimmingCharacters(in: .whitespaces).isEmpty }
+        return !url.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     // MARK: Chrome
@@ -218,11 +250,13 @@ struct ConnectionsSheet: View {
     // MARK: Mutations
 
     private func beginAdding() {
+        kind = .openAICompatible
         name = ""; url = ""; secret = ""; requiresKey = true
         editor = .adding
     }
 
     private func beginEditing(_ entry: RegisteredKey) {
+        kind = entry.kind
         name = entry.name
         url = entry.baseURL
         requiresKey = !entry.keyNotRequired
@@ -232,19 +266,22 @@ struct ConnectionsSheet: View {
 
     private func commit() {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
-        let trimmedURL = url.trimmingCharacters(in: .whitespaces)
-        guard !trimmedName.isEmpty, !trimmedURL.isEmpty else { return }
+        let trimmedURL = kind.fixedBaseURL ?? url.trimmingCharacters(in: .whitespaces)
+        let needsKey = kind.alwaysRequiresKey || requiresKey
+        guard canCommit else { return }
 
         if case .editing(let id) = editor,
            let index = registry.entries.firstIndex(where: { $0.id == id }) {
             // The id survives an edit, so the Keychain account and every model selection pointing at
-            // this connection stay valid through a rename or a rotated key.
+            // this connection stay valid through a rename, a rotated key, or a switched protocol.
             let endpointChanged = registry.entries[index].baseURL != trimmedURL
-            let secretChanged = requiresKey && keyValues[id] != secret
+                || registry.entries[index].kind != kind
+            let secretChanged = needsKey && keyValues[id] != secret
             registry.entries[index].name = trimmedName
             registry.entries[index].baseURL = trimmedURL
-            registry.entries[index].keyNotRequired = !requiresKey
-            keyValues[id] = requiresKey ? secret : ""
+            registry.entries[index].keyNotRequired = !needsKey
+            registry.entries[index].kind = kind
+            keyValues[id] = needsKey ? secret : ""
             editor = .none
             onChanged()
             if endpointChanged || secretChanged { discover(id) }
@@ -252,9 +289,9 @@ struct ConnectionsSheet: View {
         }
 
         let entry = RegisteredKey(name: trimmedName, baseURL: trimmedURL,
-                                  keyNotRequired: !requiresKey, enabled: true)
+                                  keyNotRequired: !needsKey, enabled: true, kind: kind)
         registry.entries.append(entry)
-        keyValues[entry.id] = requiresKey ? secret : ""
+        keyValues[entry.id] = needsKey ? secret : ""
         editor = .none
         onChanged()
         discover(entry.id)

@@ -103,6 +103,25 @@ model** — each a `Protocol` picker + per-protocol config), staged in a `Draft`
       Protocol → many Connections → aggregated Models → the user selects a Model
 
   The UI must not read as Protocol → Connection → Model: that implies one connection can be current.
+- **A connection carries its own transport** (`ConnectionKind`): `.openAICompatible` or `.gemini`.
+  This is the *wire format*, not a second model pool — both kinds live in the same registry and their
+  models merge into the one picker, so choosing a model still chooses the endpoint. `KeysRegistry`
+  centralises the two protocol-dependent operations (`discoverModels(for:apiKey:)`,
+  `reachable(_:apiKey:)`) so adding a transport doesn't mean hunting call sites. `RegisteredKey`
+  decodes `kind` leniently — a registry written before native Gemini has no such field, and a strict
+  decode would fail the *whole* registry and drop every connection.
+- **`GeminiProvider` is a real native implementation** (`Intelligence/GeminiProvider.swift`), not the
+  OpenAI path aimed at Google: `:generateContent` / `:streamGenerateContent?alt=sse`,
+  `contents`/`parts`, `x-goog-api-key`, system prompt hoisted to `systemInstruction`, assistant role
+  named `model`, images as `inlineData`. `GeminiVisionProvider` and `GeminiEmbedder` cover the other
+  two roles, because Gemini connections contribute vision- and embedding-capable models to the same
+  shared pool and those roles would otherwise resolve to an OpenAI-shaped request. Google's **OpenAI
+  compatibility layer stays a plain `.openAICompatible` connection** (base URL
+  `…/v1beta/openai/`) — the native provider is an addition, never a redirect.
+- **The transport travels with the flattened config.** `apply()` writes `openAIConnectionKind` (and
+  the vision/embedding equivalents) alongside the effective URL + model + key, because that config
+  alone can't say which format to speak — Google serves both from the same host. `buildProvider()`,
+  `activeVisionProvider()` and `makeEmbedder()` branch on it.
 - **Image ← Language is one explicit link**, not a duplicated block: `VisionEngine.matchText` *is* the
   Image section's **Inherit** switch. `ModelSelection.sameAsLanguage` still resolves (old stores decode),
   but nothing produces it any more — `healSelection` never falls back to it, the model picker doesn't
@@ -382,6 +401,17 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Google Gemini as a native connection type.** Added `ConnectionKind` to `RegisteredKey`, so a
+  connection declares whether it speaks OpenAI-compatible or Google's native Gemini API. The
+  Connections form switches on it — Gemini shows Name + API Key only, since its endpoint is built in
+  and its credential mandatory, while OpenAI-compatible keeps Base URL + Authentication + API Key.
+  Both kinds contribute to the **same** merged model list, so there is no second model picker and no
+  new Protocol entry: the model you pick still decides the endpoint, and now also the wire format.
+  `GeminiProvider` / `GeminiVisionProvider` / `GeminiEmbedder` implement the native format properly
+  (`:generateContent`, `contents`/`parts`, `systemInstruction`, `role: "model"`, `inlineData`).
+  Existing OpenAI-compatible connections — including Google's own `/v1beta/openai/` shim — are
+  untouched. Covered by `GeminiProviderTests`; the schema-migration case was verified to fail (and
+  take the whole registry down with it) without the lenient `kind` decode.
 - **Disabled connections were invisible everywhere but Settings.** `groups(for:)` skips
   `enabled == false`, and the old key-pill UI let you switch a connection off — so a user with Groq
   and OpenRouter toggled off saw only one connection in the chat switcher. The redesign's healing made

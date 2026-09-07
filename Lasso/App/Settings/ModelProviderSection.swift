@@ -63,6 +63,7 @@ struct ModelProviderSection<ModelControl: View, Extras: View, ContextControl: Vi
     let title: String
     let providers: [ProviderChoice]
     @Binding var providerID: String
+    var providerCaption: String?
     /// Non-nil only for a section that can be derived from another one.
     var inheritance: InheritanceConfig?
     var showsModelRow: Bool = true
@@ -90,7 +91,7 @@ struct ModelProviderSection<ModelControl: View, Extras: View, ContextControl: Vi
                 }
 
                 if !isInherited {
-                    SettingsRow("Protocol") {
+                    SettingsRow("Protocol", caption: providerCaption) {
                         Picker("", selection: $providerID) {
                             ForEach(providers) { Text($0.label).tag($0.id) }
                         }
