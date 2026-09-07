@@ -265,6 +265,37 @@ The **default (Automatic → Apple) needs no download** — works on any Mac imm
 different backends are incomparable, so changing the backend resets every session's index
 (`ChatController.embeddingConfigChanged`) and it re-embeds lazily. See `docs/CHAT_MEMORY_DESIGN.md`.
 
+**Response formatting (prompt) → rendering (`UI/MarkdownDocument.swift` + `MarkdownView.swift`):**
+one contract at each end. The system prompt carries an explicit **format policy**
+(`ChatController.formatRules`): prose by default, and an admission test per construct — a table only
+to compare **≥2 things across ≥2 shared attributes**, ≤4 columns, never for a single thing's
+properties, steps, or term/definition pairs. It also states what the surface can draw (no LaTeX, HTML,
+images or footnotes), so models stop emitting syntax that renders literally. Models with a tiny window
+get the `.compact` variant, picked from `contextBuilder.budget.total` rather than a model name.
+
+The renderer's rule is **repair, not rejection** — a strict GFM parser turns a small model's near-miss
+into a wall of raw pipes. It recovers tables with no separator row, pads ragged rows, honours
+`|--:|` alignment, and handles nested/task lists at any indent step, blockquotes, setext and
+space-less headings, `~~~` fences, `---` rules, and `\|` escapes. A table with one row or one column
+carries nothing to compare, so `MarkdownTable.isDegenerate` renders it as label/value lines instead of
+a grid — the main cure for tables that appear out of habit. **Streaming stability**: while
+`isStreaming`, `StreamStabilizer` withholds the unstable trailing line (a pipe row that has no
+separator yet would draw as prose, then snap into a grid) and speculatively closes half-typed emphasis,
+never inside an open code fence and never once the stream is finished. Publishes are coalesced to
+~20/s in `runTurn`, since re-splitting and re-parsing the whole buffer per token is quadratic work
+whose only visible effect is faster flicker. Covered by `MarkdownRenderingTests` (each case verified to
+fail against the un-repaired parser).
+
+```mermaid
+flowchart LR
+  P["system prompt · formatRules(.full/.compact)"] --> M["model output (Markdown)"]
+  M -->|deltas, coalesced 50ms| S["StreamStabilizer (streaming only)"]
+  S --> PR["MarkdownParser · repair pass"]
+  PR --> B["blocks: paragraph/heading/list/code/table/quote/rule"]
+  B --> V["MarkdownBlockView"]
+  B -->|1 row or 1 column| D["label/value lines, not a grid"]
+```
+
 **Persistence (`ConversationStore`):** conversations are saved to `~/Library/Application Support/Lasso/`
 — **one JSON per conversation** + a lightweight `index.json`, so history survives app updates /
 uninstall→reinstall (the data lives outside the `.app`, like `UserDefaults`/Keychain). **Source-of-truth
@@ -401,6 +432,18 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Response formatting: a contract at both ends.** The prompt's entire format policy was "Use
+  Markdown when it helps", which is not a rule a model can apply — so structure appeared at random,
+  most visibly as tables for things with nothing to compare. `formatRules` replaces it with an
+  admission test per construct (prose by default; a table only for ≥2 items × ≥2 shared attributes)
+  plus a statement of what the surface actually renders, and a `.compact` variant for models whose
+  whole input budget is ~2K tokens. The renderer moved to `UI/MarkdownDocument.swift` and now repairs
+  what weak models emit instead of rejecting it (separator-less tables, ragged rows, any-indent
+  nesting, task lists, blockquotes, setext/space-less headings, `~~~` fences, `---` rules, `\|`
+  escapes, column alignment), downgrades one-row/one-column tables to label/value lines, and stabilises
+  streaming (withhold the unstable trailing line, speculatively close half-typed emphasis, coalesce
+  publishes to ~20/s). `MarkdownRenderingTests` covers it; each case was re-run against a mutated
+  parser to confirm it fails without the fix.
 - **Google Gemini as a native connection type.** Added `ConnectionKind` to `RegisteredKey`, so a
   connection declares whether it speaks OpenAI-compatible or Google's native Gemini API. The
   Connections form switches on it — Gemini shows Name + API Key only, since its endpoint is built in

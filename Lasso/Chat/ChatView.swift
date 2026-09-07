@@ -725,7 +725,8 @@ private struct MessageBubble: View {
                     } else if !message.text.isEmpty {
                         // Drag-selectable (⌘C copies the highlight); whole-message actions live in the
                         // hover ⋯ menu below. The Activity disclosure is a separate view, unaffected.
-                        MarkdownView(text: message.text, fontSize: fontSize, selectable: true)
+                        MarkdownView(text: message.text, fontSize: fontSize, selectable: true,
+                                     streaming: message.isStreaming)
                             .foregroundStyle(message.isError ? Color.orange : Color.primary)
                             .fixedSize(horizontal: false, vertical: true)
                     }

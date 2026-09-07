@@ -115,13 +115,24 @@ final class ChatController {
         reindexActive()
     }
 
+    /// How much of the formatting contract to spend context on. A model with a small window (Apple's
+    /// on-device one, a 4k local model) pays for every clause in the system prompt out of the same
+    /// budget as the conversation, and can only hold a couple of rules anyway — so it gets the two
+    /// that matter. Chosen from the context budget rather than from a model name, because the budget
+    /// already tracks the real window (see `IntelligenceCoordinator.contextBudget`).
+    enum FormatPolicy { case full, compact }
+
     /// Computed (not a stored `let`) so the injected date reflects the real day at send time, not
     /// whenever the app happened to launch — a long-running menu-bar session would otherwise drift.
-    static var systemPrompt: String {
+    static var systemPrompt: String { systemPrompt(formatting: .full) }
+
+    static func systemPrompt(formatting: FormatPolicy) -> String {
     """
     You are Lasso's assistant, living in the user's menu bar. Answer directly and match depth to the \
     task — concise for simple questions, thorough for complex ones like code, debugging, or \
-    explanations. Use Markdown (code blocks for code) when it helps.
+    explanations.
+
+    \(formatRules(formatting))
 
     The app gives you the current date and time from the user's device clock: \(currentDateTimeString) \
     (their local timezone). Treat it as authoritative for "what time/day is it" and any date math, and \
@@ -155,6 +166,53 @@ final class ChatController {
     keep whatever in the question is true. "That did not happen", "no such thing exists", or "this \
     cannot be established" is a complete and acceptable answer.
     """
+    }
+
+    /// The response-format contract.
+    ///
+    /// Models are trained to decorate: left to themselves they reach for a table because the answer
+    /// *looks* tabular, not because there is anything to compare across rows, and the smaller the
+    /// model the more it mimics shape it has seen rather than shape the content needs. The old prompt
+    /// said only "use Markdown when it helps", which is not a rule a model can apply — so structure
+    /// appeared at random and the panel's layout lurched between prose and grids from turn to turn.
+    ///
+    /// Two things fix that, and both live here rather than in the renderer. Telling the model what the
+    /// surface can actually draw stops it emitting LaTeX and HTML that render as literal syntax; and
+    /// giving each construct an admission test ("a table compares two or more things across two or
+    /// more shared attributes") replaces taste with something checkable. Prose is the default because
+    /// most chat answers are conversational, and structure imposed on a conversational answer reads as
+    /// filler. See also `MarkdownTable.isDegenerate`, which catches the tables that slip through.
+    static func formatRules(_ policy: FormatPolicy) -> String {
+        switch policy {
+        case .compact:
+            return """
+            Write in plain sentences and paragraphs. Use a bullet list only for genuinely parallel \
+            items, a fenced code block (with a language tag) for any code or command, and no tables, \
+            headings, or LaTeX — this app does not render math.
+            """
+        case .full:
+            return """
+            FORMATTING. The app renders standard Markdown: headings, bullet and numbered lists, \
+            tables, fenced code blocks, links, bold, and italic. It does NOT render LaTeX, math \
+            delimiters, HTML, images, or footnotes — write formulas as plain text or inside a code \
+            block.
+
+            Default to prose. A conversational or short answer is one to three paragraphs with no \
+            headings, no bullets, and no bold. Reach for structure only when the content is genuinely \
+            structured, and then use the least that does the job:
+            - Bullets for parallel items with no natural sentence order; numbers only for ordered \
+            steps. Keep nesting to one level.
+            - Headings only when the answer has three or more sections a reader would scan.
+            - A table ONLY to compare two or more things across two or more shared attributes. Never \
+            use one for a single thing's properties, for steps, for term/definition pairs, or when it \
+            would have one row — write those as prose or bullets. At most four columns, a few words \
+            per cell.
+            - Fenced code blocks, with a language tag, for all code, commands, paths, and output.
+
+            Never wrap a whole reply in a code fence, and don't use bold text as a stand-in for a \
+            heading.
+            """
+        }
     }
 
     /// Locale-stable "now" in the user's local timezone (e.g. "Saturday, July 11, 2026 at 2:45 PM PST").
@@ -1066,12 +1124,33 @@ final class ChatController {
         var firstTokenMs = -1
         var raw = ""              // full stream, so we can split <think> reasoning from the answer
         var thinkStart: Date?
+        var lastPublish = Date.distantPast
+
+        /// Push what has arrived so far into the message. Cheap to call, but not free — see the
+        /// coalescing guard in the delta loop.
+        func publish(_ now: Date) {
+            let split = Self.splitReasoning(raw)
+            if split.thinking, thinkStart == nil { thinkStart = now }
+            let secs: Int? = (!split.thinking && !split.reasoning.isEmpty)
+                ? thinkStart.map { max(1, Int(now.timeIntervalSince($0))) } : nil
+            update(assistantID) {
+                $0.reasoning = split.reasoning
+                $0.text = split.answer
+                if let secs, $0.reasoningSeconds == nil { $0.reasoningSeconds = secs }
+            }
+        }
+
         do {
             let stream = toolPath
                 ? intelligence.respond(messages: turns, tools: exposedTools, execute: executor)
                 : intelligence.respond(messages: turns)
             for try await delta in stream {
-                if Task.isCancelled { loadingHint?.cancel(); Log.chat.notice("runTurn · cancelled mid-stream after \(chars, privacy: .public) chars"); return }
+                if Task.isCancelled {
+                    publish(Date())   // keep what arrived since the last coalesced publish
+                    loadingHint?.cancel()
+                    Log.chat.notice("runTurn · cancelled mid-stream after \(chars, privacy: .public) chars")
+                    return
+                }
                 if firstTokenMs < 0 {
                     firstTokenMs = ms(); loadingHint?.cancel()
                     if let answerStepID { setStepText(assistantID, answerStepID, "Answering · \(textLabel)") }
@@ -1080,16 +1159,17 @@ final class ChatController {
                 }
                 deltas += 1; chars += delta.count
                 raw += delta
-                let split = Self.splitReasoning(raw)
-                if split.thinking, thinkStart == nil { thinkStart = Date() }
-                let secs: Int? = (!split.thinking && !split.reasoning.isEmpty)
-                    ? thinkStart.map { max(1, Int(Date().timeIntervalSince($0))) } : nil
-                update(assistantID) {
-                    $0.reasoning = split.reasoning
-                    $0.text = split.answer
-                    if let secs, $0.reasoningSeconds == nil { $0.reasoningSeconds = secs }
-                }
+                // Coalesce publishes to ~20/s. A fast local model emits several tokens per frame, and
+                // publishing each one re-splits the whole raw buffer and re-parses the whole message
+                // for the renderer — quadratic work whose only visible effect is a faster flicker.
+                // 50ms is below the threshold where text stops looking live, and is the interval
+                // streaming-UI implementations converge on.
+                let now = Date()
+                guard now.timeIntervalSince(lastPublish) >= 0.05 else { continue }
+                lastPublish = now
+                publish(now)
             }
+            publish(Date())   // the tail between the last publish and the end of the stream
             loadingHint?.cancel()
             if let answerStepID { completeStep(assistantID, answerStepID, text: "Answered · \(textLabel)") }
         } catch {
@@ -1982,6 +2062,15 @@ final class ChatController {
         return lines.joined(separator: "\n")
     }
 
+    /// Which formatting contract this model gets. The full one costs ~140 words of context; on a
+    /// model whose entire input budget is ~2K tokens (Apple's on-device FM, a 4K local model) that is
+    /// a real slice of the conversation, and those models can't hold a five-clause policy anyway — so
+    /// they get the short form. The cut is at the budget, not the model name, so a new backend
+    /// inherits the right behaviour without another switch to update.
+    private var formatPolicy: FormatPolicy {
+        contextBuilder.budget.total <= 8_192 ? .compact : .full
+    }
+
     /// Build the budgeted `[ChatTurn]` to send: system + rolling summary + recent verbatim turns +
     /// the new (folded) user turn. Delegates layout/budget to `ChatContextBuilder`; older turns that
     /// fall outside the recent window are represented by `rollingSummary` (kept fresh in the
@@ -1993,7 +2082,7 @@ final class ChatController {
         // image/evidence context carries. Assistant thoughts are stripped — they're UI affordances.
         let history = Self.historyTurns(from: messages.dropLast(2))
 
-        let out = contextBuilder.build(systemPrompt: Self.systemPrompt,
+        let out = contextBuilder.build(systemPrompt: Self.systemPrompt(formatting: formatPolicy),
                                        memory: memory,
                                        history: history,
                                        retrieved: retrieved,

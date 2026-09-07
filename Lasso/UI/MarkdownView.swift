@@ -1,28 +1,41 @@
 import SwiftUI
 
-/// Lightweight, dependency-free Markdown block renderer for AI output. Handles the constructs local
-/// models commonly emit: tables (→ SwiftUI Grid), headings, bullet/numbered lists, fenced code, and
-/// paragraphs (inline **bold**/*italic*/`code`/links via AttributedString). Anything unrecognized
-/// falls back to plain paragraph text, and partial Markdown mid-stream renders best-effort.
+/// Renders parsed Markdown blocks (see `MarkdownDocument.swift`) as SwiftUI.
+///
+/// The visual rules are deliberately restrained: one type scale, one radius, one surface tint, and
+/// no decoration that isn't carrying information. Model output is already noisy — the renderer's job
+/// is to make its structure legible, not to add more.
 struct MarkdownView: View {
     let text: String
     var fontSize: CGFloat = 15
     /// Whether text in this render is drag-selectable. Off in the Chat panel, where selectable text
     /// intercepts clicks meant for nearby controls (the Activity disclosure) — chat uses a Copy button instead.
     var selectable: Bool = true
+    /// True while tokens are still arriving, which turns on the parser's streaming-stability pass.
+    var streaming: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(MarkdownParser.parse(text).enumerated()), id: \.offset) { _, block in
-                view(for: block)
+            ForEach(Array(MarkdownParser.parse(text, streaming: streaming).enumerated()), id: \.offset) { _, block in
+                MarkdownBlockView(block: block, fontSize: fontSize, selectable: selectable)
             }
         }
         // Propagate selection to every text block (paragraphs, lists, tables, code) — not just code.
         .textSelectable(selectable)
     }
+}
 
-    @ViewBuilder
-    private func view(for block: MarkdownBlock) -> some View {
+// MARK: - Blocks
+
+/// One block, as its own view. Blockquotes contain blocks, so the recursion has to pass through a
+/// nominal type — a `@ViewBuilder` method that calls itself would make the opaque return type
+/// infinite and fails to compile.
+private struct MarkdownBlockView: View {
+    let block: MarkdownBlock
+    let fontSize: CGFloat
+    let selectable: Bool
+
+    var body: some View {
         switch block {
         case .thought(let s):
             ThoughtDisclosure(text: s, fontSize: fontSize)
@@ -34,31 +47,25 @@ struct MarkdownView: View {
             inline(s).font(.system(size: fontSize + CGFloat(max(0, 4 - level)) * 2 + 2, weight: .bold))
                 .padding(.top, 2)
 
-        case .bullets(let items):
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text("•").font(.system(size: fontSize))
-                        inline(item).font(.system(size: fontSize))
-                    }
-                }
+        case .list(let items):
+            ListView(items: items, fontSize: fontSize)
+
+        case .code(let language, let content, let closed):
+            CodeBlockView(language: language, content: content, complete: closed,
+                          fontSize: fontSize, selectable: selectable)
+
+        case .table(let table):
+            if table.isDegenerate {
+                degenerateTable(table)
+            } else {
+                tableView(table)
             }
 
-        case .numbered(let items):
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(items.enumerated()), id: \.offset) { _, pair in
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(pair.0).font(.system(size: fontSize, weight: .medium).monospacedDigit())
-                        inline(pair.1).font(.system(size: fontSize))
-                    }
-                }
-            }
+        case .quote(let blocks):
+            QuoteView(blocks: blocks, fontSize: fontSize, selectable: selectable)
 
-        case .code(let language, let content):
-            CodeBlockView(language: language, content: content, fontSize: fontSize, selectable: selectable)
-
-        case .table(let header, let rows):
-            tableView(header: header, rows: rows)
+        case .rule:
+            Divider().padding(.vertical, 2)
         }
     }
 
@@ -66,20 +73,24 @@ struct MarkdownView: View {
         Text(AttributedString.fromMarkdown(s))
     }
 
-    private func tableView(header: [String], rows: [[String]]) -> some View {
-        let columnCount = max(header.count, rows.map(\.count).max() ?? 0)
+    // MARK: Tables
+
+    private func tableView(_ table: MarkdownTable) -> some View {
+        let columns = table.columnCount
         return HScroll {
             Grid(alignment: .topLeading, horizontalSpacing: 14, verticalSpacing: 6) {
                 GridRow {
-                    ForEach(0..<columnCount, id: \.self) { c in
-                        cell(c < header.count ? header[c] : "", weight: .semibold)
+                    ForEach(0..<columns, id: \.self) { c in
+                        cell(c < table.header.count ? table.header[c] : "",
+                             weight: .semibold, alignment: table.alignment(c))
                     }
                 }
                 Divider()
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
                     GridRow {
-                        ForEach(0..<columnCount, id: \.self) { c in
-                            cell(c < row.count ? row[c] : "", weight: .regular)
+                        ForEach(0..<columns, id: \.self) { c in
+                            cell(c < row.count ? row[c] : "",
+                                 weight: .regular, alignment: table.alignment(c))
                         }
                     }
                 }
@@ -90,10 +101,102 @@ struct MarkdownView: View {
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.12)))
     }
 
-    private func cell(_ s: String, weight: Font.Weight) -> some View {
-        Text(AttributedString.fromMarkdown(s))
+    /// A one-row or one-column "table" holds nothing to compare, so the grid is pure furniture. Show
+    /// the same content as label/value lines — it reads faster and stops the layout from lurching
+    /// between prose and a boxed grid as the model's formatting habits change from turn to turn.
+    private func degenerateTable(_ table: MarkdownTable) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
+                ForEach(Array(row.enumerated()), id: \.offset) { c, value in
+                    if !value.isEmpty {
+                        let label = c < table.header.count ? table.header[c] : ""
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            if !label.isEmpty {
+                                inline(label).font(.system(size: fontSize, weight: .semibold))
+                            }
+                            inline(value).font(.system(size: fontSize))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Column alignment comes from the separator row (`|---:|:--:|`), which is the one piece of table
+    /// styling models get right often enough to honour — numbers right-aligned actually aid scanning.
+    private func cell(_ s: String, weight: Font.Weight, alignment: MarkdownTable.Alignment) -> some View {
+        let (frame, text): (Alignment, TextAlignment) = switch alignment {
+        case .leading: (.leading, .leading)
+        case .center: (.center, .center)
+        case .trailing: (.trailing, .trailing)
+        }
+        return Text(AttributedString.fromMarkdown(s))
             .font(.system(size: fontSize - 1, weight: weight))
+            .multilineTextAlignment(text)
+            .frame(maxWidth: .infinity, alignment: frame)
             .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct QuoteView: View {
+    let blocks: [MarkdownBlock]
+    let fontSize: CGFloat
+    let selectable: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, inner in
+                MarkdownBlockView(block: inner, fontSize: fontSize, selectable: selectable)
+            }
+        }
+        .padding(.leading, 10)
+        .foregroundStyle(.secondary)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(.secondary.opacity(0.35)).frame(width: 2)
+        }
+    }
+}
+
+// MARK: - Lists
+
+/// Bullets, numbers and task items in one view so a list that mixes them (a checklist nested under a
+/// numbered step) keeps consistent indentation. Depth comes from the parser, which normalises the
+/// model's indentation before it gets here.
+private struct ListView: View {
+    let items: [MarkdownListItem]
+    let fontSize: CGFloat
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    marker(for: item)
+                    Text(AttributedString.fromMarkdown(item.text))
+                        .font(.system(size: fontSize))
+                        .strikethrough(item.checked == true, color: .secondary)
+                        .foregroundStyle(item.checked == true ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                }
+                .padding(.leading, CGFloat(min(item.depth, 4)) * 16)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func marker(for item: MarkdownListItem) -> some View {
+        if let checked = item.checked {
+            Image(systemName: checked ? "checkmark.square.fill" : "square")
+                .font(.system(size: fontSize - 2))
+                .foregroundStyle(checked ? Color.accentColor : Color.secondary)
+        } else if let marker = item.marker {
+            Text(marker)
+                .font(.system(size: fontSize, weight: .medium).monospacedDigit())
+        } else {
+            // Depth is legible from the glyph as well as the indent, which matters when a nested
+            // list wraps onto several lines.
+            Text(["•", "◦", "▪"][min(item.depth, 2)])
+                .font(.system(size: fontSize))
+                .foregroundStyle(item.depth == 0 ? Color.primary : Color.secondary)
+        }
     }
 }
 
@@ -112,6 +215,9 @@ private extension View {
 private struct CodeBlockView: View {
     let language: String?
     let content: String
+    /// False while the closing fence hasn't arrived. The block still renders as code — the point of
+    /// the flag is to withhold the Copy button, since copying half a snippet is worse than waiting.
+    let complete: Bool
     let fontSize: CGFloat
     let selectable: Bool
     @State private var copied = false
@@ -124,19 +230,21 @@ private struct CodeBlockView: View {
                 Text(language?.isEmpty == false ? language! : "code")
                     .font(.system(size: fontSize - 3, weight: .medium))
                 Spacer()
-                Button {
-                    Pasteboard.copy(content)
-                    copied = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
-                } label: {
-                    Label(copied ? "Copied" : "Copy",
-                          systemImage: copied ? "checkmark" : "doc.on.doc")
-                        .font(.system(size: fontSize - 3))
-                        .labelStyle(.titleAndIcon)
+                if complete {
+                    Button {
+                        Pasteboard.copy(content)
+                        copied = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+                    } label: {
+                        Label(copied ? "Copied" : "Copy",
+                              systemImage: copied ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: fontSize - 3))
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(copied ? Color.green : Color.secondary)
+                    .help("Copy this code block")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(copied ? Color.green : Color.secondary)
-                .help("Copy this code block")
             }
             .foregroundStyle(.secondary)
             .padding(.horizontal, 10)
@@ -211,180 +319,5 @@ private struct ThoughtDisclosure: View {
                 .foregroundStyle(.secondary)
         }
         .disclosureGroupStyle(.automatic)
-    }
-}
-
-// MARK: - Parser
-
-enum MarkdownBlock {
-    case thought(String)
-    case paragraph(String)
-    case heading(level: Int, text: String)
-    case bullets([String])
-    case numbered([(String, String)])
-    case code(language: String?, content: String)
-    case table(header: [String], rows: [[String]])
-}
-
-enum MarkdownParser {
-    static func parse(_ text: String) -> [MarkdownBlock] {
-        var blocks: [MarkdownBlock] = []
-        var cursor = text.startIndex
-
-        while let open = text.range(of: "<think>", options: .caseInsensitive,
-                                    range: cursor..<text.endIndex) {
-            blocks.append(contentsOf: parsePlain(String(text[cursor..<open.lowerBound])))
-
-            let thoughtStart = open.upperBound
-            if let close = text.range(of: "</think>", options: .caseInsensitive,
-                                      range: thoughtStart..<text.endIndex) {
-                appendThought(String(text[thoughtStart..<close.lowerBound]), to: &blocks)
-                cursor = close.upperBound
-            } else {
-                appendThought(String(text[thoughtStart..<text.endIndex]), to: &blocks)
-                cursor = text.endIndex
-                break
-            }
-        }
-
-        blocks.append(contentsOf: parsePlain(String(text[cursor..<text.endIndex])))
-        return blocks
-    }
-
-    private static func appendThought(_ text: String, to blocks: inout [MarkdownBlock]) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { blocks.append(.thought(trimmed)) }
-    }
-
-    fileprivate static func parsePlain(_ text: String) -> [MarkdownBlock] {
-        let lines = text.components(separatedBy: "\n")
-        var blocks: [MarkdownBlock] = []
-        var paragraph: [String] = []
-        var i = 0
-
-        func flushParagraph() {
-            let joined = paragraph.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            if !joined.isEmpty { blocks.append(.paragraph(joined)) }
-            paragraph = []
-        }
-
-        while i < lines.count {
-            let raw = lines[i]
-            let line = raw.trimmingCharacters(in: .whitespaces)
-
-            // Fenced code block. The fence's info string (```swift) is the language, shown in the header.
-            if line.hasPrefix("```") {
-                flushParagraph()
-                let info = line.dropFirst(3).trimmingCharacters(in: .whitespaces)
-                let language = info.isEmpty ? nil : String(info.split(whereSeparator: { $0.isWhitespace }).first ?? "")
-                var code: [String] = []
-                i += 1
-                while i < lines.count, !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("```") {
-                    code.append(lines[i]); i += 1
-                }
-                i += 1 // closing fence
-                blocks.append(.code(language: language, content: code.joined(separator: "\n")))
-                continue
-            }
-
-            // Table: a pipe row followed by a separator row (|---|---|).
-            if line.contains("|"), i + 1 < lines.count, isSeparatorRow(lines[i + 1]) {
-                flushParagraph()
-                let header = parseRow(line)
-                i += 2
-                var rows: [[String]] = []
-                while i < lines.count {
-                    let r = lines[i].trimmingCharacters(in: .whitespaces)
-                    if r.isEmpty || !r.contains("|") { break }
-                    rows.append(parseRow(r)); i += 1
-                }
-                blocks.append(.table(header: header, rows: rows))
-                continue
-            }
-
-            // Heading.
-            if let level = headingLevel(line) {
-                flushParagraph()
-                let txt = String(line.drop(while: { $0 == "#" })).trimmingCharacters(in: .whitespaces)
-                blocks.append(.heading(level: level, text: txt))
-                i += 1
-                continue
-            }
-
-            // Bullet list.
-            if isBullet(line) {
-                flushParagraph()
-                var items: [String] = []
-                while i < lines.count, isBullet(lines[i].trimmingCharacters(in: .whitespaces)) {
-                    items.append(stripBullet(lines[i].trimmingCharacters(in: .whitespaces)))
-                    i += 1
-                }
-                blocks.append(.bullets(items))
-                continue
-            }
-
-            // Numbered list.
-            if let _ = numberedMarker(line) {
-                flushParagraph()
-                var items: [(String, String)] = []
-                while i < lines.count, let marker = numberedMarker(lines[i].trimmingCharacters(in: .whitespaces)) {
-                    let t = lines[i].trimmingCharacters(in: .whitespaces)
-                    let body = String(t.dropFirst(marker.count)).trimmingCharacters(in: .whitespaces)
-                    items.append((marker, body))
-                    i += 1
-                }
-                blocks.append(.numbered(items))
-                continue
-            }
-
-            if line.isEmpty {
-                flushParagraph()
-                i += 1
-                continue
-            }
-
-            paragraph.append(raw)
-            i += 1
-        }
-        flushParagraph()
-        return blocks
-    }
-
-    private static func isSeparatorRow(_ line: String) -> Bool {
-        let t = line.trimmingCharacters(in: .whitespaces)
-        guard t.contains("-"), t.contains("|") else { return false }
-        return t.allSatisfy { $0 == "|" || $0 == "-" || $0 == ":" || $0 == " " }
-    }
-
-    private static func parseRow(_ line: String) -> [String] {
-        var t = line.trimmingCharacters(in: .whitespaces)
-        if t.hasPrefix("|") { t.removeFirst() }
-        if t.hasSuffix("|") { t.removeLast() }
-        return t.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
-    }
-
-    private static func headingLevel(_ line: String) -> Int? {
-        guard line.hasPrefix("#") else { return nil }
-        let hashes = line.prefix(while: { $0 == "#" }).count
-        guard hashes >= 1, hashes <= 6, line.count > hashes,
-              line[line.index(line.startIndex, offsetBy: hashes)] == " " else { return nil }
-        return hashes
-    }
-
-    private static func isBullet(_ line: String) -> Bool {
-        line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") || line.hasPrefix("• ")
-    }
-
-    private static func stripBullet(_ line: String) -> String {
-        String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
-    }
-
-    /// Returns the marker (e.g. "1.") if the line is a numbered list item.
-    private static func numberedMarker(_ line: String) -> String? {
-        let digits = line.prefix(while: { $0.isNumber })
-        guard !digits.isEmpty else { return nil }
-        let rest = line.dropFirst(digits.count)
-        guard rest.hasPrefix(". ") || rest.hasPrefix(") ") else { return nil }
-        return String(digits) + String(rest.first!)
     }
 }

@@ -19,6 +19,10 @@ struct OpenAICompatibleProvider: IntelligenceProvider {
     private static let systemPrompt = """
     You help the user understand and act on text they selected on their screen. Be concise and \
     accurate. When on-screen text is provided, ground your answer in it.
+
+    Answers appear in a narrow floating panel, so write plain sentences — no tables, no headings, and \
+    no LaTeX (the panel does not render math). Use a short bullet list only for genuinely parallel \
+    items, and a fenced code block with a language tag for any code or command.
     """
 
     func checkAvailability() async -> Bool {
