@@ -135,10 +135,17 @@ struct ChatView: View {
                         }
                     }
                 }
-                ForEach(chat.openAIServices, id: \.service) { svc in
-                    Button { chat.selectOpenAIService(svc.service) } label: {
-                        Label("\(svc.name) · \(Self.shortModel(svc.model))",
-                              systemImage: chat.isCurrentOpenAIService(svc.service) ? "checkmark" : "cloud")
+                // One submenu per configured connection, listing every model it serves — the same
+                // shape as Ollama/MLX above, and the same aggregated list Settings offers.
+                ForEach(chat.registryGroups) { group in
+                    Menu(group.name) {
+                        ForEach(group.models) { model in
+                            Button { chat.selectRegistryModel(keyID: group.keyID, model: model.name) } label: {
+                                if chat.isCurrentRegistryModel(keyID: group.keyID, model: model.name) {
+                                    Label(model.name, systemImage: "checkmark")
+                                } else { Text(model.name) }
+                            }
+                        }
                     }
                 }
                 if chat.anthropicReady {

@@ -312,55 +312,45 @@ final class IntelligenceCoordinator {
         return "Custom"
     }
 
-    // MARK: - OpenAI-compatible services (per-service config, shared with Settings)
+    // MARK: - OpenAI-compatible connections (the omni-router, shared with Settings)
 
-    /// The known OpenAI-compatible services and their canonical base URLs / names. Mirrors Settings so
-    /// quick-switching from the chat header stays consistent with the editor.
-    static let openAIServices = ["openai", "groq", "openrouter", "custom"]
-    static func openAIServiceURL(_ service: String, custom: String) -> String {
-        switch service {
-        case "groq": return "https://api.groq.com/openai/v1"
-        case "openrouter": return "https://openrouter.ai/api/v1"
-        case "custom": return custom
-        default: return "https://api.openai.com/v1"
-        }
-    }
-    static func openAIServiceName(_ service: String) -> String {
-        switch service {
-        case "groq": return "Groq"
-        case "openrouter": return "OpenRouter"
-        case "custom": return "Custom"
-        default: return "OpenAI"
-        }
-    }
-    /// Per-service key only — never the shared/legacy "openai.apiKey", which holds the *active*
-    /// service's key. Falling back to it made an unconfigured service (e.g. OpenAI) look configured
-    /// by borrowing another service's key.
-    private func openAIServiceKey(_ service: String) -> String {
-        Keychain.get("openai.svc.\(service).key") ?? ""
-    }
-    /// The active OpenAI-compatible service key (UserDefaults), defaulting to "openai".
-    var activeOpenAIService: String { UserDefaults.standard.string(forKey: "intelligence.openai.service") ?? "openai" }
+    /// Where the Language section's model choice is persisted, in `SettingsView.encodeSelection`'s
+    /// compact form. The chat switcher writes the same string, so the panel and the chat header can
+    /// never disagree about which model is active.
+    static let languageSelectionKey = "intelligence.keys.selection.language"
 
-    /// Services the user has configured (a key + a model) — for the chat header's quick switcher.
-    func configuredOpenAIServices() -> [(service: String, name: String, model: String)] {
-        Self.openAIServices.compactMap { s in
-            let model = UserDefaults.standard.string(forKey: "intelligence.openai.svc.\(s).model") ?? ""
-            guard !openAIServiceKey(s).isEmpty, !model.isEmpty else { return nil }
-            return (s, Self.openAIServiceName(s), model)
-        }
+    /// Every model the configured connections serve, grouped by connection — the same aggregated list
+    /// Settings' Model picker shows, because it is the same registry. Empty in local-only mode, where
+    /// no cloud endpoint may be offered at all.
+    func registryGroups(for capability: ModelCapability = .language) -> [RegistryModelGroup] {
+        PrivacyMode.localOnly ? [] : KeysRegistry.load().groups(for: capability)
     }
 
-    /// Switch the active OpenAI-compatible service (and its saved model + key) — the same commit
-    /// Settings ▸ Apply performs, so the two never diverge.
-    func switchOpenAIService(_ service: String) {
-        let custom = UserDefaults.standard.string(forKey: "intelligence.openai.customBaseURL")
-            ?? "https://api.openai.com/v1"
-        openAIBaseURL = Self.openAIServiceURL(service, custom: custom)
-        openAIModel = UserDefaults.standard.string(forKey: "intelligence.openai.svc.\(service).model") ?? openAIModel
-        Keychain.set(openAIServiceKey(service), for: "openai.apiKey")
-        UserDefaults.standard.set(service, forKey: "intelligence.openai.service")
+    /// Switch the active language model to one served by a specific connection. Writes exactly what
+    /// Settings ▸ Save & Apply writes — effective endpoint, model, key, and the stored selection — so
+    /// switching from the chat header is indistinguishable from switching in Settings.
+    ///
+    /// `keyID` is "" for a hand-typed model in the "Manually added" group; its endpoint is then
+    /// resolved by name, the same fallback the settings panel uses.
+    func selectRegistryModel(keyID: String, model: String) {
+        let registry = KeysRegistry.load()
+        let entry = keyID.isEmpty ? registry.enabledKey(exposingModel: model)
+                                  : registry.key(withID: keyID)
+        if let entry {
+            openAIBaseURL = entry.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            Keychain.set(Keychain.get(entry.keychainAccount) ?? "", for: "openai.apiKey")
+        }
+        openAIModel = model
+        UserDefaults.standard.set(keyID.isEmpty ? "manual:\(model)" : "model:\(keyID)\t\(model)",
+                                  forKey: Self.languageSelectionKey)
         preferred = .openAICompatible
+    }
+
+    /// Whether this connection's model is the active one — drives the switcher's checkmarks.
+    func isCurrentRegistryModel(keyID: String, model: String) -> Bool {
+        guard effectivePreferred == .openAICompatible else { return false }
+        let stored = UserDefaults.standard.string(forKey: Self.languageSelectionKey)
+        return stored == (keyID.isEmpty ? "manual:\(model)" : "model:\(keyID)\t\(model)")
     }
 
     /// Resolve the text model to use: the user's choice if installed, else the best installed chat
@@ -548,10 +538,10 @@ final class IntelligenceCoordinator {
         }
     }
 
-    /// Manual context-window override (tokens) for the active OpenAI-compatible service; 0 = Auto. Set in
-    /// Settings for a custom gateway (e.g. Claude 200K/1M) whose `/v1/models` doesn't advertise the window.
+    /// Manual context-window override (tokens) for the selected OpenAI-compatible model; 0 = Auto. Set
+    /// in Settings for a gateway (e.g. Claude 200K/1M) whose `/v1/models` doesn't advertise the window.
     var openAIContextOverride: Int {
-        UserDefaults.standard.integer(forKey: "intelligence.openai.svc.\(activeOpenAIService).context")
+        UserDefaults.standard.integer(forKey: "intelligence.keys.language.context")
     }
 
     /// Best-effort context window from a model id when the endpoint doesn't report one — covers the

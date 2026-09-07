@@ -1,6 +1,26 @@
 import SwiftUI
 import KeyboardShortcuts
 
+/// Which model a capability card has chosen out of the shared registry. `.model` carries the exact
+/// key id (not just the name) so same-named models under two keys route to the right backend;
+/// `.manual` is a hand-typed name in the "Manually added" group; `.sameAsLanguage` (image/embedding
+/// only) tracks whatever the Language card currently points at.
+enum ModelSelection: Equatable, Sendable {
+    case none
+    case sameAsLanguage
+    case model(keyID: String, name: String)
+    case manual(name: String)
+
+    /// The model name this selection resolves to on its own (nil for `.none`/`.sameAsLanguage`, which
+    /// must be resolved against the registry / the language selection by the caller).
+    var directName: String? {
+        switch self {
+        case .model(_, let name), .manual(let name): return name
+        case .none, .sameAsLanguage: return nil
+        }
+    }
+}
+
 struct SettingsView: View {
     @Bindable var intelligence: IntelligenceCoordinator
 
@@ -14,45 +34,31 @@ struct SettingsView: View {
         var mlxModel = MLXProvider.defaultModelID
         var visionModel = ""
         var visionMLXModel = MLXVisionProvider.defaultModelID
-        // OpenAI-compatible. The API *key* is shared per service (it's the account key, not per role),
-        // so Text and Image reuse it for the same service. The *model* is per role + service. Each
-        // service (OpenAI/Groq/OpenRouter/Custom) keeps its own key + model; switching Service swaps.
-        var openAIService = "openai"
-        var openAICustomBaseURL = "https://api.openai.com/v1"
-        var openAIKeyByService: [String: String] = [:]      // shared by Text + Image, keyed by service
-        var openAIModelByService: [String: String] = [:]    // Text models, per service
-        var openAIContextByService: [String: Int] = [:]     // manual context-window override, per service (0 = Auto)
+        // OpenAI-compatible is now an omni-router: a single app-level registry of keys (each an
+        // endpoint with its own URL / key / discovered models) shared by all three cards. Each card
+        // picks a model out of the merged, capability-filtered list; `*Selection` records which key +
+        // model that card chose (or "same as language" for image/embedding). The key *values* live in
+        // the Keychain, not in the Draft.
+        var registry = KeysRegistry()
+        var langSelection = ModelSelection.none
+        var visionSelection = ModelSelection.none
+        var embeddingSelection = ModelSelection.none
+        var langContext: Int = 0          // manual context-window override for the selected language model (0 = Auto)
         var anthropicBaseURL = "https://api.anthropic.com"
         var anthropicModel = "claude-3-5-haiku-latest"
         var anthropicKey = ""
         // Independent image (vision) provider.
         var visionEngine: VisionEngine = .matchText
-        var visionOpenAIService = "openai"
-        var visionOpenAICustomBaseURL = "https://api.openai.com/v1"
-        var visionOpenAIModelByService: [String: String] = [:]   // Image models, per service
         var visionAnthropicBaseURL = "https://api.anthropic.com"
         var visionAnthropicModel = "claude-3-5-sonnet-latest"
         var visionAnthropicKey = ""
-        // Embedding model (Chat semantic memory). Cloud has its own independent OpenAI-compatible
-        // service/endpoint (like the Image model); the API key is shared per service via openAIKeyByService.
+        // Embedding model (Chat semantic memory).
         var embeddingProvider: EmbeddingProviderKind = .automatic
         var embeddingOllamaModel = ""       // "" = Auto (best installed embed model)
         var embeddingMLXModel = MLXEmbeddings.defaultModelID
-        var embeddingOpenAIService = "openai"
-        var embeddingOpenAICustomBaseURL = "https://api.openai.com/v1"
-        var embeddingOpenAIModelByService: [String: String] = [:]   // "" = text-embedding-3-small default
 
-        // Active-service convenience, computed from the per-service dicts (consumed by serviceName,
-        // privacyLine, loadCloudModels, ConnectionTest, hints).
-        var openAIBaseURL: String { SettingsView.openAIServiceURL(openAIService, custom: openAICustomBaseURL) }
-        var openAIKey: String { openAIKeyByService[openAIService] ?? "" }
-        var openAIModel: String { openAIModelByService[openAIService] ?? "" }
-        var visionOpenAIBaseURL: String { SettingsView.openAIServiceURL(visionOpenAIService, custom: visionOpenAICustomBaseURL) }
-        var visionOpenAIKey: String { openAIKeyByService[visionOpenAIService] ?? "" }   // shared key
-        var embeddingOpenAIBaseURL: String { SettingsView.openAIServiceURL(embeddingOpenAIService, custom: embeddingOpenAICustomBaseURL) }
-        var embeddingOpenAIKey: String { openAIKeyByService[embeddingOpenAIService] ?? "" }   // shared key
-        var embeddingOpenAIModel: String { embeddingOpenAIModelByService[embeddingOpenAIService] ?? "" }
-        var visionOpenAIModel: String { visionOpenAIModelByService[visionOpenAIService] ?? "" }
+        // Active-service convenience, computed from the registry + current selection (consumed by
+        // privacyLine, ConnectionTest, hints). Selection is resolved via the registry, not stored URLs.
         // Connector enable + key state, keyed by Connector.id — the catalog is the single source of
         // truth, so adding a connector needs no new Draft fields.
         var connectorEnabled: [String: Bool] = [:]
@@ -74,21 +80,30 @@ struct SettingsView: View {
     @State private var showClearHistoryConfirm = false
     @State private var embeddingStatus: (ok: Bool, text: String)?
     @State private var embeddingStatusTask: Task<Void, Never>?
-    @State private var embeddingCloudModels: [String] = []   // embedding catalog from the cloud endpoint
     @State private var draft = Draft()
     @State private var saved = Draft()
-    @State private var showContextInfo = false
     @State private var availableModels: [String] = []
     @State private var modelsLoaded = false
     @State private var testState: ConnectionTest.Outcome = .idle
 
-    // Fetched cloud model catalogs (OpenAI-compatible / Anthropic), like the Ollama model list.
-    @State private var openAIModels: [String] = []
+    // Fetched cloud model catalogs (Anthropic), like the Ollama model list.
     @State private var anthropicModels: [String] = []
-    @State private var visionOpenAIModels: [String] = []
     @State private var visionAnthropicModels: [String] = []
     @State private var loadingModels = false
     @State private var modelLoadNote: String?
+
+    // Omni-router registry UI state. Draft key *values* are held here (loaded from Keychain in
+    // load(), committed in apply()) keyed by RegisteredKey.id — the Draft itself never carries
+    // secrets. `registryTest` is the per-card model-aware Test result; `discovering` guards refetches.
+    @State private var registryKeyValues: [String: String] = [:]
+    @State private var registrySearch: [ModelCapability: String] = [:]
+    @State private var modelPickerOpenFor: ModelCapability?   // which card's model popover is open
+    @State private var showConnections = false           // the connection manager sheet
+    @State private var connectionsTest: ConnectionTest.Outcome = .idle
+    @State private var connectionsTestNote: String?
+    @State private var discoveringKeyIDs: Set<String> = []
+    @State private var savedRegistryKeyValues: [String: String] = [:]   // baseline for "unsaved changes" diff
+    @State private var showMigrationNotice = false
     @State private var ollamaStatus: OllamaEndpoint.Status?
     @State private var mlxDownload: MLXDownloadState = .idle
     @State private var mlxInstalled: [MLXCache.Entry] = []
@@ -122,7 +137,7 @@ struct SettingsView: View {
             .frame(width: directRecorderWidth, alignment: .center)
     }
 
-    private var isDirty: Bool { draft != saved }
+    private var isDirty: Bool { draft != saved || registryKeyValues != savedRegistryKeyValues }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -149,7 +164,7 @@ struct SettingsView: View {
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
             if isDirty {
-                Button("Revert") { draft = saved }
+                Button("Revert") { draft = saved; registryKeyValues = savedRegistryKeyValues }
                     .buttonStyle(.bordered)
             }
             Button("Save & Apply") { apply() }
@@ -244,79 +259,311 @@ struct SettingsView: View {
 
     // MARK: - Intelligence
 
+    /// Three instances of one template, plus the Ollama plumbing card. Nothing here declares a row
+    /// order, a label width, a control width or a spacing value — those live in `ModelProviderSection`
+    /// and `SettingsMetrics`, so a layout fix is one edit for all three (and for the next one).
     private var intelligenceTab: some View {
-        Form {
-            Section("Language model") {
-                Picker("Provider", selection: $draft.provider) {
-                    ForEach(availableProviders) { Text($0.label).tag($0) }
-                }
-                providerConfig
-                if showsConnectionRow { connectionRow }
-                caption(privacyLine)
+        ScrollView {
+            VStack(alignment: .leading, spacing: SettingsMetrics.sectionSpacing) {
+                languageSection
+                imageSection
+                embeddingSection
+                // Ollama plumbing shown once, only when text OR image actually uses Ollama.
+                if usesOllama { ollamaSection }
             }
-
-            Section("Image model") {
-                Picker("Provider", selection: $draft.visionEngine) {
-                    ForEach(availableVisionEngines) { Text($0.label).tag($0) }
-                }
-                visionProviderConfig
-                caption(imageModelHint)
-            }
-
-            Section("Embedding model") {
-                Picker("Provider", selection: $draft.embeddingProvider) {
-                    ForEach(availableEmbeddingProviders) { Text($0.label).tag($0) }
-                }
-                embeddingProviderConfig
-                // MLX shows its own install/error state in the model row above, so the extra status
-                // line would be redundant (and could go stale after a download).
-                if draft.embeddingProvider != .mlx { embeddingStatusCaption }
-                caption(embeddingHint)
-            }
-
-            // Ollama plumbing shown once, only when text OR image actually uses Ollama.
-            if usesOllama {
-                Section("Ollama") {
-                    TextField("Server", text: $draft.ollamaBaseURL, prompt: Text("Auto — localhost:11434"))
-                        .onChange(of: draft.ollamaBaseURL) { _, _ in scheduleOllamaStatus() }
-                    ollamaStatusCaption
-                    if OllamaLauncher.isInstalled {
-                        Toggle("Start Ollama automatically when Lasso launches", isOn: $draft.ollamaAutoStart)
-                    }
-                }
-            }
+            .padding(SettingsMetrics.pagePadding)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .formStyle(.grouped)
-        // Populate the cloud catalogs when switching to a cloud engine (Ollama loads in `load()`).
+        .background(SettingsPalette.pageFill)
+        // Anthropic catalogs load when switching to those cloud engines (Ollama loads in `load()`;
+        // the OpenAI-compatible connections load their models on add/edit/refresh).
         .onChange(of: draft.provider) { _, _ in Task { await loadCloudModels() } }
         .onChange(of: draft.visionEngine) { _, _ in Task { await loadVisionModels() } }
-        .onChange(of: draft.embeddingProvider) { _, new in
-            refreshEmbeddingStatus()
-            if new == .openAICompatible { Task { await loadEmbeddingCloudModels() } }
-        }
+        .onChange(of: draft.embeddingProvider) { _, _ in refreshEmbeddingStatus() }
         .onChange(of: draft.embeddingOllamaModel) { _, _ in refreshEmbeddingStatus() }
-        .onChange(of: draft.embeddingOpenAIModel) { _, _ in refreshEmbeddingStatus() }
+        .onChange(of: draft.embeddingSelection) { _, _ in refreshEmbeddingStatus() }
+        // Keep a linked Image section live: when the language selection changes, what Inherit
+        // resolves to (and the embedding status) has to follow along.
+        .onChange(of: draft.langSelection) { _, _ in refreshEmbeddingStatus() }
         .task {
             scheduleOllamaStatus(); await loadVisionModels(); refreshEmbeddingStatus()
-            if draft.embeddingProvider == .openAICompatible { await loadEmbeddingCloudModels() }
+        }
+        .sheet(isPresented: $showConnections) { connectionsSheet }
+        .alert("Re-add your language model", isPresented: $showMigrationNotice) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("The Intelligence settings format changed in this update. Your OpenAI-compatible "
+                 + "connection needs to be re-added under Language model — add it again as a "
+                 + "connection to restore it.")
         }
     }
 
-    /// Live status of the chosen embedding backend — shows whether semantic recall is actually active,
-    /// what it fell back to, or that it's off (chat memory then uses the running summary only). This is
-    /// how "no embedder" is surfaced instead of silently going dark.
-    @ViewBuilder private var embeddingStatusCaption: some View {
-        if let s = embeddingStatus {
-            Label(s.text, systemImage: s.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                .font(.caption)
-                .foregroundStyle(s.ok ? Color.secondary : Color.orange)
+    private var connectionsSheet: some View {
+        ConnectionsSheet(
+            registry: $draft.registry,
+            keyValues: $registryKeyValues,
+            discovering: discoveringKeyIDs,
+            discover: { id in Task { await discoverModels(forKeyID: id) } },
+            onChanged: { connectionsDidChange() },
+            dismiss: { showConnections = false })
+    }
+
+    // MARK: - The three model sections (one template, three instances)
+
+    private var languageSection: some View {
+        ModelProviderSection(
+            title: "Language model",
+            providers: availableProviders.map { ProviderChoice(id: $0.rawValue, label: $0.label) },
+            providerID: Binding(get: { draft.provider.rawValue },
+                                set: { draft.provider = ProviderKind(rawValue: $0) ?? .onDevice }),
+            showsModelRow: draft.provider != .onDevice,
+            modelCaption: draft.provider == .openAICompatible
+                ? "Available from all configured connections" : nil,
+            modelControl: {
+                switch draft.provider {
+                case .onDevice:
+                    EmptyView()
+                case .ollama:
+                    ollamaModelControl(selection: $draft.ollamaModel)
+                case .mlx:
+                    mlxModelControl
+                case .openAICompatible:
+                    registryModelControl(for: .language)
+                case .anthropic:
+                    cloudModelControl(selection: $draft.anthropicModel, models: anthropicModels) {
+                        await loadCloudModels(); return !anthropicModels.isEmpty
+                    }
+                }
+            },
+            extras: {
+                if draft.provider == .mlx {
+                    if mlxIsCustom {
+                        SettingsRow("Model ID") {
+                            TextField("", text: $draft.mlxModel, prompt: Text(MLXProvider.defaultModelID))
+                                .textFieldStyle(.roundedBorder)
+                                .settingsFieldWidth()
+                        }
+                    }
+                    mlxDownloadRow
+                }
+            },
+            contextControl: {
+                if draft.provider == .openAICompatible { registryContextControl() }
+            },
+            connections: draft.provider == .openAICompatible ? connectionsRowConfig : nil,
+            apiKey: languageAPIKey,
+            test: languageTest,
+            footnote: draft.provider == .openAICompatible ? registryLanguageHint : privacyLine)
+    }
+
+    private var imageSection: some View {
+        ModelProviderSection(
+            title: "Image model",
+            // "Same as language model" is not a protocol — it's the Inherit switch, so the same
+            // intent can't be expressed twice.
+            providers: availableVisionEngines.filter { $0 != .matchText }
+                .map { ProviderChoice(id: $0.rawValue, label: $0.label) },
+            providerID: Binding(get: { draft.visionEngine.rawValue },
+                                set: { draft.visionEngine = VisionEngine(rawValue: $0) ?? .ollama }),
+            inheritance: InheritanceConfig(
+                title: "Inherit language model",
+                isOn: Binding(get: { draft.visionEngine == .matchText },
+                              set: { setImageInheritsLanguage($0) }),
+                note: draft.visionEngine == .matchText
+                    ? "Images go to whatever the language model runs"
+                    : "Images use their own protocol and model"),
+            showsModelRow: draft.visionEngine != .mlx,
+            modelCaption: draft.visionEngine == .openAICompatible
+                ? "Available from all configured connections" : nil,
+            modelControl: {
+                switch draft.visionEngine {
+                case .matchText, .mlx:
+                    EmptyView()
+                case .ollama:
+                    ollamaModelControl(selection: $draft.visionModel)
+                case .openAICompatible:
+                    registryModelControl(for: .vision)
+                case .anthropic:
+                    cloudModelControl(selection: $draft.visionAnthropicModel,
+                                      models: visionAnthropicModels) {
+                        await loadVisionModels(); return !visionAnthropicModels.isEmpty
+                    }
+                }
+            },
+            extras: {
+                if draft.visionEngine == .mlx {
+                    MLXModelManager(modelID: $draft.visionMLXModel,
+                                    suggestions: Self.mlxVisionSuggestions,
+                                    defaultID: MLXVisionProvider.defaultModelID,
+                                    localOnly: draft.localOnly)
+                }
+            },
+            contextControl: { EmptyView() },
+            connections: draft.visionEngine == .openAICompatible ? connectionsRowConfig : nil,
+            apiKey: imageAPIKey,
+            test: nil,
+            footnote: imageModelHint)
+    }
+
+    private var embeddingSection: some View {
+        ModelProviderSection(
+            title: "Embedding model",
+            providers: availableEmbeddingProviders.map { ProviderChoice(id: $0.rawValue, label: $0.label) },
+            providerID: Binding(get: { draft.embeddingProvider.rawValue },
+                                set: { draft.embeddingProvider = EmbeddingProviderKind(rawValue: $0) ?? .automatic }),
+            showsModelRow: draft.embeddingProvider == .ollama || draft.embeddingProvider == .openAICompatible,
+            modelCaption: draft.embeddingProvider == .openAICompatible
+                ? "Available from all configured connections" : nil,
+            modelControl: {
+                switch draft.embeddingProvider {
+                case .automatic, .apple, .mlx:
+                    EmptyView()
+                case .ollama:
+                    embeddingOllamaControl
+                case .openAICompatible:
+                    registryModelControl(for: .embedding)
+                }
+            },
+            extras: {
+                if draft.embeddingProvider == .mlx {
+                    // Same downloadable picker as the Language/Image MLX models — but routed through
+                    // the embedder loader (embedding models are BERT-style encoders, not causal LMs).
+                    MLXModelManager(modelID: $draft.embeddingMLXModel,
+                                    suggestions: MLXEmbeddings.suggestions,
+                                    defaultID: MLXEmbeddings.defaultModelID,
+                                    localOnly: draft.localOnly,
+                                    ensureDownloaded: { try await MLXEmbeddings.ensureDownloaded($0, progress: $1) })
+                }
+                // MLX shows its own install/error state in its rows above, so the extra status line
+                // would be redundant (and could go stale after a download).
+                if draft.embeddingProvider != .mlx, let status = embeddingStatus {
+                    SettingsRow("Status", caption: status.text) {
+                        Image(systemName: status.ok ? "checkmark.circle.fill"
+                                                    : "exclamationmark.triangle.fill")
+                            .foregroundStyle(status.ok ? Color.green : Color.orange)
+                    }
+                }
+            },
+            contextControl: { EmptyView() },
+            connections: draft.embeddingProvider == .openAICompatible ? connectionsRowConfig : nil,
+            apiKey: nil,
+            test: nil,
+            footnote: embeddingHint)
+    }
+
+    /// Ollama's server plumbing. Not a model-type section, so not an instance of the template — but it
+    /// is built from the same row primitive, so its grid matches the three above exactly.
+    private var ollamaSection: some View {
+        SettingsCard(title: "Ollama") {
+            SettingsRow("Server") {
+                TextField("", text: $draft.ollamaBaseURL, prompt: Text("Auto — localhost:11434"))
+                    .textFieldStyle(.roundedBorder)
+                    .settingsFieldWidth()
+                    .onChange(of: draft.ollamaBaseURL) { _, _ in scheduleOllamaStatus() }
+            }
+            SettingsRow("Status") { ollamaStatusCaption }
+            if OllamaLauncher.isInstalled {
+                SettingsRow("On launch") {
+                    SettingsSwitch(title: "Start with Lasso", isOn: $draft.ollamaAutoStart)
+                }
+            }
         }
+    }
+
+    // MARK: Section slot contents
+
+    /// Anthropic is a single-endpoint protocol, so its credential stays inline. OpenAI-compatible has
+    /// no key row at all: a key belongs to a connection, and connections live in the manager.
+    private var languageAPIKey: APIKeyRowConfig? {
+        guard draft.provider == .anthropic else { return nil }
+        return APIKeyRowConfig(value: $draft.anthropicKey,
+                               caption: "Stored in your Mac's Keychain.",
+                               onClear: { draft.anthropicKey = "" })
+    }
+
+    private var imageAPIKey: APIKeyRowConfig? {
+        guard draft.visionEngine == .anthropic else { return nil }
+        return APIKeyRowConfig(value: $draft.visionAnthropicKey,
+                               caption: "Stored in your Mac's Keychain.",
+                               onClear: { draft.visionAnthropicKey = "" })
+    }
+
+    private var languageTest: TestRowConfig? {
+        switch draft.provider {
+        case .openAICompatible:
+            // Many-connection protocol: the Connections row tests all of them instead.
+            return nil
+        case .mlx:
+            // Nothing to test until the model is on disk.
+            guard MLXProvider.isDownloaded(draft.mlxModel) else { return nil }
+            return TestRowConfig(outcome: testState, successText: nil, run: { runTest() },
+                                 note: "On this Mac")
+        default:
+            return TestRowConfig(outcome: testState, successText: nil, run: { runTest() }, note: nil)
+        }
+    }
+
+    // MARK: Inheritance (Image ← Language)
+
+    /// What the Image section resolves to while it's linked — shown instead of a second, independent
+    /// copy of the Provider / Keys / Model rows.
+    private var inheritedImageSummary: String {
+        var parts = [draft.provider.label]
+        switch draft.provider {
+        case .onDevice:
+            parts.append("text-only — images need their own provider")
+        case .ollama:
+            parts.append(draft.ollamaModel.isEmpty ? "Auto" : draft.ollamaModel)
+        case .mlx:
+            parts.append(draft.mlxModel)
+        case .anthropic:
+            parts.append(draft.anthropicModel)
+        case .openAICompatible:
+            if let resolved = resolveRegistrySelection(draft.langSelection, capability: .language) {
+                parts.append(resolved.model)
+                if let key = resolved.key { parts.append("via “\(key.name)”") }
+            } else {
+                parts.append("no model selected")
+            }
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Break or restore the link. Unlinking keeps the value it was showing — the standard macOS
+    /// linked-value behaviour — so turning it off is a starting point, not a reset.
+    private func setImageInheritsLanguage(_ on: Bool) {
+        guard !on else { draft.visionEngine = .matchText; return }
+        let mapped: VisionEngine
+        switch draft.provider {
+        case .ollama: mapped = .ollama
+        case .mlx: mapped = .mlx
+        case .openAICompatible: mapped = .openAICompatible
+        case .anthropic: mapped = .anthropic
+        case .onDevice: mapped = .ollama    // Apple's model is text-only; nearest image-capable default
+        }
+        let choices = availableVisionEngines.filter { $0 != .matchText }
+        draft.visionEngine = choices.contains(mapped) ? mapped : (choices.first ?? .ollama)
+        switch draft.visionEngine {
+        case .ollama:
+            if draft.visionModel.isEmpty { draft.visionModel = draft.ollamaModel }
+        case .openAICompatible:
+            draft.visionSelection = concreteCopy(of: draft.langSelection)
+            healSelection(.vision)
+        default:
+            break
+        }
+    }
+
+    /// Resolve a selection to a standalone value, so a copied selection doesn't secretly stay linked.
+    private func concreteCopy(of selection: ModelSelection) -> ModelSelection {
+        guard let resolved = resolveRegistrySelection(selection, capability: .language) else { return .none }
+        if let key = resolved.key { return .model(keyID: key.id, name: resolved.model) }
+        return .manual(name: resolved.model)
     }
 
     private func refreshEmbeddingStatus() {
         let choice = draft.embeddingProvider
         let ollamaModel = draft.embeddingOllamaModel
-        let openAIModel = draft.embeddingOpenAIModel
         let mlxModel = draft.embeddingMLXModel
         embeddingStatusTask?.cancel()
         embeddingStatusTask = Task {
@@ -324,8 +571,7 @@ struct SettingsView: View {
             // endpoint (or re-probe Ollama) on every keystroke.
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
-            let status = await probeEmbedding(choice, ollamaModel: ollamaModel,
-                                              openAIModel: openAIModel, mlxModel: mlxModel)
+            let status = await probeEmbedding(choice, ollamaModel: ollamaModel, mlxModel: mlxModel)
             if !Task.isCancelled { embeddingStatus = status }
         }
     }
@@ -333,7 +579,7 @@ struct SettingsView: View {
     /// Probe the chosen backend and describe the *actual* outcome — including the always-Apple fallback,
     /// so the user knows exactly what their chat memory is doing.
     private func probeEmbedding(_ choice: EmbeddingProviderKind, ollamaModel: String,
-                                openAIModel: String, mlxModel: String) async -> (ok: Bool, text: String) {
+                                mlxModel: String) async -> (ok: Bool, text: String) {
         let apple = AppleSentenceEmbedder()
         let appleNote = "chat memory will use the running summary only (semantic recall off)"
 
@@ -379,20 +625,32 @@ struct SettingsView: View {
                 : (false, "MLX \(short) couldn't run and no on-device embedder — \(appleNote).")
 
         case .openAICompatible:
-            let key = draft.embeddingOpenAIKey   // the embedding service's (shared-per-service) key
-            let model = openAIModel.isEmpty ? "text-embedding-3-small" : openAIModel
-            guard !key.isEmpty else {
+            // Resolve the embedding card's selection through the shared registry: which key backs the
+            // chosen model, and does it need (and have) an API key. "Same as language" is nonsensical
+            // for a dedicated embedder, so it resolves to the embedding selection directly.
+            guard let resolved = resolveRegistrySelection(draft.embeddingSelection, capability: .embedding) else {
                 return apple.isAvailable
-                    ? (true, "No API key for this service yet — using Apple on-device instead.")
-                    : (false, "No API key and no on-device embedder — \(appleNote).")
+                    ? (true, "No embedding model selected yet — using Apple on-device instead.")
+                    : (false, "No embedding model selected and no on-device embedder — \(appleNote).")
             }
-            // Actually hit the /embeddings endpoint so the status reflects reality (many chat endpoints
-            // don't serve embeddings, or not that model) instead of falsely claiming "Active".
-            let url = URL(string: draft.embeddingOpenAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
+            let model = resolved.model
+            guard let entry = resolved.key else {
+                // Manually-added model with no backing key — can't probe an endpoint.
+                return apple.isAvailable
+                    ? (true, "Manual model “\(model)” has no registered key — using Apple on-device instead.")
+                    : (false, "Manual model “\(model)” has no registered key — \(appleNote).")
+            }
+            let key = registryKeyValue(entry.id)
+            if !entry.keyNotRequired, key.isEmpty {
+                return apple.isAvailable
+                    ? (true, "“\(entry.name)” needs a key — using Apple on-device instead.")
+                    : (false, "“\(entry.name)” needs a key and no on-device embedder — \(appleNote).")
+            }
+            let url = URL(string: entry.baseURL) ?? URL(string: "https://api.openai.com/v1")!
             let ok = (await OpenAIEmbedder(baseURL: url, apiKey: key, model: model)
                 .embed(["probe"]))?.first?.isEmpty == false
             if ok {
-                return (true, "Active — cloud \(model). Conversation text is sent to your provider.")
+                return (true, "Active — cloud \(model) via “\(entry.name)”. Conversation text is sent to your provider.")
             }
             return apple.isAvailable
                 ? (true, "Cloud \(model) didn't return embeddings (check the endpoint + model) — using Apple on-device instead.")
@@ -418,93 +676,42 @@ struct SettingsView: View {
         saved.localOnly ? [.automatic, .apple, .ollama, .mlx] : EmbeddingProviderKind.allCases
     }
 
-    /// Per-backend config row for the Embedding model section — mirrors the Language/Image rows: a
-    /// picker of *real* models (installed Ollama embed models with a refresh; the cloud endpoint's
-    /// embedding catalog), not a hardcoded text field. Apple and Automatic are zero-config.
-    @ViewBuilder private var embeddingProviderConfig: some View {
-        switch draft.embeddingProvider {
-        case .automatic, .apple:
-            EmptyView()
-        case .ollama:
-            embeddingOllamaPicker
-        case .mlx:
-            // Same downloadable picker as the Language/Image MLX models — but routed through the
-            // embedder loader (embedding models are BERT-style encoders, not causal LMs).
-            MLXModelManager(modelID: $draft.embeddingMLXModel, suggestions: MLXEmbeddings.suggestions,
-                            defaultID: MLXEmbeddings.defaultModelID, localOnly: draft.localOnly,
-                            ensureDownloaded: { try await MLXEmbeddings.ensureDownloaded($0, progress: $1) })
-        case .openAICompatible:
-            Picker("Service", selection: embeddingOpenAIServiceBinding) {
-                Text("OpenAI").tag("openai")
-                Text("Groq").tag("groq")
-                Text("OpenRouter").tag("openrouter")
-                Text("Custom").tag("custom")
-            }
-            if draft.embeddingOpenAIService == "custom" {
-                TextField("Base URL", text: $draft.embeddingOpenAICustomBaseURL)
-            }
-            SecureKeyField("API key", text: openAIKeyField(draft.embeddingOpenAIService))
-            if isLocalBaseURL(draft.embeddingOpenAIBaseURL) {
-                caption("Not required for a local server.")
-            }
-            cloudModelPicker(selection: openAIEmbeddingModelField(draft.embeddingOpenAIService),
-                             models: embeddingCloudModels, isLocal: isLocalBaseURL(draft.embeddingOpenAIBaseURL)) {
-                await loadEmbeddingCloudModels(); return !embeddingCloudModels.isEmpty
-            }
-            caption("Shares the API key with your language/image model for the same service.")
-        }
-    }
-
-    private var embeddingOpenAIServiceBinding: Binding<String> {
-        Binding(get: { draft.embeddingOpenAIService },
-                set: { draft.embeddingOpenAIService = $0; embeddingCloudModels = []
-                       refreshEmbeddingStatus(); Task { await loadEmbeddingCloudModels() } })
-    }
-    private func openAIEmbeddingModelField(_ service: String) -> Binding<String> {
-        Binding(get: { draft.embeddingOpenAIModelByService[service] ?? "" },
-                set: { draft.embeddingOpenAIModelByService[service] = $0 })
-    }
-
-    /// Ollama embedding model row: a picker of *installed embedding models* (filtered from the same
-    /// catalog the Language row uses) + a refresh button, matching that row's behaviour. Falls back to a
-    /// manual field when none are installed yet (so the user can still name one to pull).
-    @ViewBuilder private var embeddingOllamaPicker: some View {
+    /// Ollama embedding model control: a picker of *installed embedding models* (filtered from the
+    /// same catalog the Language row uses) + a refresh button, matching that row's behaviour. Falls
+    /// back to a manual field when none are installed yet (so the user can still name one to pull).
+    @ViewBuilder private var embeddingOllamaControl: some View {
         let embedModels = availableModels.filter(OllamaModels.isEmbedding)
-        LabeledContent("Model") {
-            HStack(spacing: 8) {
-                if embedModels.isEmpty {
-                    TextField("Model", text: $draft.embeddingOllamaModel, prompt: Text("nomic-embed-text"))
-                        .labelsHidden().multilineTextAlignment(.trailing).textFieldStyle(.plain)
-                } else {
-                    Picker("", selection: $draft.embeddingOllamaModel) {
-                        Text("Auto").tag("")
-                        let current = draft.embeddingOllamaModel
-                        // Only flag a truly-missing explicit choice — treat a tag-less name as matching
-                        // Ollama's implicit ":latest" so "nomic-embed-text" isn't falsely "not installed".
-                        if !current.isEmpty, !embedModels.contains(current),
-                           !embedModels.contains(current + ":latest") {
-                            Text("\(current) (not installed)").tag(current)
-                        }
-                        ForEach(embedModels, id: \.self) { Text($0).tag($0) }
+        HStack(spacing: 8) {
+            if embedModels.isEmpty {
+                TextField("", text: $draft.embeddingOllamaModel, prompt: Text("nomic-embed-text"))
+                    .textFieldStyle(.roundedBorder)
+                    .settingsFieldWidth()
+            } else {
+                Picker("", selection: $draft.embeddingOllamaModel) {
+                    Text("Auto").tag("")
+                    let current = draft.embeddingOllamaModel
+                    // Only flag a truly-missing explicit choice — treat a tag-less name as matching
+                    // Ollama's implicit ":latest" so "nomic-embed-text" isn't falsely "not installed".
+                    if !current.isEmpty, !embedModels.contains(current),
+                       !embedModels.contains(current + ":latest") {
+                        Text("\(current) (not installed)").tag(current)
                     }
-                    .labelsHidden().fixedSize()
+                    ForEach(embedModels, id: \.self) { Text($0).tag($0) }
                 }
-                Button { reloadOllamaModels() } label: {
-                    Image(systemName: "arrow.clockwise").foregroundStyle(.secondary)
-                }
-                .buttonStyle(.borderless)
-                .help("Refresh installed models")
+                .labelsHidden()
+                .fixedSize()
             }
+            refreshModelsButton
         }
     }
 
-    /// Fetch embedding models from the embedding provider's own OpenAI-compatible endpoint. Filters the
-    /// catalog to embedding models; leaves it empty (→ manual field) when the endpoint exposes none, so
-    /// the user can still type one.
-    private func loadEmbeddingCloudModels() async {
-        let url = URL(string: draft.embeddingOpenAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
-        let all = await OpenAICompatibleProvider.availableModels(baseURL: url, apiKey: draft.embeddingOpenAIKey)
-        embeddingCloudModels = all.filter { $0.lowercased().contains("embed") }
+    /// One refresh affordance, reused by every Ollama-backed model control.
+    private var refreshModelsButton: some View {
+        Button { reloadOllamaModels() } label: {
+            Image(systemName: "arrow.clockwise").foregroundStyle(.secondary)
+        }
+        .buttonStyle(.borderless)
+        .help("Refresh installed models")
     }
 
     /// Explanatory caption for the chosen embedding backend.
@@ -600,112 +807,30 @@ struct SettingsView: View {
         saved.localOnly ? [.onDevice, .ollama, .mlx] : ProviderKind.allCases
     }
 
-    @ViewBuilder
-    private var providerConfig: some View {
-        switch draft.provider {
-        case .onDevice:
-            EmptyView()
-        case .ollama:
-            modelPicker("Model", selection: $draft.ollamaModel)
-        case .mlx:
-            // A Menu (not Picker) so there's no leading selection check; each item shows a filled
-            // (downloaded) / outline (available) download icon, and the row label is the current model.
-            LabeledContent("Model") {
-                Menu {
-                    // Downloaded models first, then the rest.
-                    ForEach(mlxDownloadedSuggestions, id: \.id) { mlxMenuItem($0) }
-                    if !mlxDownloadedSuggestions.isEmpty, !mlxAvailableSuggestions.isEmpty { Divider() }
-                    ForEach(mlxAvailableSuggestions, id: \.id) { mlxMenuItem($0) }
-                    Divider()
-                    Button("Custom…") {
-                        if Self.mlxSuggestionIDs.contains(draft.mlxModel) { draft.mlxModel = "" }
-                    }
-                } label: {
-                    Text(mlxMenuLabel)
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
+    /// The Language section's MLX model control. A Menu (not Picker) so there's no leading selection
+    /// check; each item shows a filled (downloaded) / outline (available) download icon.
+    private var mlxModelControl: some View {
+        Menu {
+            // Downloaded models first, then the rest.
+            ForEach(mlxDownloadedSuggestions, id: \.id) { mlxMenuItem($0) }
+            if !mlxDownloadedSuggestions.isEmpty, !mlxAvailableSuggestions.isEmpty { Divider() }
+            ForEach(mlxAvailableSuggestions, id: \.id) { mlxMenuItem($0) }
+            Divider()
+            Button("Custom…") {
+                if Self.mlxSuggestionIDs.contains(draft.mlxModel) { draft.mlxModel = "" }
             }
-            .onAppear { refreshMLXInstalled(); refreshMLXRemoteSize() }
-            .onChange(of: draft.mlxModel) { mlxDownload = .idle; refreshMLXRemoteSize() }
-            if mlxIsCustom {
-                TextField("Model id", text: $draft.mlxModel, prompt: Text(MLXProvider.defaultModelID))
-            }
-
-            // Download / state / Remove for the selected model — one contextual row.
-            mlxDownloadRow
-        case .openAICompatible:
-            Picker("Service", selection: openAIServiceBinding) {
-                Text("OpenAI").tag("openai")
-                Text("Groq").tag("groq")
-                Text("OpenRouter").tag("openrouter")
-                Text("Custom").tag("custom")
-            }
-            if draft.openAIService == "custom" {
-                TextField("Base URL", text: $draft.openAICustomBaseURL)
-            }
-            SecureKeyField("API key", text: openAIKeyField(draft.openAIService))
-            if isLocalBaseURL(draft.openAIBaseURL) {
-                caption("Not required for a local server.")
-            }
-            cloudModelPicker(selection: openAITextModelField(draft.openAIService), models: openAIModels,
-                             isLocal: isLocalBaseURL(draft.openAIBaseURL)) {
-                await loadCloudModels(); return !openAIModels.isEmpty
-            }
-            contextWindowControl(service: draft.openAIService, model: draft.openAIModel)
-        case .anthropic:
-            SecureKeyField("API key", text: $draft.anthropicKey)
-            cloudModelPicker(selection: $draft.anthropicModel, models: anthropicModels) {
-                await loadCloudModels(); return !anthropicModels.isEmpty
-            }
+        } label: {
+            Text(mlxMenuLabel)
         }
+        .fixedSize()
+        .onAppear { refreshMLXInstalled(); refreshMLXRemoteSize() }
+        .onChange(of: draft.mlxModel) { mlxDownload = .idle; refreshMLXRemoteSize() }
     }
 
-    /// Config for the chosen image provider — mirrors `providerConfig`, on the independent vision fields.
-    @ViewBuilder
-    private var visionProviderConfig: some View {
-        switch draft.visionEngine {
-        case .matchText:
-            EmptyView()
-        case .ollama:
-            modelPicker("Model", selection: $draft.visionModel)
-        case .mlx:
-            MLXModelManager(modelID: $draft.visionMLXModel, suggestions: Self.mlxVisionSuggestions,
-                            defaultID: MLXVisionProvider.defaultModelID, localOnly: draft.localOnly)
-        case .openAICompatible:
-            Picker("Service", selection: visionOpenAIServiceBinding) {
-                Text("OpenAI").tag("openai")
-                Text("Groq").tag("groq")
-                Text("OpenRouter").tag("openrouter")
-                Text("Custom").tag("custom")
-            }
-            if draft.visionOpenAIService == "custom" {
-                TextField("Base URL", text: $draft.visionOpenAICustomBaseURL)
-            }
-            SecureKeyField("API key", text: openAIKeyField(draft.visionOpenAIService))
-            if isLocalBaseURL(draft.visionOpenAIBaseURL) {
-                caption("Not required for a local server.")
-            }
-            cloudModelPicker(selection: openAIVisionModelField(draft.visionOpenAIService), models: visionOpenAIModels,
-                             isLocal: isLocalBaseURL(draft.visionOpenAIBaseURL)) {
-                await loadVisionModels(); return !visionOpenAIModels.isEmpty
-            }
-            caption("Shares the API key with your language model for the same service.")
-        case .anthropic:
-            SecureKeyField("API key", text: $draft.visionAnthropicKey)
-            cloudModelPicker(selection: $draft.visionAnthropicModel, models: visionAnthropicModels) {
-                await loadVisionModels(); return !visionAnthropicModels.isEmpty
-            }
-        }
-    }
-
-    /// Fetch the image provider's cloud model catalog into its picker.
+    /// Fetch the image provider's cloud model catalog into its picker (Anthropic only — the
+    /// OpenAI-compatible catalog comes from the shared registry, populated per-key on register).
     private func loadVisionModels() async {
         switch draft.visionEngine {
-        case .openAICompatible:
-            let url = URL(string: draft.visionOpenAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
-            visionOpenAIModels = await OpenAICompatibleProvider.availableModels(
-                baseURL: url, apiKey: draft.visionOpenAIKey)
         case .anthropic:
             let url = URL(string: draft.visionAnthropicBaseURL) ?? URL(string: "https://api.anthropic.com")!
             visionAnthropicModels = await AnthropicProvider.availableModels(
@@ -764,41 +889,38 @@ struct SettingsView: View {
         }
     }
 
-    /// Model row for a cloud provider: a free-text field (manual entry always works) plus a "Load
-    /// available models" button that fetches the provider's catalog into a picker — the cloud
-    /// equivalent of the Ollama installed-models list.
-    /// Cloud model selector — same native pop-up as the Ollama model list, for a uniform design. Auto
-    /// -loads the provider's catalog (with a reload button); falls back to a text field when there's
-    /// no catalog yet (no key, or a custom endpoint that doesn't expose `/models`).
+    /// Cloud model selector — same native pop-up as the Ollama model list, at the same width, for a
+    /// uniform design. Auto-loads the provider's catalog (with a reload button); falls back to a text
+    /// field when there's no catalog yet (no key, or an endpoint that doesn't expose `/models`).
     @ViewBuilder
-    private func cloudModelPicker(selection: Binding<String>, models: [String], isLocal: Bool = false,
-                                  reload: @escaping () async -> Bool) -> some View {
-        if models.isEmpty {
-            LabeledContent("Model") {
-                HStack(spacing: 6) {
-                    TextField("Model", text: selection, prompt: Text("type a model name"))
-                        .labelsHidden().multilineTextAlignment(.trailing).textFieldStyle(.plain)
-                    reloadButton(reload, isLocal: isLocal)
-                }
-            }
-        } else {
-            LabeledContent("Model") {
-                HStack(spacing: 8) {
-                    Picker("", selection: selection) {
-                        let current = selection.wrappedValue
-                        if current.isEmpty {
-                            Text("Select a model…").tag("")
-                        } else if !models.contains(current) {
-                            Text("\(current) (custom)").tag(current)
-                        }
-                        ForEach(models, id: \.self) { Text($0).tag($0) }
+    private func cloudModelControl(selection: Binding<String>, models: [String], isLocal: Bool = false,
+                                   reload: @escaping () async -> Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+        HStack(spacing: 8) {
+            if models.isEmpty {
+                TextField("", text: selection, prompt: Text("type a model name"))
+                    .textFieldStyle(.roundedBorder)
+                    .settingsFieldWidth()
+            } else {
+                Picker("", selection: selection) {
+                    let current = selection.wrappedValue
+                    if current.isEmpty {
+                        Text("Select a model…").tag("")
+                    } else if !models.contains(current) {
+                        Text("\(current) (custom)").tag(current)
                     }
-                    .labelsHidden().fixedSize()
-                    reloadButton(reload, isLocal: isLocal)
+                    ForEach(models, id: \.self) { Text($0).tag($0) }
                 }
+                .labelsHidden()
+                .fixedSize()
             }
+            reloadButton(reload, isLocal: isLocal)
         }
-        if let modelLoadNote { caption(modelLoadNote) }
+        if let modelLoadNote {
+            Text(modelLoadNote).font(SettingsFont.sub).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        }
     }
 
     @ViewBuilder
@@ -823,13 +945,10 @@ struct SettingsView: View {
         .disabled(loadingModels)
     }
 
-    /// Fetch the active cloud provider's model catalog into its picker.
+    /// Fetch the active cloud provider's model catalog into its picker (Anthropic only — the
+    /// OpenAI-compatible catalog comes from the shared registry).
     private func loadCloudModels() async {
         switch draft.provider {
-        case .openAICompatible:
-            let url = URL(string: draft.openAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
-            openAIModels = await OpenAICompatibleProvider.availableModels(
-                baseURL: url, apiKey: draft.openAIKey)
         case .anthropic:
             let url = URL(string: draft.anthropicBaseURL) ?? URL(string: "https://api.anthropic.com")!
             anthropicModels = await AnthropicProvider.availableModels(
@@ -839,71 +958,14 @@ struct SettingsView: View {
         }
     }
 
-    /// Hide Test for MLX until its model is downloaded (nothing to test, and the result is stale).
-    private var showsConnectionRow: Bool {
-        draft.provider == .mlx ? MLXProvider.isDownloaded(draft.mlxModel) : true
-    }
-
-    /// "Test connection" + inline result. Validates the *staged* (unsaved) config so the user gets
-    /// a clear ✓/✗ before committing, instead of discovering errors at use time.
-    @ViewBuilder
-    private var connectionRow: some View {
-        HStack {
-            Button("Test") { runTest() }
-                .buttonStyle(.bordered)
-                .disabled(testState == .testing)
-            if draft.provider == .mlx, MLXProvider.isDownloaded(draft.mlxModel) {
-                Label("On this Mac", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green).font(.caption)
-            }
-            Spacer()
-            testResultView
-            if draft.provider == .mlx, let entry = currentModelEntry {
-                Button { NSWorkspace.shared.activateFileViewerSelecting([entry.url]) } label: {
-                    Image(systemName: "folder")
-                }
-                .buttonStyle(.borderless).help("Show in Finder")
-                Button { mlxRemoveConfirm = true } label: { Image(systemName: "trash") }
-                    .buttonStyle(.borderless).foregroundStyle(.red)
-                    .help("Remove this model")
-                    .confirmationDialog("Remove \(entry.repoID)?",
-                                        isPresented: $mlxRemoveConfirm, titleVisibility: .visible) {
-                        Button("Remove", role: .destructive) { removeMLXModel(entry) }
-                        Button("Cancel", role: .cancel) {}
-                    } message: {
-                        Text("Deletes the downloaded files (\(byteString(entry.sizeBytes))). "
-                            + "You can download it again later.")
-                    }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var testResultView: some View {
-        switch testState {
-        case .idle:
-            EmptyView()
-        case .testing:
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("Testing…").font(.caption).foregroundStyle(.secondary)
-            }
-        case .ok(let ms):
-            Label("Connected · \(ms) ms", systemImage: "checkmark.circle.fill")
-                .font(.caption).foregroundStyle(.green)
-        case .failure(let message):
-            Label(message, systemImage: "xmark.circle.fill")
-                .font(.caption).foregroundStyle(.orange)
-                .multilineTextAlignment(.trailing)
-        }
-    }
-
     private func runTest() {
         testState = .testing
         Task {
+            // OpenAI-compatible is covered by the Connections row test; the shared row only runs
+            // for the other providers, so empty OpenAI params are fine here.
             testState = await ConnectionTest.run(
                 provider: draft.provider,
-                openAIBaseURL: draft.openAIBaseURL, openAIKey: draft.openAIKey, openAIModel: draft.openAIModel,
+                openAIBaseURL: "", openAIKey: "", openAIModel: "",
                 anthropicBaseURL: draft.anthropicBaseURL, anthropicKey: draft.anthropicKey,
                 anthropicModel: draft.anthropicModel)
         }
@@ -925,7 +987,7 @@ struct SettingsView: View {
                     ? "Your MLX model is a vision-language model, so it handles images too — one local model for both."
                     : "Your MLX language model can’t see images — pick a vision-language model above, or choose a dedicated image provider below."
             case .openAICompatible:
-                return "Images go to your \(serviceName(draft.openAIBaseURL)) language model — it must be "
+                return "Images go to your \(serviceName(resolvedLanguageBaseURL)) language model — it must be "
                     + "multimodal. Otherwise pick a dedicated image provider below."
             case .anthropic:
                 return "Images go to your Anthropic language model — use a vision Claude, or pick a "
@@ -936,16 +998,394 @@ struct SettingsView: View {
         case .mlx:
             return "Images are identified locally by a native MLX vision model — nothing leaves your Mac."
         case .openAICompatible:
-            return "Images are sent to \(serviceName(draft.visionOpenAIBaseURL)) — use a multimodal "
+            return "Images are sent to \(serviceName(resolvedVisionBaseURL)) — use a multimodal "
                 + "model (e.g. gpt-4o)."
         case .anthropic:
             return "Images are sent to Anthropic — use a vision Claude model (e.g. claude-3-5-sonnet)."
         }
     }
 
-    static let openAIServices = ["openai", "groq", "openrouter", "custom"]
+    // MARK: - Omni-router registry (shared Keys UI + merged model list)
 
-    /// Base URL for a known service preset, or the user's custom URL.
+    /// Base URL of the key backing the current language selection (for privacy/hint copy).
+    private var resolvedLanguageBaseURL: String {
+        resolveRegistrySelection(draft.langSelection, capability: .language)?.key?.baseURL ?? ""
+    }
+    private var resolvedVisionBaseURL: String {
+        resolveRegistrySelection(draft.visionSelection, capability: .vision)?.key?.baseURL ?? ""
+    }
+
+    /// Live API-key value for a registered key (edited in `registryKeyValues`, seeded from Keychain).
+    private func registryKeyValue(_ keyID: String) -> String { registryKeyValues[keyID] ?? "" }
+
+    /// The selection binding for a card's capability.
+    private func selectionBinding(_ capability: ModelCapability) -> Binding<ModelSelection> {
+        switch capability {
+        case .language: return $draft.langSelection
+        case .vision: return $draft.visionSelection
+        case .embedding: return $draft.embeddingSelection
+        }
+    }
+
+    /// Resolve a card's selection to a concrete model name + its backing key. `.sameAsLanguage`
+    /// chases the language selection (so image/embedding follow it live). Returns nil when nothing
+    /// resolvable is selected (empty state / dangling reference cleared).
+    private func resolveRegistrySelection(_ selection: ModelSelection,
+                                          capability: ModelCapability) -> (model: String, key: RegisteredKey?)? {
+        switch selection {
+        case .none:
+            return nil
+        case .sameAsLanguage:
+            // Track the language card; guard against a self-referential loop.
+            if case .sameAsLanguage = draft.langSelection { return nil }
+            return resolveRegistrySelection(draft.langSelection, capability: .language)
+        case .manual(let name):
+            return name.isEmpty ? nil : (name, draft.registry.enabledKey(exposingModel: name))
+        case .model(let keyID, let name):
+            guard let entry = draft.registry.key(withID: keyID), entry.enabled,
+                  entry.models.contains(where: { $0.name == name }) else {
+                // Dangling reference — the key was disabled/removed, or the model vanished on refetch.
+                return nil
+            }
+            return (name, entry)
+        }
+    }
+
+    /// If a card's selection no longer resolves (key disabled/removed, model gone), fall back to the
+    /// first available model for that capability — or clear to `.none` (visible empty state).
+    private func healSelection(_ capability: ModelCapability) {
+        let binding = selectionBinding(capability)
+        // "Same as language" stays valid as long as the language card itself resolves.
+        if case .sameAsLanguage = binding.wrappedValue,
+           resolveRegistrySelection(.sameAsLanguage, capability: capability) != nil {
+            return
+        }
+        if resolveRegistrySelection(binding.wrappedValue, capability: capability) != nil { return }
+        if let first = draft.registry.flatSelectable(for: capability).first {
+            binding.wrappedValue = first.keyID.isEmpty
+                ? .manual(name: first.model.name)
+                : .model(keyID: first.keyID, name: first.model.name)
+        } else {
+            // Never fall back to `.sameAsLanguage`: following the Language model is the Image
+            // section's Inherit switch, not a hidden state of the model picker.
+            binding.wrappedValue = .none
+        }
+    }
+
+    // MARK: Connections (one registry, shared by every section)
+
+    /// The Connections row. Deliberately reports rather than selects: every configured endpoint is
+    /// live at once and contributes its models to the Model picker above, so there is nothing here
+    /// to choose. Configuring them happens in the manager sheet.
+    private var connectionsRowConfig: ConnectionsRowConfig {
+        ConnectionsRowConfig(
+            summary: connectionsSummary,
+            statusText: connectionsStatusText,
+            statusTint: connectionsStatusTint,
+            isTesting: connectionsTest == .testing,
+            canTest: !draft.registry.entries.isEmpty,
+            onTest: { runConnectionsTest() },
+            onManage: { showConnections = true })
+    }
+
+    private var connectionsSummary: String {
+        let count = draft.registry.entries.count
+        guard count > 0 else { return "None configured" }
+        let models = draft.registry.entries.reduce(0) { $0 + $1.models.count }
+        return "\(count) configured · \(models) model\(models == 1 ? "" : "s") available"
+    }
+
+    private var connectionsStatusText: String {
+        switch connectionsTest {
+        case .idle: return connectionsTestNote ?? "Not tested"
+        case .testing: return "Testing…"
+        case .ok: return connectionsTestNote ?? "All connections reachable"
+        case .failure(let message): return message
+        }
+    }
+
+    private var connectionsStatusTint: Color {
+        switch connectionsTest {
+        case .idle: return .secondary
+        case .testing: return .secondary
+        case .ok: return .green
+        case .failure: return .orange
+        }
+    }
+
+    /// Test *every* configured connection, because all of them serve models — testing only the one
+    /// behind the current selection would leave the rest silently broken until first use.
+    private func runConnectionsTest() {
+        let entries = draft.registry.entries
+        guard !entries.isEmpty else { return }
+        connectionsTest = .testing
+        connectionsTestNote = nil
+        Task {
+            let start = Date()
+            var failed: [String] = []
+            for entry in entries {
+                let key = registryKeyValue(entry.id)
+                if !entry.keyNotRequired, key.isEmpty { failed.append(entry.name); continue }
+                let models = await OpenAICompatibleProvider.availableModels(
+                    baseURL: URL(string: entry.baseURL) ?? URL(string: "https://api.openai.com/v1")!,
+                    apiKey: key)
+                if models.isEmpty, !entry.isLocal { failed.append(entry.name) }
+            }
+            let ms = max(1, Int(Date().timeIntervalSince(start) * 1000))
+            if failed.isEmpty {
+                connectionsTestNote = entries.count == 1
+                    ? "Reachable · \(ms) ms"
+                    : "All \(entries.count) reachable · \(ms) ms"
+                connectionsTest = .ok(ms)
+            } else {
+                connectionsTest = .failure(failed.count == entries.count
+                    ? "None reachable"
+                    : "\(failed.joined(separator: ", ")) unreachable")
+            }
+        }
+    }
+
+    /// (Re)discover a connection's models from its endpoint, tag their capabilities, and store them
+    /// on the entry. Every section's picker reads the union of these, so one refresh serves all three.
+    private func discoverModels(forKeyID keyID: String) async {
+        guard let entry = draft.registry.key(withID: keyID),
+              let url = URL(string: entry.baseURL) else { return }
+        discoveringKeyIDs.insert(keyID)
+        defer { discoveringKeyIDs.remove(keyID) }
+        let ids = await OpenAICompatibleProvider.discoverModels(baseURL: url,
+                                                               apiKey: registryKeyValue(keyID))
+        guard let idx = draft.registry.entries.firstIndex(where: { $0.id == keyID }) else { return }
+        draft.registry.entries[idx].models = ids.map { RegistryModel(name: $0) }
+        // Newly discovered models may satisfy a section that was empty; heal selections + status.
+        for cap in ModelCapability.allCases { healSelection(cap) }
+        refreshEmbeddingStatus()
+    }
+
+    /// A connection was added, edited or removed: any section whose selection now dangles falls back,
+    /// and a stale reachability result no longer describes the current set.
+    private func connectionsDidChange() {
+        for cap in ModelCapability.allCases { healSelection(cap) }
+        connectionsTest = .idle
+        connectionsTestNote = nil
+        refreshEmbeddingStatus()
+    }
+
+    // MARK: Merged model list (grouped, capability-filtered, searchable)
+
+    /// The merged model list for a section. Closed state is a single "trigger" button ("Select a model
+    /// ⌄") sized to the panel's one control width; clicking it opens ONE anchored popover with a
+    /// search box on top and the grouped, capability-filtered model list below. The trigger is
+    /// disabled until at least one enabled key exposes a model — nothing to pick otherwise.
+    private func registryModelControl(for capability: ModelCapability) -> some View {
+        let triggerEnabled = !draft.registry.groups(for: capability).isEmpty
+
+        return Button {
+            registrySearch[capability] = ""
+            modelPickerOpenFor = capability
+        } label: {
+            HStack(spacing: 6) {
+                Text(modelMenuLabel(for: capability))
+                    .foregroundStyle(triggerEnabled ? .primary : .secondary)
+                    .lineLimit(1).truncationMode(.middle)
+                Image(systemName: "chevron.down").font(.caption2).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 9)
+            .frame(maxWidth: SettingsMetrics.fieldWidth, minHeight: SettingsMetrics.controlHeight)
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.secondary.opacity(0.4)))
+        }
+        .buttonStyle(.plain)
+        .disabled(!triggerEnabled)
+        .popover(isPresented: Binding(
+            get: { modelPickerOpenFor == capability },
+            set: { if !$0 { modelPickerOpenFor = nil } }),
+            arrowEdge: .bottom) {
+            modelPickerPanel(for: capability)
+        }
+    }
+
+    /// The opened picker panel: search box pinned at top, grouped model list below, then the
+    /// manual-entry and refresh affordances. There is deliberately no "Same as language model" entry:
+    /// following another section is the Inherit switch's job, and one intent gets one control.
+    @ViewBuilder
+    private func modelPickerPanel(for capability: ModelCapability) -> some View {
+        let groups = filteredGroups(for: capability)
+        let selection = selectionBinding(capability).wrappedValue
+
+        VStack(spacing: 0) {
+            TextField("Search models", text: searchBinding(capability))
+                .textFieldStyle(.plain)
+                .padding(8)
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    if groups.isEmpty {
+                        Text(draft.registry.entries.isEmpty
+                             ? "No connections yet — add one to discover models"
+                             : "No models found on your connections")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .padding(.horizontal, 10).padding(.vertical, 8)
+                    }
+
+                    // One group per connection: the list is the union of every endpoint's models, and
+                    // the header is what tells you where a model will actually be routed.
+                    ForEach(groups) { group in
+                        Text(group.name.uppercased())
+                            .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                            .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 2)
+                        ForEach(group.models) { model in
+                            modelPickerItem(
+                                title: model.name,
+                                tag: model.tag,
+                                checked: isSelected(model.name, keyID: group.keyID, in: selection)) {
+                                selectModel(model.name, keyID: group.keyID, capability: capability)
+                                modelPickerOpenFor = nil
+                            }
+                        }
+                    }
+
+                    Divider().padding(.vertical, 2)
+                    modelPickerItem(title: "Type a model name manually…", muted: true) {
+                        modelPickerOpenFor = nil
+                        addManualModel(for: capability)
+                    }
+                    modelPickerItem(title: "Refresh models", systemImage: "arrow.clockwise", muted: true) {
+                        Task { await refreshAllKeys() }
+                    }
+                    modelPickerItem(title: "Manage connections…", systemImage: "slider.horizontal.3",
+                                    muted: true) {
+                        modelPickerOpenFor = nil
+                        showConnections = true
+                    }
+                }
+            }
+            .frame(maxHeight: 240)
+        }
+        .frame(width: 300)
+    }
+
+    @ViewBuilder
+    private func modelPickerItem(title: String, tag: String = "", systemImage: String? = nil,
+                                 checked: Bool = false, muted: Bool = false,
+                                 action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark")
+                    .font(.caption).foregroundStyle(.tint)
+                    .opacity(checked ? 1 : 0)
+                    .frame(width: 12)
+                if let systemImage { Image(systemName: systemImage).font(.caption).foregroundStyle(.secondary) }
+                Text(title)
+                    .foregroundStyle(muted ? .secondary : .primary)
+                    .lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 6)
+                if !tag.isEmpty {
+                    Text(tag).font(.caption2).foregroundStyle(.secondary)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(RoundedRectangle(cornerRadius: 4).fill(.secondary.opacity(0.15)))
+                }
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, 10).padding(.vertical, 5)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func isSameAsLanguage(_ selection: ModelSelection) -> Bool {
+        if case .sameAsLanguage = selection { return true }
+        return false
+    }
+
+    private func isSelected(_ name: String, keyID: String, in selection: ModelSelection) -> Bool {
+        switch selection {
+        case .model(let k, let n): return k == keyID && n == name
+        case .manual(let n): return keyID.isEmpty && n == name
+        default: return false
+        }
+    }
+
+    private func modelMenuLabel(for capability: ModelCapability) -> String {
+        let selection = selectionBinding(capability).wrappedValue
+        if isSameAsLanguage(selection) {
+            let lang = resolveRegistrySelection(.sameAsLanguage, capability: capability)?.model
+            return "Same as language model" + (lang.map { " (\($0))" } ?? "")
+        }
+        if let resolved = resolveRegistrySelection(selection, capability: capability) {
+            return resolved.model
+        }
+        return draft.registry.entries.isEmpty ? "No connections yet" : "Select a model"
+    }
+
+    private func searchBinding(_ capability: ModelCapability) -> Binding<String> {
+        Binding(get: { registrySearch[capability] ?? "" },
+                set: { registrySearch[capability] = $0 })
+    }
+
+    /// Groups for a card, with the cross-group search filter applied.
+    private func filteredGroups(for capability: ModelCapability) -> [RegistryModelGroup] {
+        let q = (registrySearch[capability] ?? "").lowercased()
+        let groups = draft.registry.groups(for: capability)
+        guard !q.isEmpty else { return groups }
+        return groups.compactMap { group in
+            let matched = group.models.filter { $0.name.lowercased().contains(q) }
+            return matched.isEmpty ? nil : RegistryModelGroup(keyID: group.keyID, name: group.name, models: matched)
+        }
+    }
+
+    private func selectModel(_ name: String, keyID: String, capability: ModelCapability) {
+        selectionBinding(capability).wrappedValue = keyID.isEmpty
+            ? .manual(name: name)
+            : .model(keyID: keyID, name: name)
+        if capability == .embedding { refreshEmbeddingStatus() }
+    }
+
+    /// Prompt for a hand-typed model name and file it under the "Manually added" group with the
+    /// capability the card is filtering for (so it shows up in that card, and any others that match).
+    private func addManualModel(for capability: ModelCapability) {
+        let alert = NSAlert()
+        alert.messageText = "Add a model name"
+        alert.informativeText = "Type the exact model id your endpoint expects."
+        alert.addButton(withTitle: "Add")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.placeholderString = "e.g. my-custom-model"
+        alert.accessoryView = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        // Union the card's capability with anything the name signals, so a manual "gpt-4o" also
+        // surfaces in the Image card.
+        var caps = KeysRegistry.inferCapabilities(forModelID: name)
+        caps.insert(capability)
+        if let idx = draft.registry.manualModels.firstIndex(where: { $0.name == name }) {
+            draft.registry.manualModels[idx].capabilities.formUnion(caps)
+        } else {
+            draft.registry.manualModels.append(RegistryModel(name: name, tag: "custom", capabilities: caps))
+        }
+        selectionBinding(capability).wrappedValue = .manual(name: name)
+        if capability == .embedding { refreshEmbeddingStatus() }
+    }
+
+    private func refreshAllKeys() async {
+        for entry in draft.registry.entries where entry.enabled {
+            await discoverModels(forKeyID: entry.id)
+        }
+    }
+
+    // MARK: Model-aware Test connection
+
+    /// Exactly one state-driven hint for the Language card's OpenAI-compatible provider (reference:
+    /// a single line, never stacked).
+    private var registryLanguageHint: String {
+        if draft.registry.entries.isEmpty {
+            return "Add a connection to get started."
+        }
+        if resolveRegistrySelection(draft.langSelection, capability: .language) == nil {
+            return "Pick a model to get started."
+        }
+        return "Each model routes to the connection that serves it."
+    }
+
     // MARK: - MLX download
 
     /// Download / progress on its own row (keeps the Model Picker clean). Nothing shows once the
@@ -953,42 +1393,55 @@ struct SettingsView: View {
     @ViewBuilder
     private var mlxDownloadRow: some View {
         if mlxDownload == .downloading {
-            HStack(spacing: 8) {
-                if let total = mlxRemoteSize, total > 0 {
-                    ProgressView(value: mlxProgress).frame(width: 120)
-                    Text("\(Int(mlxProgress * 100))% · \(byteString(mlxDownloadedBytes)) / \(byteString(total))")
-                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                } else {
-                    ProgressView().controlSize(.small)
-                    Text("Downloading…").font(.caption).foregroundStyle(.secondary)
+            SettingsRow("Download",
+                        caption: mlxStalled ? "Slow or stalled. Cancel and retry if needed." : nil) {
+                HStack(spacing: 8) {
+                    if let total = mlxRemoteSize, total > 0 {
+                        ProgressView(value: mlxProgress).frame(width: 120)
+                        Text("\(Int(mlxProgress * 100))% · \(byteString(mlxDownloadedBytes)) / \(byteString(total))")
+                            .font(SettingsFont.sub).foregroundStyle(.secondary).monospacedDigit()
+                    } else {
+                        ProgressView().controlSize(.small)
+                        Text("Downloading…").font(SettingsFont.sub).foregroundStyle(.secondary)
+                    }
+                    Button("Cancel") { cancelMLXDownload() }
+                        .buttonStyle(.bordered).controlSize(.small)
                 }
-                Button("Cancel") { cancelMLXDownload() }.controlSize(.small)
-                if mlxStalled {
-                    Text("slow or stalled — Cancel & retry if needed")
-                        .font(.caption2).foregroundStyle(.orange)
-                }
-                Spacer()
             }
         } else if case .failed(let message) = mlxDownload {
-            HStack(spacing: 8) {
+            SettingsRow("Download", caption: message) {
                 Button { downloadMLXModel() } label: { Label("Retry", systemImage: "arrow.clockwise") }
-                Text(message).font(.caption).foregroundStyle(.orange).lineLimit(2)
-                Spacer()
+                    .buttonStyle(.bordered)
             }
         } else if !MLXProvider.isDownloaded(draft.mlxModel) {
-            HStack(spacing: 8) {
+            SettingsRow("Download",
+                        caption: draft.localOnly ? "Local-only mode blocks downloads." : nil) {
                 Button { downloadMLXModel() } label: {
                     Label(mlxDownloadLabel, systemImage: "arrow.down.circle")
                 }
+                .buttonStyle(.bordered)
                 .disabled(draft.localOnly)
-                if draft.localOnly {
-                    Text("Local-only mode blocks downloads").font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
             }
-        } else {
-            // Downloaded: status + Remove live on the Test row below.
-            EmptyView()
+        } else if let entry = currentModelEntry {
+            SettingsRow("Downloaded", caption: "\(byteString(entry.sizeBytes)) on this Mac.") {
+                HStack(spacing: 8) {
+                    Button("Show in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([entry.url])
+                    }
+                    .buttonStyle(.bordered)
+                    Button("Remove") { mlxRemoveConfirm = true }
+                        .buttonStyle(.bordered)
+                        .foregroundStyle(.red)
+                        .confirmationDialog("Remove \(entry.repoID)?",
+                                            isPresented: $mlxRemoveConfirm, titleVisibility: .visible) {
+                            Button("Remove", role: .destructive) { removeMLXModel(entry) }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("Deletes the downloaded files (\(byteString(entry.sizeBytes))). "
+                                + "You can download it again later.")
+                        }
+                }
+            }
         }
     }
 
@@ -1148,112 +1601,47 @@ struct SettingsView: View {
         ("Qwen2.5-VL 7B · 4-bit", "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"),
     ]
 
-    /// A custom base URL is free-typed/pasted, so it needs the same whitespace/scheme tolerance as
-    /// Ollama's custom URL field — otherwise a stray leading/trailing space makes `URL(string:)` fail
-    /// downstream (Test, model loading, and the local/cloud privacy label all silently misbehave).
-    /// Reuses `OllamaEndpoint.normalized` rather than re-implementing the same trim-and-validate logic.
-    nonisolated static func openAIServiceURL(_ service: String, custom: String) -> String {
-        switch service {
-        case "openai": "https://api.openai.com/v1"
-        case "groq": "https://api.groq.com/openai/v1"
-        case "openrouter": "https://openrouter.ai/api/v1"
-        default: OllamaEndpoint.normalized(custom)?.absoluteString ?? "https://api.openai.com/v1"
-        }
-    }
-
-    /// Infer the service id from a stored base URL (for migration / first load).
-    static func openAIServiceID(forURL urlString: String) -> String {
-        let host = (URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines))?.host ?? "").lowercased()
-        if host.contains("groq") { return "groq" }
-        if host.contains("openrouter") { return "openrouter" }
-        if host.contains("openai") { return "openai" }
-        return "custom"
-    }
-
-    /// Service pickers: switching just changes the active service (the key/model fields bind straight
-    /// into the per-service dicts, so each service keeps its own) and reloads that service's catalog.
-    private var openAIServiceBinding: Binding<String> {
-        Binding(get: { draft.openAIService },
-                set: { draft.openAIService = $0; openAIModels = []; Task { await loadCloudModels() } })
-    }
-    private var visionOpenAIServiceBinding: Binding<String> {
-        Binding(get: { draft.visionOpenAIService },
-                set: { draft.visionOpenAIService = $0; visionOpenAIModels = []; Task { await loadVisionModels() } })
-    }
-
-    /// Per-service field bindings (the shared key, and each role's model).
-    private func openAIKeyField(_ service: String) -> Binding<String> {
-        Binding(get: { draft.openAIKeyByService[service] ?? "" },
-                set: { draft.openAIKeyByService[service] = $0 })
-    }
-    private func openAITextModelField(_ service: String) -> Binding<String> {
-        Binding(get: { draft.openAIModelByService[service] ?? "" },
-                set: { draft.openAIModelByService[service] = $0 })
-    }
-
-    /// Context-window control for a cloud service: Auto (detect from /v1/models, else infer from the
-    /// model name) or a manual token count — for a custom gateway (e.g. Claude 200K/1M) that doesn't
-    /// advertise its window. Chat scales its budget to whatever this resolves to.
-    @ViewBuilder private func contextWindowControl(service: String, model: String) -> some View {
-        let value = draft.openAIContextByService[service] ?? 0
+    /// Context-window control for the selected OpenAI-compatible language model: Auto (detect from
+    /// /v1/models, else infer from the model name) or a manual token count — for a gateway that doesn't
+    /// advertise its window. Bound to `draft.langContext` (a single override for the active selection).
+    @ViewBuilder private func registryContextControl() -> some View {
+        let value = draft.langContext
         let manual = value > 0
+        let model = resolveRegistrySelection(draft.langSelection, capability: .language)?.model ?? ""
         let autoTokens = intelligence.cloudContextTokens
             ?? IntelligenceCoordinator.inferContextFromModelName(model) ?? 32_000
 
-        VStack(alignment: .leading, spacing: 8) {
-            // Single row: label + always-on status on the left, info + toggle on the right.
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Set context window manually")
-                    Text(manual ? "Manual override active" : "Auto · \(autoTokens.formatted()) tokens detected")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button { showContextInfo.toggle() } label: { Image(systemName: "info.circle") }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
-                    .popover(isPresented: $showContextInfo, arrowEdge: .bottom) {
-                        Text("Detected from your endpoint or inferred from the model name. Turn this on "
-                             + "if your gateway serves a big-context model but doesn't report it.")
-                            .font(.callout).foregroundStyle(.secondary)
-                            .frame(width: 250).padding(12)
-                    }
-                Toggle("", isOn: Binding(
+        SettingsRow("Context window",
+                    caption: manual
+                        ? "Manual override. Up to ~128k tokens of history and sources per chat."
+                        : "Auto · \(autoTokens.formatted()) tokens detected") {
+            SettingsSwitch(
+                title: "Set manually",
+                isOn: Binding(
                     get: { manual },
                     set: { on in
-                        showContextInfo = false
-                        draft.openAIContextByService[service] = on
+                        draft.langContext = on
                             ? (IntelligenceCoordinator.inferContextFromModelName(model) ?? 200_000) : 0
-                    }))
-                    .labelsHidden()
-            }
+                    }),
+                info: "Detected from your endpoint or inferred from the model name. Turn this on "
+                    + "if your gateway serves a big-context model but doesn't report it.")
+        }
 
-            // When on, a compact card: preset chips over a right-aligned token field + a one-line caption.
-            if manual {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 6) {
-                        ForEach([128_000, 200_000, 1_000_000], id: \.self) { preset in
-                            Button(Self.presetLabel(preset)) { draft.openAIContextByService[service] = preset }
-                                .buttonStyle(.bordered)
-                                .tint(value == preset ? Color.accentColor : nil)
-                                .controlSize(.small)
-                        }
-                        Spacer()
+        if manual {
+            SettingsRow("Tokens") {
+                HStack(spacing: 6) {
+                    TextField("", value: Binding(get: { draft.langContext },
+                                                 set: { draft.langContext = max(0, $0) }),
+                              format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 110)
+                    ForEach([128_000, 200_000, 1_000_000], id: \.self) { preset in
+                        Button(Self.presetLabel(preset)) { draft.langContext = preset }
+                            .buttonStyle(.bordered)
+                            .tint(value == preset ? Color.accentColor : nil)
+                            .controlSize(.small)
                     }
-                    HStack {
-                        Text("Tokens").foregroundStyle(.secondary)
-                        Spacer()
-                        TextField("", value: Binding(get: { draft.openAIContextByService[service] ?? 0 },
-                                                     set: { draft.openAIContextByService[service] = max(0, $0) }),
-                                  format: .number)
-                            .multilineTextAlignment(.trailing)
-                            .frame(width: 120)
-                    }
-                    Text("Up to ~128k tokens of history and sources included in chat.")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
-                .padding(10)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.12)))
             }
         }
     }
@@ -1266,14 +1654,10 @@ struct SettingsView: View {
         default:        return n.formatted()
         }
     }
-    private func openAIVisionModelField(_ service: String) -> Binding<String> {
-        Binding(get: { draft.visionOpenAIModelByService[service] ?? "" },
-                set: { draft.visionOpenAIModelByService[service] = $0 })
-    }
 
     private var privacyLine: String {
         if draft.localOnly, !draft.provider.isLocalKind {
-            let service = serviceName(draft.openAIBaseURL)
+            let service = serviceName(resolvedLanguageBaseURL)
             if service == Self.unrecognizedServiceName {
                 return "Local-only is on, but the base URL doesn't look valid — check it in Settings."
             }
@@ -1284,18 +1668,19 @@ struct SettingsView: View {
         case .onDevice, .ollama, .mlx:
             return "Runs on this Mac — nothing leaves your device."
         case .openAICompatible:
-            let service = serviceName(draft.openAIBaseURL)
-            switch service {
-            case "a local server":
-                return "Local server — stays on this Mac."
-            case Self.unrecognizedServiceName:
-                // Never fall through to a "Cloud" claim when the URL simply failed to parse (e.g. a
-                // pasted-in leading/trailing space) — that previously told local-server users their data
-                // was going to "the provider" when it wasn't going anywhere at all.
-                return "Base URL doesn't look valid — check it before this model can be used."
-            default:
-                return "Cloud — your selection is sent to \(service). Use a multimodal model for image questions."
+            // Privacy depends on the key that backs the *selected* language model, not one global URL.
+            guard let resolved = resolveRegistrySelection(draft.langSelection, capability: .language) else {
+                return "No model selected yet — pick one under Language model."
             }
+            guard let entry = resolved.key else {
+                return "“\(resolved.model)” is a manually-added model with no registered key — register a key for it before use."
+            }
+            if entry.isLocal { return "Local server (“\(entry.name)”) — stays on this Mac." }
+            let service = serviceName(entry.baseURL)
+            if service == Self.unrecognizedServiceName {
+                return "“\(entry.name)” base URL doesn't look valid — check it before this model can be used."
+            }
+            return "Cloud — your selection is sent to \(service) via “\(entry.name)”. Use a multimodal model for image questions."
         case .anthropic:
             return "Cloud — your selection is sent to Anthropic. A vision Claude model also handles images."
         }
@@ -1335,29 +1720,24 @@ struct SettingsView: View {
     /// Dropdown of installed Ollama models, with the "auto" choice + a "(not installed)" fallback
     /// for a saved name that's no longer present.
     @ViewBuilder
-    private func modelPicker(_ label: String, selection: Binding<String>,
-                             autoLabel: String = "Auto") -> some View {
-        LabeledContent(label) {
-            HStack(spacing: 8) {
-                if noModels {
-                    Text("No Ollama models").foregroundStyle(.secondary)
-                } else {
-                    Picker("", selection: selection) {
-                        Text(autoLabel).tag("")
-                        let current = selection.wrappedValue
-                        if !current.isEmpty, !availableModels.contains(current) {
-                            Text("\(current) (not installed)").tag(current)
-                        }
-                        ForEach(availableModels, id: \.self) { Text($0).tag($0) }
+    private func ollamaModelControl(selection: Binding<String>, autoLabel: String = "Auto") -> some View {
+        HStack(spacing: 8) {
+            if noModels {
+                Text("No Ollama models")
+                    .font(SettingsFont.label).foregroundStyle(.secondary)
+            } else {
+                Picker("", selection: selection) {
+                    Text(autoLabel).tag("")
+                    let current = selection.wrappedValue
+                    if !current.isEmpty, !availableModels.contains(current) {
+                        Text("\(current) (not installed)").tag(current)
                     }
-                    .labelsHidden().fixedSize()
+                    ForEach(availableModels, id: \.self) { Text($0).tag($0) }
                 }
-                Button { reloadOllamaModels() } label: {
-                    Image(systemName: "arrow.clockwise").foregroundStyle(.secondary)
-                }
-                .buttonStyle(.borderless)
-                .help("Refresh installed models")
+                .labelsHidden()
+                .fixedSize()
             }
+            refreshModelsButton
         }
     }
 
@@ -1406,6 +1786,13 @@ struct SettingsView: View {
     private func load() async {
         availableModels = await OllamaModels.installed()
         modelsLoaded = true
+        // Clean-break migration off the old per-service scheme (one-time; purges old keys, arms the
+        // notice). Must run before we read the registry so the version flag is set.
+        KeysRegistry.migrateIfNeeded()
+        if UserDefaults.standard.bool(forKey: KeysRegistry.noticeKey) {
+            UserDefaults.standard.set(false, forKey: KeysRegistry.noticeKey)
+            showMigrationNotice = true
+        }
         var d = Draft()
         d.provider = intelligence.preferred
         d.ollamaModel = intelligence.ollamaModel
@@ -1421,35 +1808,20 @@ struct SettingsView: View {
         d.visionAnthropicBaseURL = intelligence.visionAnthropicBaseURL
         d.visionAnthropicModel = intelligence.visionAnthropicModel
         d.visionAnthropicKey = Keychain.get("vision.anthropic.apiKey") ?? ""
-        // OpenAI-compatible: shared per-service key store + per-role model stores.
-        let oaSvc = UserDefaults.standard.string(forKey: "intelligence.openai.service")
-            ?? Self.openAIServiceID(forURL: intelligence.openAIBaseURL)
-        d.openAIService = oaSvc
-        d.openAICustomBaseURL = UserDefaults.standard.string(forKey: "intelligence.openai.customBaseURL")
-            ?? (oaSvc == "custom" ? intelligence.openAIBaseURL : "https://api.openai.com/v1")
-        let voaSvc = UserDefaults.standard.string(forKey: "intelligence.vision.openai.service")
-            ?? Self.openAIServiceID(forURL: intelligence.visionOpenAIBaseURL)
-        d.visionOpenAIService = voaSvc
-        d.visionOpenAICustomBaseURL = UserDefaults.standard.string(forKey: "intelligence.vision.openai.customBaseURL")
-            ?? (voaSvc == "custom" ? intelligence.visionOpenAIBaseURL : "https://api.openai.com/v1")
-        for s in Self.openAIServices {
-            d.openAIKeyByService[s] = Keychain.get("openai.svc.\(s).key") ?? ""
-            d.openAIModelByService[s] = UserDefaults.standard.string(forKey: "intelligence.openai.svc.\(s).model") ?? ""
-            d.openAIContextByService[s] = UserDefaults.standard.integer(forKey: "intelligence.openai.svc.\(s).context")
-            d.visionOpenAIModelByService[s] = UserDefaults.standard.string(forKey: "intelligence.vision.openai.svc.\(s).model") ?? ""
-        }
-        // Migrate legacy single keys into the shared per-service store.
-        if (d.openAIKeyByService[oaSvc] ?? "").isEmpty {
-            d.openAIKeyByService[oaSvc] = Keychain.getMigrating("openai.apiKey", legacyDefaultsKey: "openai.apiKey") ?? ""
-        }
-        if (d.openAIKeyByService[voaSvc] ?? "").isEmpty {
-            d.openAIKeyByService[voaSvc] = Keychain.get("vision.openai.apiKey") ?? ""
-        }
-        if (d.openAIModelByService[oaSvc] ?? "").isEmpty, !intelligence.openAIModel.isEmpty {
-            d.openAIModelByService[oaSvc] = intelligence.openAIModel
-        }
-        if (d.visionOpenAIModelByService[voaSvc] ?? "").isEmpty, !intelligence.visionOpenAIModel.isEmpty {
-            d.visionOpenAIModelByService[voaSvc] = intelligence.visionOpenAIModel
+
+        // OpenAI-compatible omni-router: the shared connection registry (JSON) + each section's saved
+        // selection. `KeysRegistry.load()` heals any connection the old UI had switched off, and
+        // persists that — healing only the draft here would have made the panel disagree with every
+        // other reader (the chat switcher saw one connection while Settings claimed three).
+        d.registry = KeysRegistry.load()
+        d.langSelection = loadSelection("intelligence.keys.selection.language") ?? .none
+        d.visionSelection = loadSelection("intelligence.keys.selection.vision") ?? .none
+        d.embeddingSelection = loadSelection("intelligence.keys.selection.embedding") ?? .none
+        d.langContext = UserDefaults.standard.integer(forKey: "intelligence.keys.language.context")
+        // Seed the in-memory key values from the Keychain (Draft never carries secrets).
+        var keyVals: [String: String] = [:]
+        for entry in d.registry.entries {
+            keyVals[entry.id] = Keychain.get(entry.keychainAccount) ?? ""
         }
 
         for connector in Connectors.all {
@@ -1467,18 +1839,6 @@ struct SettingsView: View {
         d.embeddingProvider = intelligence.embeddingProvider
         d.embeddingOllamaModel = intelligence.embeddingOllamaModel
         d.embeddingMLXModel = intelligence.embeddingMLXModel
-        let eoaSvc = UserDefaults.standard.string(forKey: "intelligence.embedding.openai.service")
-            ?? Self.openAIServiceID(forURL: intelligence.embeddingOpenAIBaseURL)
-        d.embeddingOpenAIService = eoaSvc
-        d.embeddingOpenAICustomBaseURL = UserDefaults.standard.string(forKey: "intelligence.embedding.openai.customBaseURL")
-            ?? (eoaSvc == "custom" ? intelligence.embeddingOpenAIBaseURL : "https://api.openai.com/v1")
-        for s in Self.openAIServices {
-            d.embeddingOpenAIModelByService[s] = UserDefaults.standard.string(forKey: "intelligence.embedding.openai.svc.\(s).model") ?? ""
-        }
-        // Seed the active service's model from the legacy flat store (first run after this change).
-        if (d.embeddingOpenAIModelByService[eoaSvc] ?? "").isEmpty, !intelligence.embeddingOpenAIModel.isEmpty {
-            d.embeddingOpenAIModelByService[eoaSvc] = intelligence.embeddingOpenAIModel
-        }
         // Heal an inconsistent saved state (local-only + a cloud engine / cloud image provider).
         if d.localOnly, !d.provider.isLocalKind { d.provider = .onDevice }
         if d.localOnly, d.visionEngine == .openAICompatible || d.visionEngine == .anthropic {
@@ -1487,9 +1847,52 @@ struct SettingsView: View {
         if d.localOnly, !d.embeddingProvider.isLocalKind { d.embeddingProvider = .automatic }
         draft = d
         saved = d
-        // Pre-load the cloud catalogs if a cloud engine/image provider is already configured.
+        registryKeyValues = keyVals
+        savedRegistryKeyValues = keyVals
         await loadCloudModels()
         await loadVisionModels()
+        // Re-discover each enabled key's models so the merged list is fresh on open. This mutates
+        // draft.registry.*.models, which is a load-time refresh, not a user edit — re-baseline `saved`
+        // so it doesn't spuriously read as "Unsaved changes".
+        await refreshAllKeys()
+        // Collapse a legacy `.sameAsLanguage` model selection into a concrete one. Following the
+        // Language model is now the Image section's Inherit switch (visionEngine == .matchText), so
+        // keeping the same intent in a second place is exactly the duplication this redesign removes.
+        if draft.visionSelection == .sameAsLanguage {
+            draft.visionSelection = concreteCopy(of: .sameAsLanguage)
+        }
+        if draft.embeddingSelection == .sameAsLanguage {
+            draft.embeddingSelection = concreteCopy(of: .sameAsLanguage)
+        }
+        // Discovery may also heal dangling selections (a saved model no longer exposed). Both are
+        // load-time corrections, not user edits — re-baseline the registry + selections.
+        saved.registry = draft.registry
+        saved.langSelection = draft.langSelection
+        saved.visionSelection = draft.visionSelection
+        saved.embeddingSelection = draft.embeddingSelection
+    }
+
+    /// Decode a persisted `ModelSelection` (stored as a compact string form).
+    private func loadSelection(_ defaultsKey: String) -> ModelSelection? {
+        guard let raw = UserDefaults.standard.string(forKey: defaultsKey) else { return nil }
+        if raw == "none" { return ModelSelection.none }
+        if raw == "sameAsLanguage" { return .sameAsLanguage }
+        if let rest = raw.dropPrefixIfPresent("manual:") { return .manual(name: String(rest)) }
+        if let rest = raw.dropPrefixIfPresent("model:") {
+            // "model:<keyID>\t<name>"
+            let parts = rest.components(separatedBy: "\t")
+            if parts.count == 2 { return .model(keyID: parts[0], name: parts[1]) }
+        }
+        return nil
+    }
+
+    private func encodeSelection(_ selection: ModelSelection) -> String {
+        switch selection {
+        case .none: return "none"
+        case .sameAsLanguage: return "sameAsLanguage"
+        case .manual(let name): return "manual:\(name)"
+        case .model(let keyID, let name): return "model:\(keyID)\t\(name)"
+        }
     }
 
     private func apply() {
@@ -1507,8 +1910,6 @@ struct SettingsView: View {
         Task { await OllamaEndpoint.autodetect() }   // re-resolve the effective server after a change
         intelligence.visionModel = draft.visionModel
         intelligence.visionMLXModel = draft.visionMLXModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Not user-editable in this UI today, but trimmed for the same reason as the OpenAI-compatible
-        // custom URL: a stray space would otherwise make `URL(string:)` fail wherever this is read back.
         intelligence.anthropicBaseURL = draft.anthropicBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         intelligence.anthropicModel = draft.anthropicModel
         Keychain.set(draft.anthropicKey, for: "anthropic.apiKey")
@@ -1517,28 +1918,30 @@ struct SettingsView: View {
         intelligence.visionAnthropicModel = draft.visionAnthropicModel
         Keychain.set(draft.visionAnthropicKey, for: "vision.anthropic.apiKey")
 
-        // OpenAI-compatible: persist the shared per-service key + each role's per-service model, then
-        // commit the active service of each role as the coordinator's effective config.
-        for s in Self.openAIServices {
-            Keychain.set(draft.openAIKeyByService[s] ?? "", for: "openai.svc.\(s).key")
-            UserDefaults.standard.set(draft.openAIModelByService[s] ?? "", forKey: "intelligence.openai.svc.\(s).model")
-            UserDefaults.standard.set(draft.openAIContextByService[s] ?? 0, forKey: "intelligence.openai.svc.\(s).context")
-            UserDefaults.standard.set(draft.visionOpenAIModelByService[s] ?? "", forKey: "intelligence.vision.openai.svc.\(s).model")
+        // OpenAI-compatible omni-router: persist the shared registry (JSON) + each key's secret, and
+        // each card's selection. Then commit the effective per-role config the coordinator consumes,
+        // resolving each card's selection to its backing key (URL + model + key).
+        draft.registry.save()
+        for entry in draft.registry.entries {
+            Keychain.set(registryKeyValues[entry.id] ?? "", for: entry.keychainAccount)
         }
-        UserDefaults.standard.set(draft.openAIService, forKey: "intelligence.openai.service")
-        UserDefaults.standard.set(draft.openAICustomBaseURL.trimmingCharacters(in: .whitespacesAndNewlines),
-                                  forKey: "intelligence.openai.customBaseURL")
-        UserDefaults.standard.set(draft.visionOpenAIService, forKey: "intelligence.vision.openai.service")
-        UserDefaults.standard.set(draft.visionOpenAICustomBaseURL.trimmingCharacters(in: .whitespacesAndNewlines),
-                                  forKey: "intelligence.vision.openai.customBaseURL")
-        // Active text config
-        intelligence.openAIBaseURL = Self.openAIServiceURL(draft.openAIService, custom: draft.openAICustomBaseURL)
-        intelligence.openAIModel = draft.openAIModelByService[draft.openAIService] ?? ""
-        Keychain.set(draft.openAIKeyByService[draft.openAIService] ?? "", for: "openai.apiKey")
-        // Active image config (key shared from the same per-service store)
-        intelligence.visionOpenAIBaseURL = Self.openAIServiceURL(draft.visionOpenAIService, custom: draft.visionOpenAICustomBaseURL)
-        intelligence.visionOpenAIModel = draft.visionOpenAIModelByService[draft.visionOpenAIService] ?? ""
-        Keychain.set(draft.openAIKeyByService[draft.visionOpenAIService] ?? "", for: "vision.openai.apiKey")
+        UserDefaults.standard.set(encodeSelection(draft.langSelection), forKey: "intelligence.keys.selection.language")
+        UserDefaults.standard.set(encodeSelection(draft.visionSelection), forKey: "intelligence.keys.selection.vision")
+        UserDefaults.standard.set(encodeSelection(draft.embeddingSelection), forKey: "intelligence.keys.selection.embedding")
+        UserDefaults.standard.set(draft.langContext, forKey: "intelligence.keys.language.context")
+
+        // Effective language config → the single endpoint the coordinator drives.
+        if let lang = resolveRegistrySelection(draft.langSelection, capability: .language), let key = lang.key {
+            intelligence.openAIBaseURL = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            intelligence.openAIModel = lang.model
+            Keychain.set(registryKeyValues[key.id] ?? "", for: "openai.apiKey")
+        }
+        // Effective image config (resolving "same as language" against the language selection).
+        if let vis = resolveRegistrySelection(draft.visionSelection, capability: .vision), let key = vis.key {
+            intelligence.visionOpenAIBaseURL = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            intelligence.visionOpenAIModel = vis.model
+            Keychain.set(registryKeyValues[key.id] ?? "", for: "vision.openai.apiKey")
+        }
 
         for connector in Connectors.all {
             UserDefaults.standard.set(draft.connectorEnabled[connector.id] ?? connector.defaultEnabled,
@@ -1559,28 +1962,23 @@ struct SettingsView: View {
         let embeddingChanged = draft.embeddingProvider != saved.embeddingProvider
             || draft.embeddingOllamaModel != saved.embeddingOllamaModel
             || draft.embeddingMLXModel != saved.embeddingMLXModel
-            || draft.embeddingOpenAIService != saved.embeddingOpenAIService
-            || draft.embeddingOpenAICustomBaseURL != saved.embeddingOpenAICustomBaseURL
-            || draft.embeddingOpenAIModelByService != saved.embeddingOpenAIModelByService
             || (draft.embeddingProvider == .openAICompatible
-                && draft.openAIKeyByService != saved.openAIKeyByService)
+                && (draft.embeddingSelection != saved.embeddingSelection
+                    || draft.registry != saved.registry
+                    || registryKeyValues != savedRegistryKeyValues))
         intelligence.embeddingProvider = draft.embeddingProvider
         intelligence.embeddingOllamaModel = draft.embeddingOllamaModel.trimmingCharacters(in: .whitespacesAndNewlines)
         intelligence.embeddingMLXModel = draft.embeddingMLXModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Embedding's own OpenAI-compatible service (independent endpoint; key shared per service).
-        for s in Self.openAIServices {
-            UserDefaults.standard.set(draft.embeddingOpenAIModelByService[s] ?? "", forKey: "intelligence.embedding.openai.svc.\(s).model")
+        // Effective embedding config (its own endpoint, resolved from the shared registry).
+        if let emb = resolveRegistrySelection(draft.embeddingSelection, capability: .embedding), let key = emb.key {
+            intelligence.embeddingOpenAIBaseURL = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            intelligence.embeddingOpenAIModel = emb.model.trimmingCharacters(in: .whitespacesAndNewlines)
+            Keychain.set(registryKeyValues[key.id] ?? "", for: "embedding.openai.apiKey")
         }
-        UserDefaults.standard.set(draft.embeddingOpenAIService, forKey: "intelligence.embedding.openai.service")
-        UserDefaults.standard.set(draft.embeddingOpenAICustomBaseURL.trimmingCharacters(in: .whitespacesAndNewlines),
-                                  forKey: "intelligence.embedding.openai.customBaseURL")
-        intelligence.embeddingOpenAIBaseURL = Self.openAIServiceURL(draft.embeddingOpenAIService, custom: draft.embeddingOpenAICustomBaseURL)
-        intelligence.embeddingOpenAIModel = (draft.embeddingOpenAIModelByService[draft.embeddingOpenAIService] ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        Keychain.set(draft.openAIKeyByService[draft.embeddingOpenAIService] ?? "", for: "embedding.openai.apiKey")
         if embeddingChanged { ChatController.shared.embeddingConfigChanged() }
         Task { await intelligence.refreshVisionAvailability() }   // re-grey vision features as needed
         saved = draft
+        savedRegistryKeyValues = registryKeyValues
     }
 }
 
@@ -1611,91 +2009,6 @@ private struct BrandIcon: View {
 
     private var fallback: some View {
         Image(systemName: fallbackSymbol).foregroundStyle(.tint)
-    }
-}
-
-/// A masked API-key field with a show/hide toggle — keys are sensitive, so they're hidden by
-/// default but revealable to check a paste.
-private struct SecureKeyField: View {
-    let title: String
-    @Binding var text: String
-    @State private var revealed = false
-
-    init(_ title: String, text: Binding<String>) {
-        self.title = title
-        self._text = text
-    }
-
-    var body: some View {
-        HStack(spacing: 8) {
-            // SwiftUI's SecureField (NSSecureTextField under the hood) ignores alignment and scrolls
-            // to the caret, so a long key showed its clipped tail floating to the right. We back the
-            // field with AppKit instead (`KeyTextField`) for guaranteed left-aligned, fill-width
-            // behaviour, and draw our own rounded box so secure/plain look pixel-identical. The
-            // `.id(revealed)` forces the NSView to be rebuilt as the secure vs. plain class on toggle.
-            KeyTextField(text: $text, placeholder: title, isSecure: !revealed)
-                .id(revealed)
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color(nsColor: .textBackgroundColor))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
-                )
-            Button { revealed.toggle() } label: {
-                Image(systemName: revealed ? "eye.slash" : "eye").foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help(revealed ? "Hide key" : "Show key")
-        }
-    }
-}
-
-/// AppKit-backed single-line key field. SwiftUI's `SecureField` won't reliably left-align or fill
-/// width on macOS, so we wrap `NSTextField`/`NSSecureTextField` directly: borderless and transparent
-/// (the SwiftUI parent draws the box), left-aligned, and low hugging priority so it fills the slot.
-private struct KeyTextField: NSViewRepresentable {
-    @Binding var text: String
-    let placeholder: String
-    let isSecure: Bool
-
-    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
-
-    func makeNSView(context: Context) -> NSTextField {
-        let field = isSecure ? NSSecureTextField() : NSTextField()
-        field.isBordered = false
-        field.drawsBackground = false
-        field.focusRingType = .none
-        field.alignment = .left
-        field.lineBreakMode = .byClipping
-        field.usesSingleLineMode = true
-        field.cell?.usesSingleLineMode = true
-        field.cell?.wraps = false
-        field.cell?.isScrollable = true
-        field.font = .systemFont(ofSize: NSFont.systemFontSize)
-        field.delegate = context.coordinator
-        // Fill the available width instead of hugging the typed content.
-        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        return field
-    }
-
-    func updateNSView(_ field: NSTextField, context: Context) {
-        if field.stringValue != text { field.stringValue = text }
-        field.placeholderString = placeholder
-    }
-
-    final class Coordinator: NSObject, NSTextFieldDelegate {
-        private let text: Binding<String>
-        init(text: Binding<String>) { self.text = text }
-        func controlTextDidChange(_ obj: Notification) {
-            guard let field = obj.object as? NSTextField else { return }
-            text.wrappedValue = field.stringValue
-        }
     }
 }
 

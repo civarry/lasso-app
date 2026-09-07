@@ -435,11 +435,11 @@ final class ChatController {
         }
     }
 
-    /// Configured OpenAI-compatible services (Groq / OpenRouter / Custom / OpenAI) for the header's
-    /// quick switcher — one tap each switches to that service and its saved model. Hidden in
-    /// local-only mode.
-    var openAIServices: [(service: String, name: String, model: String)] {
-        PrivacyMode.localOnly ? [] : intelligence.configuredOpenAIServices()
+    /// Every configured connection and the language models it serves, for the header's quick
+    /// switcher — the same aggregated list Settings shows, so the chat menu isn't limited to the one
+    /// model that happens to be selected. Empty in local-only mode.
+    var registryGroups: [RegistryModelGroup] {
+        PrivacyMode.localOnly ? [] : intelligence.registryGroups(for: .language)
     }
     /// Cloud engines are only offered when configured (key + model) and not in local-only mode.
     var anthropicReady: Bool {
@@ -470,14 +470,13 @@ final class ChatController {
         }
     }
 
-    /// Switch to a specific OpenAI-compatible service (Groq / OpenRouter / Custom / OpenAI) and its
-    /// saved model — global, persists, matches Settings.
-    func selectOpenAIService(_ service: String) {
-        intelligence.switchOpenAIService(service)
+    /// Switch to a model served by a specific connection — global, persists, matches Settings.
+    func selectRegistryModel(keyID: String, model: String) {
+        intelligence.selectRegistryModel(keyID: keyID, model: model)
         Task { await refreshCapabilities() }
     }
-    func isCurrentOpenAIService(_ service: String) -> Bool {
-        intelligence.effectivePreferred == .openAICompatible && intelligence.activeOpenAIService == service
+    func isCurrentRegistryModel(keyID: String, model: String) -> Bool {
+        intelligence.isCurrentRegistryModel(keyID: keyID, model: model)
     }
 
     /// OCR the attached image locally; nil if there's no readable text.

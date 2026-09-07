@@ -51,6 +51,24 @@ struct OpenAICompatibleProvider: IntelligenceProvider {
         return chatModels(models.compactMap { $0["id"] as? String })
     }
 
+    /// Discover *every* model id the endpoint advertises via `GET /models`, unfiltered — for the
+    /// omni-router registry, which tags each model's capabilities (language / vision / embedding)
+    /// itself instead of dropping non-chat models. Empty on any failure.
+    static func discoverModels(baseURL: URL, apiKey: String) async -> [String] {
+        var trimmed = baseURL.absoluteString
+        while trimmed.hasSuffix("/") { trimmed.removeLast() }
+        if trimmed.hasSuffix("/chat/completions") { trimmed.removeLast("/chat/completions".count) }
+        guard let url = URL(string: trimmed + "/models") else { return [] }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        if !apiKey.isEmpty { request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = json["data"] as? [[String: Any]] else { return [] }
+        return models.compactMap { $0["id"] as? String }.sorted()
+    }
+
     /// Drop obvious non-chat models (embeddings, audio, image, moderation) so the picker stays useful.
     static func chatModels(_ ids: [String]) -> [String] {
         let exclude = ["embed", "whisper", "tts", "dall-e", "dalle", "moderation", "audio",

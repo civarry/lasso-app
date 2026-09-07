@@ -77,11 +77,16 @@ Settings → Intelligence lets you pick where the thinking happens:
   auto-detects it. Still 100% on your Mac.
 - **MLX** — on-device models that run on Apple Silicon directly. Browse, download, and manage them
   inside Settings; nothing leaves your Mac.
-- **OpenAI-compatible** — OpenAI, Groq, OpenRouter, or any custom base URL. Paste a key, pick a model.
+- **OpenAI-compatible** — OpenAI, Groq, OpenRouter, Google, LM Studio, or any custom base URL. Add as
+  many connections as you like (name + base URL + key); they're all live at once, and Lasso fetches
+  what each one serves. The Model dropdown is the union of every connection's models, grouped by
+  connection, so picking a model is what decides where the request goes. Connections are managed in
+  one place, under "Manage connections".
 - **Anthropic** — Claude, via your API key.
 
-For Identify's vision, you can use the same model as your text engine (if it's multimodal), a local
-Ollama/MLX vision model, or a multimodal cloud model when you've selected a cloud provider.
+Image and Embedding are their own sections with the same layout as Language. Image starts out
+**linked** to your language model (useful when that model is multimodal); turn the link off to give
+images their own provider, key, and model.
 
 Everything in Settings is staged and applied with one **Save & Apply** button.
 

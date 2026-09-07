@@ -46,7 +46,7 @@ struct MLXModelManager: View {
     }
 
     var body: some View {
-        LabeledContent("Model") {
+        SettingsRow("Model") {
             Menu {
                 ForEach(downloadedSuggestions, id: \.id) { menuItem($0) }
                 if !downloadedSuggestions.isEmpty, !availableSuggestions.isEmpty { Divider() }
@@ -56,14 +56,17 @@ struct MLXModelManager: View {
             } label: {
                 Text(menuLabel)
             }
-            .menuStyle(.borderlessButton)
             .fixedSize()
         }
         .onAppear { refreshInstalled(); refreshSize() }
         .onChange(of: modelID) { phase = .idle; refreshSize() }
 
         if isCustom {
-            TextField("Model id", text: $modelID, prompt: Text(defaultID))
+            SettingsRow("Model ID") {
+                TextField("", text: $modelID, prompt: Text(defaultID))
+                    .textFieldStyle(.roundedBorder)
+                    .settingsFieldWidth()
+            }
         }
 
         downloadRow
@@ -81,50 +84,42 @@ struct MLXModelManager: View {
     @ViewBuilder
     private var downloadRow: some View {
         if phase == .downloading {
-            HStack(spacing: 8) {
-                if let total = remoteSize, total > 0 {
-                    ProgressView(value: progress).frame(width: 120)
-                    Text("\(Int(progress * 100))% · \(byteString(downloadedBytes)) / \(byteString(total))")
-                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                } else {
-                    ProgressView().controlSize(.small)
-                    Text("Downloading…").font(.caption).foregroundStyle(.secondary)
+            SettingsRow("Download",
+                        caption: stalled ? "Slow or stalled. Cancel and retry if needed." : nil) {
+                HStack(spacing: 8) {
+                    if let total = remoteSize, total > 0 {
+                        ProgressView(value: progress).frame(width: 120)
+                        Text("\(Int(progress * 100))% · \(byteString(downloadedBytes)) / \(byteString(total))")
+                            .font(SettingsFont.sub).foregroundStyle(.secondary).monospacedDigit()
+                    } else {
+                        ProgressView().controlSize(.small)
+                        Text("Downloading…").font(SettingsFont.sub).foregroundStyle(.secondary)
+                    }
+                    Button("Cancel") { cancel() }
+                        .buttonStyle(.bordered).controlSize(.small)
                 }
-                Button("Cancel") { cancel() }.controlSize(.small)
-                if stalled {
-                    Text("slow or stalled — Cancel & retry if needed")
-                        .font(.caption2).foregroundStyle(.orange)
-                }
-                Spacer()
             }
         } else if case .failed(let message) = phase {
-            HStack(spacing: 8) {
+            SettingsRow("Download", caption: message) {
                 Button { download() } label: { Label("Retry", systemImage: "arrow.clockwise") }
-                Text(message).font(.caption).foregroundStyle(.orange).lineLimit(2)
-                Spacer()
+                    .buttonStyle(.bordered)
             }
         } else if !MLXProvider.isDownloaded(modelID) {
-            HStack(spacing: 8) {
+            SettingsRow("Download", caption: localOnly ? "Local-only mode blocks downloads." : nil) {
                 Button { download() } label: { Label(downloadLabel, systemImage: "arrow.down.circle") }
+                    .buttonStyle(.bordered)
                     .disabled(localOnly)
-                if localOnly {
-                    Text("Local-only mode blocks downloads").font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
             }
-        } else {
-            HStack(spacing: 8) {
-                Label("On this Mac", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green).font(.caption)
-                Spacer()
-                if let entry = currentEntry {
-                    Button { NSWorkspace.shared.activateFileViewerSelecting([entry.url]) } label: {
-                        Image(systemName: "folder")
+        } else if let entry = currentEntry {
+            SettingsRow("Downloaded", caption: "\(byteString(entry.sizeBytes)) on this Mac.") {
+                HStack(spacing: 8) {
+                    Button("Show in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([entry.url])
                     }
-                    .buttonStyle(.borderless).help("Show in Finder")
-                    Button { removeConfirm = true } label: { Image(systemName: "trash") }
-                        .buttonStyle(.borderless).foregroundStyle(.red)
-                        .help("Remove this model")
+                    .buttonStyle(.bordered)
+                    Button("Remove") { removeConfirm = true }
+                        .buttonStyle(.bordered)
+                        .foregroundStyle(.red)
                         .confirmationDialog("Remove \(entry.repoID)?",
                                             isPresented: $removeConfirm, titleVisibility: .visible) {
                             Button("Remove", role: .destructive) { remove(entry) }
@@ -134,6 +129,11 @@ struct MLXModelManager: View {
                                 + "You can download it again later.")
                         }
                 }
+            }
+        } else {
+            SettingsRow("Downloaded") {
+                Label("On this Mac", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green).font(SettingsFont.sub)
             }
         }
     }

@@ -35,3 +35,4 @@ PHASE2_TEST.md
 
 # Agent worktrees are scratch, never committed
 .claude/worktrees/
+.build-dd

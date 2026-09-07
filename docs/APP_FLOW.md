@@ -74,7 +74,7 @@ flowchart TD
 ## 4. Intelligence system (`Intelligence/IntelligenceProvider.swift`)
 
 **Three independent roles** (Settings ▸ Intelligence: **Language model**, **Image model**, **Embedding
-model** — each a `Provider` picker + per-provider config), staged in a `Draft` and committed on Apply:
+model** — each a `Protocol` picker + per-protocol config), staged in a `Draft` and committed on Apply:
 
 - **Language / Text** (`ProviderKind`): `apple` on-device Foundation Models (default, text-only), `ollama`
   (local server), `mlx` (local Apple-Silicon), `openAICompatible` (cloud/local endpoint, e.g. Groq/LM
@@ -86,10 +86,29 @@ model** — each a `Provider` picker + per-provider config), staged in a `Draft`
 - **Embedding** (`EmbeddingProviderKind`, §7): `automatic` (Ollama embed model if reachable → Apple
   `NLEmbedding` → none), `apple`, `ollama`, `openAICompatible`. Powers Chat semantic memory only.
   Resolved by `makeEmbedder()` (probe → **always falls back to Apple**, so retrieval never breaks).
-- **OpenAI-compatible services**: each cloud role picks a **Service** (OpenAI/Groq/OpenRouter/Custom) with
-  its own Base URL + model; the **API key is shared per service** across roles (`openAIKeyByService`).
-  Embedding has its own independent service (can differ from Language — e.g. embed on OpenAI while chatting
-  on Groq).
+- **OpenAI-compatible = one protocol, many simultaneous connections** (`Intelligence/KeysRegistry.swift`).
+  A **protocol** is the API interface (`ProviderKind` / `VisionEngine` / `EmbeddingProviderKind`); a
+  **connection** is a configured endpoint under it (`RegisteredKey`: stable UUID, name, base URL,
+  `keyNotRequired`, discovered models), and secrets live in the Keychain under
+  `keys.registry.<id>.key`, never in the Draft or the JSON. **There is no active connection.** Every
+  configured connection is live at once and contributes its models to one merged, capability-filtered
+  list (`groups(for:)`), the user picks a *model*, and the `ModelSelection` it stores carries the exact
+  **key id** — so picking the model is what routes the request, and two connections serving the same
+  model name still reach the right backend. `enabled` survives only for decoding old stores; `load()`
+  forces every entry back on, since the UI no longer has a switch to undo it. Capabilities are inferred
+  from the model id (`inferCapabilities`), which is what filters the one list into the Language / Image
+  / Embedding pickers. Editing a connection keeps its id, so renames and rotated keys don't break
+  selections.
+
+      Protocol → many Connections → aggregated Models → the user selects a Model
+
+  The UI must not read as Protocol → Connection → Model: that implies one connection can be current.
+- **Image ← Language is one explicit link**, not a duplicated block: `VisionEngine.matchText` *is* the
+  Image section's **Inherit** switch. `ModelSelection.sameAsLanguage` still resolves (old stores decode),
+  but nothing produces it any more — `healSelection` never falls back to it, the model picker doesn't
+  offer it, and `load()` collapses a persisted one into a concrete `.model`/`.manual`. One intent, one
+  control. Turning Inherit off seeds Image from Language's current value (macOS linked-value behaviour),
+  so unlinking is a starting point rather than a reset.
 - **`isLocal` / local-only**: `isLocal` drives the privacy badge; **local-only mode**
   (`PrivacyMode.localOnly`) forces every cloud choice back to local via the `effective*` getters
   (`effectivePreferred` / `effectiveVisionEngine` / `effectiveEmbeddingProvider`) — cloud options are also
@@ -294,6 +313,41 @@ Primitives in `UI/Theme.swift`:
 - Applied to: Identify card, `FloatingResultView`, `ChatView`, `LensResultView`. Action bar / Grammar
   chip / inline-translate already used material.
 
+**Settings ▸ Intelligence — one section template** (`App/Settings/SettingsKit.swift`,
+`App/Settings/ModelProviderSection.swift`, `App/Settings/ConnectionsSheet.swift`). The panel follows
+macOS HIG grouped inset lists rather than `Form(.grouped)`, because the grid has to be identical
+across sections:
+- `SettingsMetrics` is the only place layout numbers exist (row padding 16/14, 22pt controls, 26pt
+  between sections). `SettingsFont` gives three ranks — section header (13 semibold) ▸ row label
+  (13 primary) ▸ sub-label (11 secondary) — so headers, labels and helper text are never confusable.
+- `SettingsRow` is **space-between**: the label is pinned leading, the control trailing, with the
+  sub-label directly under the label. The control is sized by its own content and takes
+  `layoutPriority(1)`; the label half absorbs the slack. So control *widths* vary — a pop-up button is
+  as wide as its widest option — but every control's **right edge lands on the container edge**, which
+  is the alignment that actually reads. Only text inputs carry a width (`settingsFieldWidth()`, 240pt),
+  because an empty field can't size to its content. Rows own their padding and draw a hairline below;
+  `SettingsCard` clips, so the last one lands on the border.
+- `SettingsPalette` carries the grouped-list colours, because the semantic ones don't work here:
+  measured, `NSColor.controlBackgroundColor` resolves to **exactly** `windowBackgroundColor` in both
+  appearances (#1E1E1E dark, #FFFFFF light), so a card painted with it is invisible against the page.
+  The palette separates them explicitly — a 6% white lift on the card in dark (#1E1E1E → #2B2B2B), and
+  in light a dropped page (#F2F2F2) under a white card, since a card can't get lighter than white.
+  Both land at ~0.05 luminance delta, matching what `Form(.grouped)` gives the other tabs.
+- `ModelProviderSection` owns the **row order** — Inherit → Protocol → Model → protocol extras →
+  Context window → API Key → Connections → and is instantiated three times (Language / Image /
+  Embedding). A section supplies its protocol list and the contents of the variable slots; it never
+  declares spacing, widths or order. `MLXModelManager` builds from the same `SettingsRow`.
+- **Connections are configuration; models are selection.** The card carries only a Connections
+  *summary* row (count, models available, Test connections) plus a "Manage connections" link; adding,
+  editing, removing and inspecting endpoints happens in `ConnectionsSheet`. There is deliberately no
+  connection picker anywhere, and no API-key row for OpenAI-compatible — a key belongs to a connection.
+  The model picker groups by connection name, which is what shows where a model will be routed.
+  "Test connections" tests **every** configured endpoint, since all of them serve models.
+- Anthropic is the single-endpoint protocol, so it keeps an inline **API Key** row (`SettingsKeyField`:
+  masked, revealable, replaceable) and a one-shot Test row instead.
+- The window's one **Unsaved changes / Revert / Save & Apply** bar stays the only commit surface; no
+  section or sheet has a save of its own (`isDirty` = `draft != saved || registryKeyValues != savedRegistryKeyValues`).
+
 ---
 
 ## Future improvements (deferred — not yet built)
@@ -328,6 +382,44 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Disabled connections were invisible everywhere but Settings.** `groups(for:)` skips
+  `enabled == false`, and the old key-pill UI let you switch a connection off — so a user with Groq
+  and OpenRouter toggled off saw only one connection in the chat switcher. The redesign's healing made
+  it worse by being *silent*: it re-enabled entries in the Settings `Draft` and then baselined `saved`
+  to the healed value, so the panel reported "3 configured · 497 models available" with no unsaved
+  changes while disk still said `enabled: false`. Healing now happens in `KeysRegistry.load()` — the
+  one point every reader goes through — and is **written back**, so it's permanent and every surface
+  agrees. `LassoTests/KeysRegistryTests.swift` covers it (both cases fail with the heal removed).
+- **Chat's model switcher reads the connection registry.** The header menu still called
+  `configuredOpenAIServices()`, which read the pre-registry `intelligence.openai.svc.<service>.*`
+  defaults — the exact keys `KeysRegistry.purgeLegacyStore()` deletes. So it always returned empty and
+  OpenAI-compatible vanished from the menu entirely, leaving only whatever Settings had selected. It
+  now renders **one submenu per connection listing every model that connection serves**, the same
+  shape as the Ollama/MLX submenus and the same aggregated list Settings offers
+  (`IntelligenceCoordinator.registryGroups(for:)`). Selecting one writes exactly what Settings ▸ Save
+  & Apply writes — endpoint, model, Keychain key, and the `intelligence.keys.selection.language`
+  string — so the panel and the chat header can't disagree. The legacy `openAIServices` /
+  `switchOpenAIService` / `activeOpenAIService` / `configuredOpenAIServices` helpers are gone.
+  **Same cluster, second bug:** `openAIContextOverride` was still reading
+  `intelligence.openai.svc.<service>.context` while Settings writes `intelligence.keys.language.context`,
+  so the manual context-window toggle set a value nothing ever read. Repointed.
+- **Settings ▸ Intelligence: connections are configuration, models are selection.** The panel had a
+  "Keys" row of pills and a per-section API-key field, which read as *pick a connection, then a model
+  from it* — wrong for an omni-router, where every configured endpoint is live at once and the merged
+  model list is the point. The card now shows **Protocol → Model (aggregated, grouped by connection) →
+  Context window → Connections summary**, with a "Manage connections" link opening `ConnectionsSheet`
+  for add/edit/remove. "Test connections" tests all of them. `enabled` is gone from the UI (and forced
+  back on at load) because there is no such thing as a switched-off connection now. See §4 and §9.
+- **Settings ▸ Intelligence rebuilt on one shared section template.** The three model sections were
+  three hand-rolled `Form` sections, so their rows drifted: different dropdown / base-URL / masked-key
+  widths, different row heights, an API-key field with **no label at all**, and a registered key you
+  could only toggle or delete — never rename or rotate. They're now three instances of
+  `ModelProviderSection` over `SettingsKit`'s grid (see §9): one 140pt label column, one 260pt control
+  width, 36pt rows, one card shape, one button style. New affordances: a ⋯ menu on every key pill
+  (rename / replace key / refresh models / delete) reusing the register form, a labelled **API Key** row
+  whose value can be revealed, edited or cleared, and an explicit **Inherit** switch on Image instead of
+  a second block silently holding the same key and model (see §4). Adding a fourth model type means
+  instantiating the template, not copying a section.
 - **Summarisation waits for the answer.** `scheduleSummaryUpdate` used to fire during context
   assembly, so the summariser's own generation raced the answer for the same local model. Observed on
   Qwen2.5-7B: `respond(messages)` and `respond(prompt)` started 3ms apart, hit `join in-flight load`,
