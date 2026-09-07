@@ -1,0 +1,51 @@
+# GitHub reports a running *total* of release-asset downloads and keeps no history, so a trend can
+# only exist if something records it. This appends one row a day; the past is unrecoverable, which is
+# why it starts from the day it was added rather than backfilling.
+name: Snapshot downloads
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # 03:00 UTC daily
+  workflow_dispatch:       # and on demand
+
+permissions:
+  contents: write
+
+concurrency:
+  group: downloads-snapshot
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record today's total
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          today=$(date -u +%F)
+          total=$(gh api "repos/${{ github.repository }}/releases" --paginate \
+                    --jq '[.[].assets[].download_count] | add // 0')
+          latest=$(gh api "repos/${{ github.repository }}/releases/latest" \
+                     --jq '"\(.tag_name),\([.assets[].download_count] | add // 0)"')
+          # Re-running on the same day replaces that day's row instead of duplicating it.
+          if [ -f stats/downloads.csv ]; then
+            grep -v "^${today}," stats/downloads.csv > stats/.tmp || true
+            mv stats/.tmp stats/downloads.csv
+          else
+            echo "date,total_downloads,latest_tag,latest_downloads" > stats/downloads.csv
+          fi
+          echo "${today},${total},${latest}" >> stats/downloads.csv
+          echo "$today: $total total"
+
+      - name: Commit if it changed
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add stats/downloads.csv
+          git diff --quiet --cached || git commit -m "Downloads: $(date -u +%F)"
+          git push
