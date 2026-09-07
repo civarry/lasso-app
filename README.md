@@ -2,6 +2,12 @@
 
 # Lasso
 
+<p align="center">
+  <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/civarry/lasso-app?label=latest&color=blue" alt="Latest release"></a>
+  <a href="../../releases"><img src="https://img.shields.io/github/downloads/civarry/lasso-app/total?label=downloads&color=brightgreen" alt="Total downloads"></a>
+  <img src="https://img.shields.io/badge/macOS-26%2B-lightgrey" alt="Requires macOS 26 or later">
+</p>
+
 Lasso is a little menu-bar app for Apple Silicon Macs. Hit a hotkey, the screen
 freezes, you drag a box around anything on it, and a small toolbar pops up with
 things you can do — copy the text, translate it, ask an AI about it, figure out
