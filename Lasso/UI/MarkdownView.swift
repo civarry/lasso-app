@@ -65,18 +65,26 @@ private struct MarkdownBlockView: View {
             QuoteView(blocks: blocks, fontSize: fontSize, selectable: selectable)
 
         case .math(let expression):
-            // Not typeset — converted to Unicode by `MathText`. Centred on its own surface so it
-            // reads as a displayed equation rather than as a stray line of prose.
-            HScroll {
-                Text(expression)
-                    .font(.system(size: fontSize + 1))
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity)
-            }
-            .background(RoundedRectangle(cornerRadius: 8).fill(.white.opacity(0.06)))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.12)))
+            // Not typeset — converted to Unicode by `MathText`. It gets its own surface, a step up in
+            // size, and room to breathe: in an answer about a formula the equation is the thing the
+            // user came for, and at body size in a 420pt panel it read as the least important line.
+            //
+            // Deliberately NOT inside `HScroll`. Converted math is space-separated text, so it wraps
+            // at sensible points, and wrapping beats scrolling here — a formula you have to drag
+            // sideways to finish reading is worse than one on two lines. (It also fixes the centring:
+            // `maxWidth: .infinity` inside a horizontal ScrollView resolves against the content, not
+            // the viewport, so the old version silently rendered flush left.)
+            Text(expression)
+                .font(.system(size: fontSize + 4))
+                .multilineTextAlignment(.center)
+                .lineSpacing(4)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 16)
+                .background(RoundedRectangle(cornerRadius: 10).fill(.white.opacity(0.06)))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.12)))
+                .padding(.vertical, 2)
 
         case .rule:
             Divider().padding(.vertical, 2)
