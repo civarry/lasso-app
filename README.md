@@ -35,6 +35,10 @@ A persistent chat panel lives in the top-right corner (**⌃⇧A** to toggle). I
 drop an image straight into it, and you can send a capture into it to keep asking questions. When you
 turn on web connectors, it grounds its answers with real sources.
 
+Answers are formatted to be read rather than decorated: prose by default, with tables reserved for
+things that actually compare, and code in labelled blocks you can copy. Formulas are converted to
+real symbols (`√`, `Σ`, `σ`, superscripts) instead of showing raw LaTeX, whichever model wrote them.
+
 ## Shortcuts
 
 - **Capture** — **⌃⇧C** (changeable in Settings).

@@ -326,6 +326,14 @@ struct MarkdownRenderingTests {
         #expect(MathText.render("\\zeta(s) = \\sum_{n=1}^{\\infty} n^{-s}") == "ζ(s) = Σₙ₌₁^∞ n⁻ˢ")
     }
 
+    /// `\sum_{i=1}^{N}` is how models write a sum over N points, and a literal `^N` beside real
+    /// subscripts looked like a half-finished conversion.
+    @Test func capitalSuperscriptsConvertWhereUnicodeHasThem() {
+        #expect(MathText.render("\\sum_{i=1}^{N} x_i") == "Σᵢ₌₁ᴺ xᵢ")
+        // No capital S superscript exists; the explicit form beats a substituted glyph.
+        #expect(MathText.render("x^{S}") == "x^S")
+    }
+
     /// A word-shaped subscript still becomes real subscript characters where they exist.
     @Test func wordSubscriptsUseUnicodeWhenAvailable() {
         #expect(MathText.render("\\theta_{\\text{max}}") == "θₘₐₓ")
