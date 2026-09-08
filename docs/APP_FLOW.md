@@ -273,6 +273,15 @@ properties, steps, or term/definition pairs. It also states what the surface can
 images or footnotes), so models stop emitting syntax that renders literally. Models with a tiny window
 get the `.compact` variant, picked from `contextBuilder.budget.total` rather than a model name.
 
+**Math** (`UI/MathText.swift`): models emit `\[ … \]` and `\( … \)` for any formula question whatever
+the prompt says, and the raw commands used to reach the screen. Typesetting would need a math engine —
+KaTeX means a WebView (ruled out: the app avoids WebViews), a native typesetter is a large dependency — so LaTeX is
+**converted to Unicode text** instead: `\frac{\mathbf{A} \cdot \mathbf{B}}{\|\mathbf{A}\| \|\mathbf{B}\|}`
+becomes `(A · B)/(‖A‖ ‖B‖)`, `\sum_{i=1}^{n}` becomes `Σᵢ₌₁ⁿ`. Display regions become a centred
+`.math` block; inline spans are rewritten in paragraphs, headings, list items and table cells, never
+inside code. An unknown command degrades to its own name (`\coth{x}` → `coth(x)`) rather than
+vanishing, and `$…$` is claimed only for real math, so currency (`$5-$10`) survives.
+
 The renderer's rule is **repair, not rejection** — a strict GFM parser turns a small model's near-miss
 into a wall of raw pipes. It recovers tables with no separator row, pads ragged rows, honours
 `|--:|` alignment, and handles nested/task lists at any indent step, blockquotes, setext and
@@ -291,9 +300,11 @@ flowchart LR
   P["system prompt · formatRules(.full/.compact)"] --> M["model output (Markdown)"]
   M -->|deltas, coalesced 50ms| S["StreamStabilizer (streaming only)"]
   S --> PR["MarkdownParser · repair pass"]
-  PR --> B["blocks: paragraph/heading/list/code/table/quote/rule"]
+  PR --> MT["MathText · LaTeX → Unicode"]
+  MT --> B["blocks: paragraph/heading/list/code/table/quote/math/rule"]
   B --> V["MarkdownBlockView"]
   B -->|1 row or 1 column| D["label/value lines, not a grid"]
+  B -->|display equation| MB["centred .math block"]
 ```
 
 **Persistence (`ConversationStore`):** conversations are saved to `~/Library/Application Support/Lasso/`
@@ -432,6 +443,14 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **LaTeX reached the screen as markup.** Asked for the cosine-similarity formula, the model ignored
+  the prompt's "no LaTeX" line (they do) and the panel showed a stray `[`, a line of `\frac{...}`, and
+  every bullet full of `\mathbf{A} \cdot \mathbf{B}`. The prompt was also lying: it claimed the app
+  does not render LaTeX, which is a reason for the model not to send it, not a plan for when it does.
+  `MathText` converts LaTeX to Unicode instead — fractions, roots, sums, Greek, super/subscripts and
+  the operator set models actually use — with display regions as their own centred block and unknown
+  commands degrading to their own name. The prompt now says LaTeX is converted rather than typeset,
+  which is true.
 - **Response formatting: a contract at both ends.** The prompt's entire format policy was "Use
   Markdown when it helps", which is not a rule a model can apply — so structure appeared at random,
   most visibly as tables for things with nothing to compare. `formatRules` replaces it with an

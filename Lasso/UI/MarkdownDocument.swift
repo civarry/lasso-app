@@ -24,6 +24,8 @@ enum MarkdownBlock: Equatable {
     case code(language: String?, content: String, closed: Bool)
     case table(MarkdownTable)
     case quote([MarkdownBlock])
+    /// A display equation, already converted from LaTeX to Unicode text by `MathText`.
+    case math(String)
     case rule
 }
 
@@ -132,13 +134,46 @@ enum MarkdownParser {
 
         func flushParagraph() {
             let joined = paragraph.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            if !joined.isEmpty { blocks.append(.paragraph(joined)) }
+            if !joined.isEmpty { blocks.append(.paragraph(MathText.rewriteInline(joined))) }
             paragraph = []
         }
 
         while i < lines.count {
             let raw = lines[i]
             let line = raw.trimmingCharacters(in: .whitespaces)
+
+            // Display math: `\[ … \]`, `$$ … $$`, or an equation environment. Models emit these
+            // constantly for anything formula-shaped, whatever the prompt asks for, and the raw
+            // delimiters reaching the screen is the worst of both worlds.
+            if let delims = MathText.displayOpener(line) {
+                flushParagraph()
+                var body: [String] = []
+                var head = String(line.dropFirst(delims.open.count))
+                var closed = false
+                if let end = head.range(of: delims.close) {
+                    body.append(String(head[..<end.lowerBound]))
+                    closed = true
+                    i += 1
+                } else {
+                    if !head.trimmingCharacters(in: .whitespaces).isEmpty { body.append(head) }
+                    i += 1
+                    while i < lines.count {
+                        head = lines[i]
+                        if let end = head.range(of: delims.close) {
+                            body.append(String(head[..<end.lowerBound]))
+                            closed = true
+                            i += 1
+                            break
+                        }
+                        body.append(head)
+                        i += 1
+                    }
+                }
+                _ = closed   // an unterminated block still renders what has arrived
+                let rendered = MathText.render(body.joined(separator: "\n"))
+                if !rendered.isEmpty { blocks.append(.math(rendered)) }
+                continue
+            }
 
             // Fenced code. Accepts ``` and ~~~, any fence length ≥ 3; the info string is the language.
             // The closing fence must use the same character, so a ``` inside a ~~~ block is content.
@@ -193,7 +228,8 @@ enum MarkdownParser {
 
             if let level = headingLevel(line) {
                 flushParagraph()
-                blocks.append(.heading(level: level, text: headingText(line, level: level)))
+                blocks.append(.heading(level: level,
+                                       text: MathText.rewriteInline(headingText(line, level: level))))
                 i += 1
                 continue
             }
@@ -302,7 +338,8 @@ enum MarkdownParser {
                     }
                 }
                 items.append(MarkdownListItem(marker: marker.ordered, checked: checked,
-                                              text: text, depth: depth(for: marker.indent)))
+                                              text: MathText.rewriteInline(text),
+                                              depth: depth(for: marker.indent)))
                 i += 1
                 continue
             }
@@ -403,8 +440,8 @@ enum MarkdownParser {
         let sentinel = "\u{0}"
         return t.replacingOccurrences(of: "\\|", with: sentinel)
             .components(separatedBy: "|")
-            .map { $0.replacingOccurrences(of: sentinel, with: "|")
-                     .trimmingCharacters(in: .whitespaces) }
+            .map { MathText.rewriteInline($0.replacingOccurrences(of: sentinel, with: "|")
+                     .trimmingCharacters(in: .whitespaces)) }
     }
 
     // MARK: Line shapes
@@ -515,6 +552,7 @@ enum StreamStabilizer {
         if line.hasPrefix("|") || line.filter({ $0 == "|" }).count >= 2 { return true }
         if line.allSatisfy({ $0 == "#" }) { return true }
         if line.allSatisfy({ $0 == "`" }) || line.allSatisfy({ $0 == "~" }) { return true }
+        if line == "\\" || line == "\\[" || line == "$" || line == "$$" { return true }
         if line.count <= 2, line.allSatisfy({ $0 == "-" || $0 == "*" || $0 == "_" }) { return true }
         return false
     }

@@ -64,6 +64,20 @@ private struct MarkdownBlockView: View {
         case .quote(let blocks):
             QuoteView(blocks: blocks, fontSize: fontSize, selectable: selectable)
 
+        case .math(let expression):
+            // Not typeset — converted to Unicode by `MathText`. Centred on its own surface so it
+            // reads as a displayed equation rather than as a stray line of prose.
+            HScroll {
+                Text(expression)
+                    .font(.system(size: fontSize + 1))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity)
+            }
+            .background(RoundedRectangle(cornerRadius: 8).fill(.white.opacity(0.06)))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.12)))
+
         case .rule:
             Divider().padding(.vertical, 2)
         }

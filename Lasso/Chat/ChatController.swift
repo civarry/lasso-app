@@ -187,15 +187,15 @@ final class ChatController {
         case .compact:
             return """
             Write in plain sentences and paragraphs. Use a bullet list only for genuinely parallel \
-            items, a fenced code block (with a language tag) for any code or command, and no tables, \
-            headings, or LaTeX — this app does not render math.
+            items, a fenced code block (with a language tag) for any code or command, and no tables \
+            or headings. Write formulas in plain notation; this app does not typeset LaTeX.
             """
         case .full:
             return """
             FORMATTING. The app renders standard Markdown: headings, bullet and numbered lists, \
-            tables, fenced code blocks, links, bold, and italic. It does NOT render LaTeX, math \
-            delimiters, HTML, images, or footnotes — write formulas as plain text or inside a code \
-            block.
+            tables, fenced code blocks, links, bold, and italic. It does NOT render HTML, images, or \
+            footnotes, and LaTeX is converted to plain symbols rather than typeset — so prefer plain \
+            notation for formulas, and keep any LaTeX you do use simple.
 
             Default to prose. A conversational or short answer is one to three paragraphs with no \
             headings, no bullets, and no bold. Reach for structure only when the content is genuinely \

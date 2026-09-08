@@ -245,7 +245,7 @@ struct MarkdownRenderingTests {
     @MainActor
     @Test func fullPolicyNamesWhatTheSurfaceCannotRender() {
         let rules = ChatController.formatRules(.full).lowercased()
-        for unsupported in ["latex", "html", "footnotes"] {
+        for unsupported in ["html", "footnotes"] {
             #expect(rules.contains(unsupported), "policy should rule out \(unsupported)")
         }
     }
@@ -257,6 +257,7 @@ struct MarkdownRenderingTests {
         let rules = ChatController.formatRules(.compact)
         #expect(rules.split(separator: " ").count < 45)
         #expect(rules.lowercased().contains("no tables"))
+        #expect(rules.lowercased().contains("latex"))
         #expect(rules.count < ChatController.formatRules(.full).count / 3)
     }
 
@@ -264,5 +265,75 @@ struct MarkdownRenderingTests {
     @Test func systemPromptCarriesThePolicy() {
         #expect(ChatController.systemPrompt.contains(ChatController.formatRules(.full)))
     }
-}
 
+    // MARK: - Math
+
+    private func math(_ text: String) -> String? {
+        for case .math(let m) in blocks(text) { return m }
+        return nil
+    }
+
+    /// The reported bug: the model ignores "no LaTeX" and the delimiters reach the screen, where
+    /// Markdown's own escaping turns `\[` into a stray `[` above a line of raw markup.
+    @Test func displayMathBecomesReadableText() {
+        let out = math("""
+        \\[
+        \\text{Cosine Similarity} = \\frac{\\mathbf{A} \\cdot \\mathbf{B}}{\\|\\mathbf{A}\\| \\|\\mathbf{B}\\|}
+        \\]
+        """)
+        #expect(out == "Cosine Similarity = (A · B)/(‖A‖ ‖B‖)")
+    }
+
+    @Test func dollarDelimitedDisplayMathAlsoWorks() {
+        #expect(math("$$\nx^2 + y^2 = z^2\n$$") == "x² + y² = z²")
+    }
+
+    @Test func equationEnvironmentIsUnwrapped() {
+        #expect(math("\\begin{equation}\nE = mc^2\n\\end{equation}") == "E = mc²")
+    }
+
+    /// Inline spans sit inside prose and lists, and used to show every command verbatim.
+    @Test func inlineMathIsRewrittenInProseAndLists() {
+        #expect(blocks("The dot product \\(\\mathbf{A} \\cdot \\mathbf{B}\\) is a scalar.")
+            == [.paragraph("The dot product A · B is a scalar.")])
+        #expect(items("- \\(\\|\\mathbf{A}\\|\\) is the magnitude").first?.text
+            == "‖A‖ is the magnitude")
+    }
+
+    /// Currency is not math. Treating `$…$` as a formula would quietly rewrite ordinary sentences.
+    @Test func dollarAmountsInProseAreLeftAlone() {
+        #expect(blocks("It costs $5 to $10 per run.") == [.paragraph("It costs $5 to $10 per run.")])
+        #expect(blocks("Budget $5-$10 per day.") == [.paragraph("Budget $5-$10 per day.")])
+    }
+
+    /// …but a bare quantity in `$…$` is the notation models use for a range, and leaving the
+    /// delimiters on screen is the artifact this whole pass exists to remove.
+    @Test func bareQuantitiesInDollarsAreUnwrapped() {
+        #expect(blocks("The score ranges from $-1$ to $1$.")
+            == [.paragraph("The score ranges from -1 to 1.")])
+    }
+
+    @Test func subscriptsSuperscriptsAndSumsConvert() {
+        #expect(MathText.render("\\sum_{i=1}^{n} x_i y_i") == "Σᵢ₌₁ⁿ xᵢ yᵢ")
+        #expect(MathText.render("\\sqrt{\\sum x^2}") == "√(Σ x²)")
+        #expect(MathText.render("\\alpha \\leq \\beta") == "α ≤ β")
+    }
+
+    /// A command the table doesn't know must degrade to its own name — a reader can follow "coth(x)",
+    /// but not a term that silently disappeared.
+    @Test func unknownCommandsKeepTheirName() {
+        #expect(MathText.render("\\coth{x}") == "coth(x)")
+        #expect(MathText.render("\\zeta(s) = \\sum_{n=1}^{\\infty} n^{-s}") == "ζ(s) = Σₙ₌₁^∞ n⁻ˢ")
+    }
+
+    /// A word-shaped subscript still becomes real subscript characters where they exist.
+    @Test func wordSubscriptsUseUnicodeWhenAvailable() {
+        #expect(MathText.render("\\theta_{\\text{max}}") == "θₘₐₓ")
+    }
+
+    /// Math must never be touched inside a code block, where the backslashes are the content.
+    @Test func mathIsNotRewrittenInsideCode() {
+        let parsed = blocks("```tex\n\\frac{a}{b}\n```")
+        #expect(parsed == [.code(language: "tex", content: "\\frac{a}{b}", closed: true)])
+    }
+}
