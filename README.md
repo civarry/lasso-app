@@ -33,6 +33,18 @@ nothing leaves your machine unless you decide it should.
 
 <p align="center"><img src="screenshots/actions.png" alt="The full set of things Lasso can do with a selection"></p>
 
+## Your toolbar, your keys
+
+The toolbar follows the order you set, not what Lasso guesses is relevant, so the
+two things you actually use stay where you expect them even when the selection
+happens to contain a QR code or a color. Switch an action off and it moves into
+the toolbar's "…" menu rather than disappearing.
+
+Every action can also have its own hotkey that starts a capture and runs just
+that action, skipping the toolbar entirely. Identify and Google Lens additionally
+have a full-screen variant that grabs the whole display. Nothing is bound by
+default; you pick the keys in Settings.
+
 ## Identify
 
 <p align="center"><img src="screenshots/identify.png" alt="Identify names what you point at and writes a short, sourced answer"></p>
@@ -67,7 +79,7 @@ supported too, but strictly opt-in; API keys live in the macOS Keychain.
    developer — that's expected, the build isn't notarized. After opening once, it
    just works.
 4. Grant **Screen Recording** in System Settings → Privacy & Security, then
-   relaunch. The capture shortcut defaults to **⌥⌘Space** (changeable in Settings).
+   relaunch. The capture shortcut defaults to **⌃⇧C** (changeable in Settings).
 
 ## Requirements
 
