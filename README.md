@@ -44,9 +44,15 @@ real symbols (`√`, `Σ`, `σ`, superscripts) instead of showing raw LaTeX, whi
 - **Capture** — **⌃⇧C** (changeable in Settings).
 - **Chat** — **⌃⇧A**.
 - **Proofread** — **⌃⇧G** (runs on a selection).
-- **Direct shortcuts** — assign your own hotkeys to run **Identify** or **Google Lens** instantly,
-  skipping the toolbar. Each has a *Selection* variant (drag a box first) and a *Full screen* variant
-  (grabs the whole display) — like Google Lens's "Search Specific Area" / "Full Screen Search".
+- **A hotkey for any action** — every toolbar action (Copy text, Translate, Proofread, Summarize, Ask
+  AI, QR, Colour picker, Identify, Lens) can have its own shortcut that runs it straight away, skipping
+  the toolbar. Assign them in Settings ▸ General ▸ Toolbar actions; none are set by default. Identify
+  and Lens also have a *Full screen* variant that grabs the whole display, like Google Lens's "Search
+  Specific Area" / "Full Screen Search". If an action can't run (Lens in local-only mode, an AI action
+  with no model picked), the hotkey says so instead of doing nothing.
+- **A toolbar you arrange** — reorder the actions in Settings ▸ General ▸ Toolbar actions so the ones
+  you use sit where you expect, every time: your order wins even when a selection contains a QR code or
+  a colour. Switch an action off and it moves into the toolbar's "…" menu rather than disappearing.
 
 ## Privacy
 

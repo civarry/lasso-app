@@ -26,34 +26,31 @@ final class TriggerService {
         }
 
         // Direct-action shortcuts (Findit-style): skip the action bar and run one action immediately.
-        // No defaults — they stay inactive until the user assigns a key in Settings.
-        KeyboardShortcuts.onKeyUp(for: .identifySelection) {
-            CaptureCoordinator.shared.beginDirect(actionID: "identify")
+        // Every registered action gets one, derived from `ActionShortcuts.byActionID` rather than
+        // listed here, so adding an action means editing that one table. No defaults — they stay
+        // inactive until the user assigns a key in Settings.
+        //
+        // Skipping the bar also skips `CaptureAction.isRelevant`, which is where the Lens opt-in and
+        // local-only mode are enforced. There is no per-shortcut guard here any more: every direct run
+        // passes `CaptureCoordinator.passesDirectGate` → `DirectActionGate`, one chokepoint that also
+        // tells the user *why* when it refuses.
+        for (actionID, name) in ActionShortcuts.byActionID {
+            KeyboardShortcuts.onKeyUp(for: name) {
+                CaptureCoordinator.shared.beginDirect(actionID: actionID)
+            }
         }
-        KeyboardShortcuts.onKeyUp(for: .identifyFullScreen) {
-            CaptureCoordinator.shared.beginFullScreen(actionID: "identify")
-        }
-        // Lens shortcuts honour the opt-in toggle AND local-only mode — the direct path skips the
-        // action bar's `isRelevant` check, so it must re-check here or a hotkey would upload to Google
-        // even with local-only on.
-        KeyboardShortcuts.onKeyUp(for: .lensSelection) {
-            guard Self.lensAllowed else { return }
-            CaptureCoordinator.shared.beginDirect(actionID: "lens.search")
-        }
-        KeyboardShortcuts.onKeyUp(for: .lensFullScreen) {
-            guard Self.lensAllowed else { return }
-            CaptureCoordinator.shared.beginFullScreen(actionID: "lens.search")
+        for (actionID, name) in ActionShortcuts.fullScreenByActionID {
+            KeyboardShortcuts.onKeyUp(for: name) {
+                CaptureCoordinator.shared.beginFullScreen(actionID: actionID)
+            }
         }
 
         // Proofread the highlighted text, in place (reads the selection via ⌘C, pastes the
-        // correction back) — no screenshot/OCR, no action bar.
+        // correction back) — no screenshot/OCR, no action bar. Distinct from the toolbar's Proofread
+        // action (`.grammarCapture`), which proofreads a dragged screen selection.
         KeyboardShortcuts.onKeyUp(for: .grammarSelection) {
             GrammarFixService.shared.run()
         }
-    }
-
-    private static var lensAllowed: Bool {
-        UserDefaults.standard.bool(forKey: LensSearchAction.enabledKey) && !PrivacyMode.localOnly
     }
 }
 

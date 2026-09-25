@@ -549,6 +549,25 @@ final class IntelligenceCoordinator {
         (PrivacyMode.localOnly && !preferred.isLocalKind) ? .onDevice : preferred
     }
 
+    /// Can a text request even be *formed* right now? Read by `DirectActionGate` so an AI hotkey says
+    /// "pick a language model" instead of starting a capture that ends in a provider error.
+    ///
+    /// Local engines always can: Apple on-device needs no setup, and Ollama/MLX resolve a model at use
+    /// time. A cloud engine cannot without a model name, because there is no `model` field to send.
+    /// An empty *key* is deliberately not a failure here: a connection can legitimately be key-less (a
+    /// localhost OpenAI-compatible server), and a wrong key already fails loudly with a 401 the moment
+    /// it is used, so checking it would only add false refusals.
+    var textModelConfigured: Bool {
+        switch effectivePreferred {
+        case .onDevice, .ollama, .mlx:
+            return true
+        case .openAICompatible:
+            return !openAIModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .anthropic:
+            return !anthropicModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
     /// Context length (tokens) detected at runtime for the active provider, when we could read it:
     /// Ollama's `/api/show` and OpenAI-compatible `/v1/models` (Groq/OpenRouter expose it). Refreshed by
     /// `refreshContextWindow()`; nil until then or when the API doesn't expose it.

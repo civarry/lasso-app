@@ -77,6 +77,7 @@ final class CaptureCoordinator {
     /// selection flow but pre-binds the action.
     func beginDirect(actionID: String) {
         guard !isActive else { return }
+        guard passesDirectGate(actionID) else { return }
         pendingDirectActionID = actionID
         begin()
     }
@@ -85,8 +86,51 @@ final class CaptureCoordinator {
     /// auto-run `actionID` — Findit's "Full Screen Search".
     func beginFullScreen(actionID: String) {
         guard !isActive else { return }
+        guard passesDirectGate(actionID) else { return }
         Task { await startFullScreen(actionID: actionID) }
     }
+
+    /// The one place every direct hotkey is checked before a pixel is captured.
+    ///
+    /// The direct path skips the action bar, and with it `CaptureAction.isRelevant` — which is where
+    /// Lens's Google-upload opt-in and local-only mode live. Both entry points funnel through here so
+    /// there is exactly one thing to get right (see `DirectActionGate` for the reasoning). Refusals
+    /// are shown, never swallowed: a hotkey that silently does nothing reads as a broken binding.
+    private func passesDirectGate(_ actionID: String) -> Bool {
+        let action = registry?.actions.first { $0.id == actionID }
+        let environment = DirectActionGate.Environment(
+            knownActionIDs: Set(registry?.actions.map(\.id) ?? []),
+            lensEnabled: UserDefaults.standard.bool(forKey: LensSearchAction.enabledKey),
+            localOnly: PrivacyMode.localOnly,
+            visionAvailable: intelligence?.visionAvailable ?? false,
+            textModelConfigured: intelligence?.textModelConfigured ?? false)
+
+        switch DirectActionGate.decide(actionID: actionID, title: action?.title ?? "Lasso",
+                                       environment: environment) {
+        case .allow:
+            return true
+        case .refuse(let title, let reason):
+            // (shared with the content check in `start()` via `presentRefusal`)
+            // `visionAvailable` is a cached value refreshed at launch, after Save, and on capture, so
+            // it can lag a model the user has only just installed. Kick a refresh on the way out so a
+            // stale "no image model" answers itself by the next keypress instead of sticking.
+            if let intelligence { Task { await intelligence.refreshVisionAvailability() } }
+            presentRefusal(actionID: actionID, title: title, reason: reason)
+            return false
+        }
+    }
+
+    /// Tell the user why a hotkey did nothing. A refused direct action that stays silent reads as a
+    /// broken binding, and the next thing they do is rebind a key that was working.
+    private func presentRefusal(actionID: String, title: String, reason: String) {
+        Log.capture.notice("Direct action \(actionID, privacy: .public) refused: \(reason, privacy: .public)")
+        FloatingPanelController.shared.present(
+            AnyView(FloatingResultView(title: title, result: .text(reason))), anchor: nil)
+    }
+
+    /// The registered action set, for UI that needs the catalog outside a capture session (Settings'
+    /// toolbar list). Empty until `configure(registry:intelligence:)` has run.
+    var registeredActions: [any CaptureAction] { registry?.actions ?? [] }
 
     private func startFullScreen(actionID: String) async {
         FloatingPanelController.shared.close()
@@ -126,6 +170,13 @@ final class CaptureCoordinator {
 
     private func start() async {
         FloatingPanelController.shared.close()   // clear any prior result card
+        // Every early return below leaves without `isActive`, so `teardown()` never runs and a
+        // pre-bound direct action would survive into the *next* capture and hijack it (the bar would
+        // be suppressed and the old action would run). Most likely on a first run, where the capture
+        // fails on the permission prompt. Clear it on the way out, at the one place that can see all
+        // three exits.
+        var completedStart = false
+        defer { if !completedStart { pendingDirectActionID = nil } }
         guard permissions.hasScreenRecording else {
             // First attempt: show only the system prompt. If it was already shown before and the
             // user still hasn't granted, surface the deep-link alert instead of double-prompting.
@@ -142,6 +193,7 @@ final class CaptureCoordinator {
             return
         }
         guard !shots.isEmpty else { return }
+        completedStart = true
         isActive = true
         // Refresh vision availability in the background (don't block the overlay) so the bar greys
         // the right pills — and picks up Ollama having just come up.
@@ -232,8 +284,21 @@ final class CaptureCoordinator {
         // Leave `pendingDirectActionID` set until teardown so the overlay bar stays hidden for the
         // whole run; clearing it here would flash the bar in the gap before the action tears down.
         if let id = pendingDirectActionID {
-            if let action = registry?.actions.first(where: { $0.id == id }) { run(action) }
-            else { teardown() }
+            guard let action = registry?.actions.first(where: { $0.id == id }) else { teardown(); return }
+            // `passesDirectGate` answered the questions that don't need a selection (privacy, a model
+            // being configured). These two need the pre-pass, which has just finished: whether this
+            // selection has anything for the action to work on. Without them a hotkey on a picture with
+            // no QR code, or no readable text, tears down silently and reads as a dead binding.
+            let vision = intelligence?.visionAvailable ?? false
+            switch DirectActionGate.contentDecision(
+                title: action.title, isRelevant: action.isRelevant(to: ctx),
+                disabledReason: action.disabledReason(for: ctx, visionAvailable: vision)) {
+            case .allow:
+                run(action)
+            case .refuse(let title, let reason):
+                presentRefusal(actionID: id, title: title, reason: reason)
+                teardown()
+            }
             return
         }
 

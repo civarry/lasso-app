@@ -16,6 +16,10 @@ struct ActionBar: View {
     @AppStorage("ui.actionBarStyle") private var styleRaw = ActionBarStyle.compact.rawValue
     @AppStorage("ui.actionBarHideUnavailable") private var hideUnavailable = false
     @AppStorage("ui.actionBarColorful") private var colorful = false
+    /// `@AppStorage` cannot bind to a `[String]`, and the order/visibility live as string arrays in
+    /// `UserDefaults`. Binding this counter (bumped by `ActionBarPreferences.save`) is what makes the
+    /// bar re-read them after Settings commits a change, without mirroring the arrays into a string.
+    @AppStorage(ActionBarPreferences.revisionKey) private var barRevision = 0
     private var style: ActionBarStyle { ActionBarStyle(rawValue: styleRaw) ?? .compact }
 
     /// Max labeled pills shown inline before the rest collapse into "More" (Comfortable only). Keeps
@@ -24,10 +28,20 @@ struct ActionBar: View {
 
     var body: some View {
         let items = barItems()
-        let primaryID = items.first(where: { !$0.disabled })?.id
-        // Compact is icon-only and stays narrow, so it shows everything; Comfortable caps + overflows.
-        let visible = style == .compact ? items : Array(items.prefix(Self.maxLabeled))
-        let overflow = style == .compact ? [] : Array(items.dropFirst(Self.maxLabeled))
+        let byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // The user's saved order and hidden set decide the row; `relevancePriority` is only the
+        // fallback for actions they've never moved. Compact is icon-only and stays narrow, so it has
+        // no inline cap; Comfortable caps at `maxLabeled` and spills the rest into the same menu the
+        // hidden actions land in.
+        let arrangement = ActionBarLayout.arrange(
+            entries: items.map { ActionBarEntry(id: $0.id, priority: $0.priority, available: !$0.disabled) },
+            order: ActionBarPreferences.order(),
+            hidden: ActionBarPreferences.hidden(),
+            hideUnavailable: hideUnavailable,
+            maxMain: style == .compact ? nil : Self.maxLabeled)
+        let visible = arrangement.main.compactMap { byID[$0.id] }
+        let overflow = arrangement.overflow.compactMap { byID[$0.id] }
+        let primaryID = visible.first(where: { !$0.disabled })?.id
 
         VStack(alignment: .leading, spacing: 8) {
             GlassPanel {
@@ -46,15 +60,20 @@ struct ActionBar: View {
                                        tint: colorful ? Self.tint(for: item.id) : nil,
                                        action: item.run)
                         }
+                        // Only present when something is actually behind it: hidden actions, or the
+                        // tail past the Comfortable cap. An always-there "…" opening an empty menu
+                        // would be a dead affordance.
                         if !overflow.isEmpty {
                             Divider().frame(height: 18)
-                            MorePill(items: overflow, index: visible.count)
+                            MorePill(items: overflow, style: style, index: visible.count)
                         }
                     }
                     Divider().frame(height: 18)
                     closeButton
                 }
-                .id(styleRaw)   // rebuild cleanly if the style is switched while the bar is open
+                // Rebuild cleanly if the style, or the user's order/visibility, changes while the
+                // bar is open.
+                .id("\(styleRaw)#\(barRevision)")
             }
 
             // Detected dates/links/QR as separate chips floating *below* the bar (outside the panel).
@@ -103,8 +122,9 @@ struct ActionBar: View {
         }
     }
 
-    /// The full ordered set of bar entries: relevant actions (already priority-sorted) + the built-in
-    /// image actions, with unavailable ones resolved (and dropped when "Hide unavailable" is on).
+    /// Every candidate bar entry: the relevant actions + the built-in image actions, with each one's
+    /// unavailable-reason resolved. Ordering, hiding and the "Hide unavailable" filter are all
+    /// `ActionBarLayout.arrange`'s job — this just gathers the candidates and their run closures.
     private func barItems() -> [BarItem] {
         let vision = coordinator.intelligence?.visionAvailable ?? false
         var items: [BarItem] = coordinator.actions.map { action in
@@ -116,11 +136,14 @@ struct ActionBar: View {
                 coordinator.run(action)
             }
         }
-        items.append(BarItem(id: "builtin.copyImage", title: "Copy image", systemImage: "doc.on.doc",
-                             priority: 60, disabled: false, help: nil) { coordinator.copyImageAndClose() })
-        items.append(BarItem(id: "builtin.saveImage", title: "Save image", systemImage: "square.and.arrow.down",
-                             priority: 61, disabled: false, help: nil) { coordinator.saveImageAndClose() })
-        return hideUnavailable ? items.filter { !$0.disabled } : items
+        for builtIn in ActionBarCatalog.builtIns {
+            let run: () -> Void = builtIn.id == "builtin.copyImage"
+                ? { coordinator.copyImageAndClose() }
+                : { coordinator.saveImageAndClose() }
+            items.append(BarItem(id: builtIn.id, title: builtIn.title, systemImage: builtIn.systemImage,
+                                 priority: builtIn.priority, disabled: false, help: nil, run: run))
+        }
+        return items
     }
 }
 
@@ -209,10 +232,13 @@ private struct ActionPill: View {
     }
 }
 
-/// The overflow "More" pill — a native menu of the actions that didn't fit the labeled row, grouped
-/// by band. Native menu = familiar, scrollable, and scales to any number of actions.
+/// The overflow "More" pill — a native menu holding the actions the user switched off plus, in
+/// Comfortable, the tail that didn't fit the labeled row. Native menu = familiar, scrollable, and
+/// scales to any number of actions. It matches the pills beside it: same capsule, same padding, and
+/// icon-only in Compact so it doesn't become the one labeled thing in an icon-only row.
 private struct MorePill: View {
     let items: [BarItem]
+    var style: ActionBarStyle = .labeled
     var index: Int = 0
     @State private var hovering = false
     @State private var shown = false
@@ -227,9 +253,15 @@ private struct MorePill: View {
                     .disabled(item.disabled)
             }
         } label: {
-            Label("More", systemImage: "ellipsis")
-                .font(.callout).frame(minHeight: 18)
-                .padding(.horizontal, 10).padding(.vertical, 7)
+            Group {
+                if style == .compact {
+                    Image(systemName: "ellipsis").frame(minWidth: 22, minHeight: 18)
+                } else {
+                    Label("More", systemImage: "ellipsis").frame(minHeight: 18)
+                }
+            }
+                .font(.callout)
+                .padding(.horizontal, style == .compact ? 8 : 10).padding(.vertical, 7)
                 .background(.white.opacity(hovering ? 0.20 : 0.10),
                             in: RoundedRectangle(cornerRadius: Theme.pillRadius))
         }

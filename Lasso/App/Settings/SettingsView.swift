@@ -74,6 +74,16 @@ struct SettingsView: View {
         var actionBarStyle = ActionBarStyle.compact.rawValue
         var hideUnavailable = false
         var colorfulActions = false
+        // Toolbar order + visibility. `actionOrder` empty means "the shipped order"; a reset writes
+        // it back to empty rather than freezing today's order, so a later version's new action still
+        // lands where it was meant to. Both are staged here so Save & Apply and Revert work on them
+        // like every other setting. Hotkeys are not staged: KeyboardShortcuts.Recorder commits its
+        // own binding immediately, which is already how the existing recorders behave.
+        var actionOrder: [String] = []
+        /// Staged shortcuts, keyed by `KeyboardShortcuts.Name.rawValue`; a missing key means unassigned.
+        /// Staged like everything else here so the unsaved bar appears and Revert puts them back.
+        var shortcuts: [String: KeyboardShortcuts.Shortcut] = [:]
+        var actionHidden: Set<String> = []
     }
 
     private enum Tab: Hashable { case general, intelligence, connectors, about }
@@ -184,36 +194,30 @@ struct SettingsView: View {
     private var general: some View {
         Form {
             Section("Shortcuts") {
-                KeyboardShortcuts.Recorder("Capture", name: .capture)
-                KeyboardShortcuts.Recorder("Chat", name: .chat)
-                // Single-mode direct action (runs on a selection) — sits with the other single-key
-                // rows rather than the two-column grid below.
-                KeyboardShortcuts.Recorder("Proofread", name: .grammarSelection)
+                LabeledContent("Capture") { recorder(.capture) }
+                LabeledContent("Chat") { recorder(.chat) }
+                // Proofreads text you've already highlighted, in place — no screenshot, no box to
+                // drag. The toolbar's Proofread action (a dragged selection) has its own hotkey in
+                // Toolbar actions below; they're different jobs, so they get separate bindings.
+                LabeledContent("Proofread highlighted text") { recorder(.grammarSelection) }
 
-                LabeledContent("") {
+                LabeledContent("Full screen") {
                     HStack(spacing: directRecorderGap) {
-                        directHeader("Selection")
-                        directHeader("Full screen")
-                    }
-                }
-                LabeledContent("Identify") {
-                    HStack(spacing: directRecorderGap) {
-                        KeyboardShortcuts.Recorder("", name: .identifySelection).frame(width: directRecorderWidth)
-                        KeyboardShortcuts.Recorder("", name: .identifyFullScreen).frame(width: directRecorderWidth)
-                    }
-                }
-                if draft.lensSearch {
-                    LabeledContent("Lens") {
-                        HStack(spacing: directRecorderGap) {
-                            KeyboardShortcuts.Recorder("", name: .lensSelection).frame(width: directRecorderWidth)
-                            KeyboardShortcuts.Recorder("", name: .lensFullScreen).frame(width: directRecorderWidth)
+                        recorder(.identifyFullScreen)
+                        if draft.lensSearch {
+                            recorder(.lensFullScreen)
                         }
                     }
                 }
-                caption("Proofread, Identify, and Lens run straight from a hotkey, skipping "
-                    + "the toolbar. For the two-column ones, Selection lets you drag a box first while "
-                    + "Full screen grabs the whole display; Proofread always runs on a selection. "
-                    + "Turn on Lens in Privacy to assign its shortcuts.")
+                LabeledContent("") {
+                    HStack(spacing: directRecorderGap) {
+                        directHeader("Identify")
+                        if draft.lensSearch { directHeader("Lens") }
+                    }
+                }
+                caption("Identify and Lens can also grab the whole display, with no box to drag. "
+                    + "Turn on Lens in Privacy to assign its shortcut. Every toolbar action has its "
+                    + "own selection hotkey under Toolbar actions.")
             }
             Section("Startup") {
                 Toggle("Launch at login", isOn: $draft.launchAtLogin)
@@ -230,6 +234,7 @@ struct SettingsView: View {
                 caption("Tints each toolbar action a distinct color so features are easier to "
                     + "recognize. Off by default.")
             }
+            toolbarActionsSection
             Section("Privacy") {
                 Toggle("Local-only mode", isOn: $draft.localOnly)
                 caption("Blocks all network calls except your chosen model. Best for work Macs.")
@@ -257,6 +262,179 @@ struct SettingsView: View {
         } message: {
             Text("This permanently removes every saved chat from this Mac. This can't be undone.")
         }
+    }
+
+    // MARK: - Toolbar actions
+
+    /// Order, visibility and a hotkey for every toolbar action.
+    ///
+    /// Reordering is up/down buttons rather than drag-and-drop: a `List` with `.onMove` inside a
+    /// grouped `Form` brings its own scroll view and its own row chrome, which would read as a panel
+    /// glued into the middle of the tab. Buttons keep the rows the same shape as every other row here.
+    private var toolbarActionsSection: some View {
+        Section("Toolbar actions") {
+            let rows = orderedToolbarActions
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, entry in
+                toolbarActionRow(entry, index: index, count: rows.count)
+            }
+            HStack {
+                Button("Reset to default order") { draft.actionOrder = [] }
+                    .disabled(draft.actionOrder.isEmpty)
+                Spacer()
+                Button("Show all") { draft.actionHidden = [] }
+                    .disabled(draft.actionHidden.isEmpty)
+            }
+            caption("The toolbar follows this order. Switch an action off to move it into the "
+                + "toolbar's \"…\" menu: it stays one click away rather than disappearing. Hotkeys "
+                + "start a capture and run that one action, skipping the toolbar, and take effect "
+                + "when you save. Copy image and Save image run from the toolbar only.")
+        }
+    }
+
+    /// Built with `LabeledContent`, like every other row in this window that holds a recorder.
+    ///
+    /// The first version was a bare `HStack` in a `ForEach`, and the recorder in it would not start:
+    /// clicking gave it the focus ring but it stayed on "Record Shortcut" with a caret, which is what
+    /// `RecorderCocoa` looks like when `endRecording()` runs straight after focus. It ends recording
+    /// when its `NSView` leaves the window (`viewDidMoveToWindow`), and a hand-rolled row inside a Form
+    /// section was being re-inserted during layout (the "layout recursion" and "stuck gesture
+    /// recognizers" noise in the log). The Capture / Chat / Full screen rows never had the problem, and
+    /// they are all `LabeledContent`.
+    private func toolbarActionRow(_ entry: ActionBarCatalogEntry, index: Int, count: Int) -> some View {
+        LabeledContent {
+            toolbarActionControls(entry, index: index, count: count)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: entry.systemImage)
+                    .frame(width: 18)
+                    .foregroundStyle(draft.actionHidden.contains(entry.id) ? AnyShapeStyle(.tertiary)
+                                                                           : AnyShapeStyle(.primary))
+                Text(entry.title)
+                    .foregroundStyle(draft.actionHidden.contains(entry.id) ? AnyShapeStyle(.secondary)
+                                                                           : AnyShapeStyle(.primary))
+            }
+        }
+    }
+
+    private func toolbarActionControls(_ entry: ActionBarCatalogEntry, index: Int, count: Int) -> some View {
+        HStack(spacing: 10) {
+            if let name = entry.shortcut {
+                recorder(name)
+            } else {
+                Text("—")
+                    .foregroundStyle(.tertiary)
+                    .frame(width: directRecorderWidth, alignment: .center)
+                    .help("Copy image and Save image run from the toolbar only.")
+            }
+            Toggle("", isOn: visibilityBinding(for: entry.id))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .help("Show \(entry.title) in the toolbar row")
+            HStack(spacing: 2) {
+                Button { moveToolbarAction(entry.id, by: -1) } label: { Image(systemName: "chevron.up") }
+                    .disabled(index == 0)
+                    .help("Move \(entry.title) up")
+                Button { moveToolbarAction(entry.id, by: 1) } label: { Image(systemName: "chevron.down") }
+                    .disabled(index == count - 1)
+                    .help("Move \(entry.title) down")
+            }
+            .buttonStyle(.borderless)
+            .font(.caption)
+        }
+    }
+
+    /// The toolbar catalog in the order the bar will show it, through the very same function the bar
+    /// uses. Sharing `ActionBarLayout` is what keeps this list from drifting out of agreement with
+    /// the thing it is supposed to be previewing.
+    /// Snapshot of the registered actions, taken once when the panel opens.
+    ///
+    /// Reading `CaptureCoordinator.shared.registeredActions` inside `body` subscribed this view to an
+    /// `@Observable` the capture flow mutates, so any change rebuilt these rows. That rebuild replaces
+    /// the `KeyboardShortcuts.Recorder`'s NSView mid-click, which cancels the recording session before
+    /// a key arrives: the row looked dead, and the log filled with "stuck gesture recognizers" for a
+    /// view that had been torn down under the mouse. The action set cannot change while Settings is
+    /// open, so a snapshot is both correct and stable.
+    @State private var toolbarCatalog: [ActionBarCatalogEntry] = []
+
+    private var orderedToolbarActions: [ActionBarCatalogEntry] {
+        let catalog = toolbarCatalog
+        let byID = Dictionary(catalog.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return ActionBarLayout
+            .displayOrder(entries: catalog.map { ActionBarEntry(id: $0.id, priority: $0.priority) },
+                          order: draft.actionOrder)
+            .compactMap { byID[$0.id] }
+    }
+
+    /// A recorder that SwiftUI leaves alone.
+    ///
+    /// `KeyboardShortcuts.Recorder` only enters its recording state if it can take first responder at
+    /// the moment of the click, and it gives that state up when its `NSView` is updated underneath it.
+    /// Settings re-renders often (a model list refresh, a connection that takes ten seconds to time
+    /// out), so a recorder living directly in a row was being reset mid-click: the field stayed on
+    /// "Record Shortcut" and the keypress went nowhere. Wrapping it in an `Equatable` view whose only
+    /// inputs are the name and the width means an unrelated re-render skips it entirely.
+    /// Equatable so an unrelated re-render of this panel leaves a recorder mid-recording alone: that
+    /// churn is what stopped the first version of this row from ever registering a keypress. The
+    /// staged value is part of the identity, so the one thing that *should* redraw it still does.
+    private struct ShortcutRecorderCell: View, Equatable {
+        let name: KeyboardShortcuts.Name
+        let width: CGFloat
+        /// The staged shortcut, read out of the draft, for equality only. The binding below is what
+        /// writes it back.
+        let value: KeyboardShortcuts.Shortcut?
+        @Binding var shortcut: KeyboardShortcuts.Shortcut?
+        let staged: (KeyboardShortcuts.Name) -> KeyboardShortcuts.Shortcut?
+        let clearOther: (KeyboardShortcuts.Name) -> Void
+
+        var body: some View {
+            // `ShortcutRecorder`, not the library's SwiftUI `Recorder`: in this window the latter only
+            // started recording when clicked exactly on its border. See `ShortcutRecorder`.
+            ShortcutRecorder(name: name, shortcut: $shortcut, staged: staged, clearOther: clearOther,
+                             width: width)
+        }
+
+        nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.name == rhs.name && lhs.width == rhs.width && lhs.value == rhs.value
+        }
+    }
+
+    /// A staged shortcut, as a binding the recorder writes through.
+    private func shortcutBinding(_ name: KeyboardShortcuts.Name) -> Binding<KeyboardShortcuts.Shortcut?> {
+        Binding(get: { draft.shortcuts[name.rawValue] },
+                set: { value in
+                    if let value { draft.shortcuts[name.rawValue] = value }
+                    else { draft.shortcuts.removeValue(forKey: name.rawValue) }
+                })
+    }
+
+    private func recorder(_ name: KeyboardShortcuts.Name) -> some View {
+        ShortcutRecorderCell(name: name,
+                             width: directRecorderWidth,
+                             value: draft.shortcuts[name.rawValue],
+                             shortcut: shortcutBinding(name),
+                             staged: { draft.shortcuts[$0.rawValue] },
+                             clearOther: { draft.shortcuts.removeValue(forKey: $0.rawValue) })
+            .equatable()
+    }
+
+    private func visibilityBinding(for id: String) -> Binding<Bool> {
+        Binding(get: { !draft.actionHidden.contains(id) },
+                set: { shown in
+                    if shown { draft.actionHidden.remove(id) } else { draft.actionHidden.insert(id) }
+                })
+    }
+
+    /// Move one action up or down. The first move on a fresh install materializes the whole shipped
+    /// order into `actionOrder`, so everything from then on has an explicit position and nothing can
+    /// slide around it.
+    private func moveToolbarAction(_ id: String, by delta: Int) {
+        var ids = orderedToolbarActions.map(\.id)
+        guard let from = ids.firstIndex(of: id) else { return }
+        let to = from + delta
+        guard ids.indices.contains(to) else { return }
+        ids.swapAt(from, to)
+        draft.actionOrder = ids
     }
 
     // MARK: - Intelligence
@@ -1984,6 +2162,13 @@ struct SettingsView: View {
             ?? ActionBarStyle.compact.rawValue
         d.hideUnavailable = UserDefaults.standard.bool(forKey: Self.hideUnavailableKey)
         d.colorfulActions = UserDefaults.standard.bool(forKey: Self.colorfulKey)
+        // Every shortcut the app owns, staged like the rest of this panel.
+        d.shortcuts = ShortcutStaging.snapshot(names: ActionShortcuts.titlesByName.keys,
+                                               stored: { KeyboardShortcuts.getShortcut(for: $0) })
+        // Snapshot the action set here, not in `body`: see `toolbarCatalog`.
+        toolbarCatalog = ActionBarCatalog.entries(actions: CaptureCoordinator.shared.registeredActions)
+        d.actionOrder = ActionBarPreferences.order()
+        d.actionHidden = ActionBarPreferences.hidden()
         d.embeddingProvider = intelligence.embeddingProvider
         d.embeddingOllamaModel = intelligence.embeddingOllamaModel
         d.embeddingMLXModel = intelligence.embeddingMLXModel
@@ -2079,6 +2264,12 @@ struct SettingsView: View {
         UserDefaults.standard.set(draft.langContext, forKey: "intelligence.keys.language.context")
         intelligence.autoFallbackEnabled = draft.autoFallback
         intelligence.fallbackRaceAfterSeconds = draft.fallbackRaceAfter
+        // Shortcuts reach storage (and the global hotkey) only here, on Save & Apply.
+        for change in ShortcutStaging.changes(staged: draft.shortcuts,
+                                              names: ActionShortcuts.titlesByName.keys,
+                                              stored: { KeyboardShortcuts.getShortcut(for: $0) }) {
+            KeyboardShortcuts.setShortcut(change.shortcut, for: change.name)
+        }
 
         // Effective language config → the single endpoint the coordinator drives. A hand-typed model
         // has no connection of its own: it rides on whichever endpoint is already configured, exactly
@@ -2117,6 +2308,7 @@ struct SettingsView: View {
         UserDefaults.standard.set(draft.actionBarStyle, forKey: Self.actionBarStyleKey)
         UserDefaults.standard.set(draft.hideUnavailable, forKey: Self.hideUnavailableKey)
         UserDefaults.standard.set(draft.colorfulActions, forKey: Self.colorfulKey)
+        ActionBarPreferences.save(order: draft.actionOrder, hidden: draft.actionHidden)
         if draft.launchAtLogin != saved.launchAtLogin { LoginItem.set(draft.launchAtLogin) }
         // Embedding backend — commit, then reset chat indexes if the backend actually changed (vectors
         // from a different embedder are incomparable, so the in-RAM indexes must rebuild).

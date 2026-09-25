@@ -60,14 +60,49 @@ flowchart TD
 |---|---|---|---|---|
 | **Copy text** | `ocr.copy` | — | `OCREngine` (pre-pass) | pasteboard |
 | **Translate** | `translate` | 20 | Apple Translation framework (`TranslateEngine`) | inline overlay (`InlineTranslationView`) or `TranslationResultView` |
-| **Grammar fix** | `grammar.fix` | — | text provider (`GrammarFixService`) | floating card |
-| **Summarize** | (summarize) | — | text provider | `FloatingResultView` stream |
+| **Grammar fix** | `ai.grammar` | — | text provider (`GrammarFixService`) | floating card |
+| **Summarize** | `ai.summarize` | — | text provider | `FloatingResultView` stream |
 | **Ask AI** | `ai.ask` | 40 | text provider (+ vision for imageless text) | `AskAIView` inline |
-| **QR / barcode** | `qr` | — | `BarcodeEngine` (pre-pass) | open URL / show payload |
-| **Color picker** | `color` | — | pixel sample | swatch view |
+| **QR / barcode** | `qr.open` | — | `BarcodeEngine` (pre-pass) | open URL / show payload |
+| **Color picker** | `color.pick` | — | pixel sample | swatch view |
 | **Identify** | `identify` | 12 | vision + keyless web + text synth | `IdentifyView` card |
 | **Google Lens** | `lens.search` | 13 | WKWebView → lens.google.com (opt-in) | `LensResultView` panel |
 | **Chat** (separate) | — | ⌥⌘A | text provider (+ tools/web) | `ChatView` panel |
+
+**The bar is the user's, not the priority column's** (`Actions/ActionBarLayout.swift`). `Prio` above is
+only the shipped fallback: it orders ids the user has never placed, which is all of them on a fresh
+install, so an untouched bar looks exactly as it always did. Once the user reorders in Settings ▸
+General ▸ Toolbar actions, their order wins outright, including over a QR code or colour swatch that
+would otherwise jump the queue. The complaint this answers: "I only use Copy text and Ask AI, it always
+takes time to find those icons."
+- **Hidden ≠ gone.** Switching an action off moves it into the bar's overflow menu, so it stays one
+  click away; the overflow control only appears when something is actually behind it. `hideUnavailable`
+  still drops greyed entries from both, and a Comfortable-style cap spills the tail into overflow ahead
+  of the hidden entries.
+- **Storage** (`ActionBarPreferences`): `actionBar.order` / `actionBar.hidden` string arrays, plus a
+  `revision` integer the bar watches (`@AppStorage` can't bind an array). An id in storage that no
+  longer exists is never matched; an action shipped later is unknown, so it lands by its `Prio` at the
+  end of the user's order, visible.
+- **Every action has a hotkey** (`Actions/ActionShortcuts.swift`): one `KeyboardShortcuts.Name` per id,
+  none with a default binding, plus the two full-screen variants (Identify, Lens). `TriggerService`
+  loops the table rather than listing handlers, and a coverage test fails if a registered action has no
+  name, so "added an action, forgot the hotkey" is red rather than silently missing.
+- **Recording one is a staged edit** (`ShortcutStaging`, `App/Settings/ShortcutRecorder.swift`).
+  Shortcuts used to write straight to storage while every other control in that window waited for
+  Save & Apply, so recording one left the panel claiming "All changes saved" and Revert could not undo
+  it. They are now part of the draft: the unsaved bar appears, Revert puts them back, and storage (and
+  the live hotkey) is written only on Save & Apply. Clearing is the case worth the pure function: an
+  emptied shortcut is a *missing* key in the draft, and that still has to reach storage as a write of
+  nil. The recorder itself is a button rather than the library's `NSSearchField`: in this window the
+  field editor never handed over first responder from a click in the middle of the box, and forcing it
+  jammed gestures for the whole window. A clash with another Lasso shortcut is compared against what is
+  staged, not what is saved, since both sides may be unsaved edits.
+- **One gate for every direct run** (`Actions/DirectActionGate.swift`). The direct path skips the bar,
+  and with it `isRelevant`, which is where the Lens upload opt-in and local-only mode live: this app
+  has shipped that hole twice. `CaptureCoordinator.passesDirectGate` is now the single chokepoint for
+  both `beginDirect` and `beginFullScreen`, and a refusal is *shown* (local-only beats "Lens is off" as
+  the reason given; AI actions refuse when no model is configured) rather than a hotkey that appears
+  dead. The decision itself is pure, so the privacy rules are tested without a screenshot.
 
 ---
 
@@ -614,6 +649,15 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **The toolbar is the user's now, and every action has a hotkey.** From user feedback: "I only use
+  select text and Ask AI, it always takes time to find those icons" and "a hotkey for each feature would
+  be great". `ActionBarLayout` (pure, testable) puts the user's saved order first and `relevancePriority`
+  second, so nothing jumps the queue any more; hidden actions move to the overflow menu rather than
+  away; Settings ▸ General ▸ Toolbar actions lists every action with reorder, a visibility switch and
+  its own recorder (staged like every other setting: nothing binds until Save & Apply). Every registered action now has a (default-free) shortcut name,
+  derived from one table that a coverage test polices. The direct path's long-standing hole is closed
+  properly: `DirectActionGate` is one chokepoint for both entry points, refuses with a visible reason,
+  and puts local-only mode ahead of the Lens opt-in in what it tells the user.
 - **Routing around a model no longer routes around its checks**, and slow stopped being treated as down.
   A pre-release audit found the stand-in was chosen on pool membership and health alone, so a routed
   request could reach a model that cannot read the image, cannot run the search the turn depends on, or
