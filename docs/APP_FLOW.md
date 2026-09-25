@@ -27,7 +27,7 @@ flowchart TD
   Registry --> Bar["Action bar (UI/ActionBar)"]
   Bar --> Actions["CaptureAction.perform (Actions/)"]
 
-  Actions --> Engines["Engines/: OCR · Translate · Barcode · DataDetector · LanguageDetect"]
+  Actions --> Engines["Engines/: OCR · Translate · TextBlocks · LLMTranslation · Barcode · DataDetector · LanguageDetect"]
   Actions --> Intel["Intelligence/: providers · connectors · caches"]
   Actions --> Result["Result surfaces:<br/>FloatingResultView · IdentifyView · LensResultView · InlineTranslation"]
 
@@ -59,7 +59,7 @@ flowchart TD
 | Action | id | Prio | Backend / engine | Output surface |
 |---|---|---|---|---|
 | **Copy text** | `ocr.copy` | — | `OCREngine` (pre-pass) | pasteboard |
-| **Translate** | `translate` | 20 | Apple Translation framework (`TranslateEngine`) | inline overlay (`InlineTranslationView`) or `TranslationResultView` |
+| **Translate** | `translate` | 20 | Apple Translation framework (pass 1), then optionally the text model (pass 2, `LLMTranslation`) | inline overlay (`InlineTranslationView`) or `TranslationResultView` |
 | **Grammar fix** | `ai.grammar` | — | text provider (`GrammarFixService`) | floating card |
 | **Summarize** | `ai.summarize` | — | text provider | `FloatingResultView` stream |
 | **Ask AI** | `ai.ask` | 40 | text provider (+ vision for imageless text) | `AskAIView` inline |
@@ -436,9 +436,27 @@ flowchart TD
 - **OCR** (`Engines/OCREngine.swift`) — Apple Vision `RecognizeTextRequest`, accurate, zh-Hant+en.
   `readingOrdered(_:)` reconstructs reading order geometrically (column-aware; verbatim, never
   rewrites/drops), fixing multi-column interleaving app-wide.
-- **Translate** (`Engines/TranslateEngine`, Apple Translation framework) — on-device. Two surfaces:
-  inline overlay translation over each OCR line (`InlineTranslationView`, needs line geometry) and the
-  single-pane `TranslationResultView` (source/swap/target capsule). `LanguageDetect` picks the source.
+- **Translate** — two surfaces: the inline overlay (`InlineTranslationView`, needs line geometry) and
+  the single-pane `TranslationResultView` (source/swap/target capsule, unchanged). The overlay
+  (docs/TRANSLATE_LLM.md):
+
+```mermaid
+flowchart LR
+  Lines["OCR lines"] --> Blocks["TextBlocks.group<br/>lines → blocks (paragraph, heading, label)<br/>language detected per block; an unsure short Latin block takes the selection's confident Latin language"]
+  Blocks --> Plan["TranslationPlan<br/>block in target language → left alone<br/>others grouped by source language<br/>(manual source override → every block)"]
+  Plan --> P1["Pass 1: Apple Translation<br/>one session per source language<br/>(prewarmer may have done the largest group)"]
+  P1 --> Plates["Plates: one opaque plate per translated block<br/>colour sampled from the capture; too long → widens into free space beside it, then grows + pushes down; never overlaps"]
+  Plan -->|"Better translation: Always, or 'Improve with AI' (When I ask)<br/>never from the prewarmer"| P2["Pass 2: LLMTranslator<br/>whole selection, ≤6k chars/chunk + previous block as context<br/>IntelligenceCoordinator.respond(messages:) → NDJSON stream"]
+  P2 -->|"each {id, t} as it arrives"| Plates
+  P2 -.->|"missing / empty / failed → keep pass 1, log, no error card"| Plates
+  Plates --> Reading["Reading view: one paragraph per block<br/>Translation | Side by side · Copy"]
+```
+
+  The source chip reads `Detected · X`, `Mixed · X, Y, Z +N` or `Unknown source`; the status reads
+  `On-device · N blocks` (with a ✦ `sparkles` "Improve with AI" button under When I ask), then, while the
+  model works, an animated ✦ `Improving n/N` and a sweep over each plate it hasn't reached yet, then
+  `✦ Improved`, the answering model named in its tooltip. A failed pass shows an orange ✦ to retry. Pass 2 goes through the coordinator, so routing,
+  the free-model fallback and local-only mode apply as they do for Chat.
 
 ---
 

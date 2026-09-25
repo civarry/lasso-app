@@ -68,6 +68,7 @@ struct SettingsView: View {
         var localOnly = false
         var lensSearch = false
         var pretranslate = true
+        var betterTranslation = LLMTranslation.Mode.ask.rawValue
         var launchAtLogin = false
         // Appearance — staged like everything else so changing them flips "Unsaved changes" and
         // applies on Save & Apply (not instantly), for a consistent Settings experience.
@@ -247,6 +248,10 @@ struct SettingsView: View {
             Section("Translation") {
                 Toggle("Pre-translate selections", isOn: $draft.pretranslate)
                 caption("Translates in the background so Translate is instant.")
+                Picker("Better translation", selection: $draft.betterTranslation) {
+                    ForEach(LLMTranslation.Mode.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+                caption(betterTranslationCaption)
             }
             Section("Chat history") {
                 Button("Clear chat history…", role: .destructive) { showClearHistoryConfirm = true }
@@ -262,6 +267,17 @@ struct SettingsView: View {
         } message: {
             Text("This permanently removes every saved chat from this Mac. This can't be undone.")
         }
+    }
+
+    /// Which model the better-translation pass would use, and whether the text leaves the Mac.
+    private var betterTranslationCaption: String {
+        let intelligence = IntelligenceCoordinator.shared
+        let where_ = LLMTranslation.engineLeavesMac(intelligence)
+            ? "a cloud model, so the text on screen leaves your Mac"
+            : "which runs on this Mac"
+        return "After the on-device translation appears, retranslates the whole selection with "
+            + "\(intelligence.textEngineLabel) (\(where_)) for sentences, idioms and OCR errors. "
+            + "Local-only mode keeps it on this Mac."
     }
 
     // MARK: - Toolbar actions
@@ -2157,6 +2173,7 @@ struct SettingsView: View {
         d.localOnly = UserDefaults.standard.bool(forKey: "privacy.localOnly")
         d.lensSearch = UserDefaults.standard.bool(forKey: LensSearchAction.enabledKey)
         d.pretranslate = UserDefaults.standard.object(forKey: "translation.pretranslate") as? Bool ?? true
+        d.betterTranslation = LLMTranslation.Mode.current.rawValue
         d.launchAtLogin = LoginItem.isEnabled
         d.actionBarStyle = UserDefaults.standard.string(forKey: Self.actionBarStyleKey)
             ?? ActionBarStyle.compact.rawValue
@@ -2305,6 +2322,7 @@ struct SettingsView: View {
         UserDefaults.standard.set(draft.localOnly, forKey: "privacy.localOnly")
         UserDefaults.standard.set(draft.lensSearch, forKey: LensSearchAction.enabledKey)
         UserDefaults.standard.set(draft.pretranslate, forKey: "translation.pretranslate")
+        UserDefaults.standard.set(draft.betterTranslation, forKey: LLMTranslation.Mode.key)
         UserDefaults.standard.set(draft.actionBarStyle, forKey: Self.actionBarStyleKey)
         UserDefaults.standard.set(draft.hideUnavailable, forKey: Self.hideUnavailableKey)
         UserDefaults.standard.set(draft.colorfulActions, forKey: Self.colorfulKey)

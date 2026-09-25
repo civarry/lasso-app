@@ -46,7 +46,7 @@ struct CaptureSessionView: View {
                 // Anchored UI on the active display once a selection is committed.
                 if coordinator.activeDisplayID == shot.id, let r = coordinator.committedRect {
                     if coordinator.translating, let ctx = coordinator.context {
-                        InlineTranslationView(lines: ctx.ocrLines, selectionRect: r)
+                        InlineTranslationView(lines: ctx.ocrLines, selectionRect: r, image: ctx.image)
                     } else if coordinator.pendingDirectActionID == nil {
                         // Direct shortcut: no bar, no pre-translate — the action fires on its own.
                         anchoredUI(rect: r, in: geo.size)

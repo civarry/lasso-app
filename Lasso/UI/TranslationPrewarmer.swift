@@ -1,10 +1,9 @@
 import SwiftUI
 import Translation
-import NaturalLanguage
 
 /// Invisible helper shown during the action-bar phase. As soon as OCR finds foreign text it either:
-///   • **speculatively translates** the selection in the background and caches the result on the
-///     coordinator, so tapping Translate is instant, or
+///   • **speculatively translates** the selection's largest foreign-language group of blocks in the
+///     background and caches it on the coordinator by block id, so tapping Translate is instant, or
 ///   • **pre-warms** the model only (loads it) when full pre-translation isn't worth it.
 ///
 /// Guards keep the speculative path cheap: only for foreign text, only when the model is already
@@ -19,7 +18,7 @@ struct TranslationPrewarmer: View {
     @State private var config: TranslationSession.Configuration?
     @State private var mode: Mode = .prewarm
     @State private var target = Locale.Language(identifier: "en")
-    @State private var sourceLang: Locale.Language?
+    @State private var work: [TextBlock] = []
 
     var body: some View {
         Color.clear
@@ -27,79 +26,98 @@ struct TranslationPrewarmer: View {
             .allowsHitTesting(false)
             .task { await prepare() }
             .translationTask(config) { @Sendable session in
-                let (currentMode, currentTarget, currentSource) =
-                    await MainActor.run { (mode, target, sourceLang) }
+                let (currentMode, currentTarget, blocks) =
+                    await MainActor.run { (mode, target, work) }
                 switch currentMode {
                 case .prewarm:
                     try? await session.prepareTranslation()
                 case .translate:
                     await speculativelyTranslate(with: session, target: currentTarget,
-                                                 source: currentSource)
+                                                 blocks: blocks)
                 }
             }
     }
 
     private func prepare() async {
-        let text = lines.map(\.string).joined(separator: " ")
-        guard !text.isEmpty else { return }
+        guard !lines.isEmpty else { return }
 
         let systemTarget = Locale.Language(
             identifier: Locale.current.language.languageCode?.identifier ?? "en")
-        let targetBase = LanguageDetect.baseCode(systemTarget.languageCode?.identifier ?? "en")
 
-        // Dominant non-target language (script-first; nil when nothing foreign to translate).
-        guard let source = LanguageDetect.dominantNonTargetLanguage(in: text, targetBase: targetBase)
+        // The largest group of blocks not already in the target (nil when nothing is foreign). Only
+        // that group is pre-translated; the overlay translates any other language's blocks itself.
+        let blocks = TextBlocks.group(lines)
+        guard let first = TranslationPlan.groups(blocks, target: systemTarget, override: nil).first
         else { return }
 
         // Only act when the pair is installed — never prompt a download speculatively.
-        let status = await LanguageAvailability().status(from: source, to: systemTarget)
+        let status = await LanguageAvailability().status(from: first.source, to: systemTarget)
         guard status == .installed else { return }
 
         target = systemTarget
-        sourceLang = source
+        work = first.blocks
 
-        // Decide between full speculative translation and just warming the model.
+        // Decide between full speculative translation and just warming the model. Pass 1 only: the
+        // LLM pass never runs from here, since the user hasn't chosen Translate yet.
         let enabled = UserDefaults.standard.bool(forKey: "translation.pretranslate")
         let lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
         let withinSizeCap = lines.count <= 40
         mode = (enabled && !lowPower && withinSizeCap) ? .translate : .prewarm
 
-        config = TranslationSession.Configuration(source: source, target: systemTarget)
+        config = TranslationSession.Configuration(source: first.source, target: systemTarget)
     }
 
     nonisolated private func speculativelyTranslate(with session: TranslationSession,
                                                     target: Locale.Language,
-                                                    source: Locale.Language?) async {
-        // Keep lines whose script doesn't match the source (and letterless lines) as-is; only
-        // translate the rest — so the cache matches the overlay's per-line behaviour.
-        let targetBase = LanguageDetect.baseCode(target.languageCode?.identifier ?? "")
-        let sourceBase = LanguageDetect.baseCode(source?.languageCode?.identifier ?? "")
-        var mapped: [UUID: String] = [:]
-        var requests: [TranslationSession.Request] = []
-        for line in lines {
-            if LanguageDetect.shouldTranslate(line.string, sourceBase: sourceBase, targetBase: targetBase) {
-                requests.append(.init(sourceText: line.string, clientIdentifier: line.id.uuidString))
-            } else {
-                mapped[line.id] = line.string
-            }
-        }
+                                                    blocks: [TextBlock]) async {
         let started = Date()
+        let mapped = Pass1Results()
         do {
-            for try await response in session.translate(batch: requests) {
+            try await BlockTranslationPass.run(blocks, session: session) { ids, text in
                 if Task.isCancelled { return }   // user opened the overlay or re-selected
-                if let cid = response.clientIdentifier, let id = UUID(uuidString: cid) {
-                    mapped[id] = response.targetText
-                }
+                await mapped.set(ids, text)
             }
         } catch {
             return
         }
+        if Task.isCancelled { return }
         let duration = Date().timeIntervalSince(started)
-        let cached = mapped
+        let cached = await mapped.values
         await MainActor.run {
             CaptureCoordinator.shared.pretranslated = cached
             CaptureCoordinator.shared.pretranslatedTarget = target
             CaptureCoordinator.shared.pretranslatedDuration = duration
+        }
+    }
+}
+
+private actor Pass1Results {
+    var values: [UUID: String] = [:]
+    func set(_ ids: [UUID], _ text: String) { for id in ids { values[id] = text } }
+}
+
+/// Pass 1: Apple's Translation framework over blocks, all from the session's one source language.
+/// Identical block texts are translated once. `apply` gets every block id sharing a result.
+enum BlockTranslationPass {
+    static func run(_ blocks: [TextBlock], session: TranslationSession,
+                    apply: @Sendable ([UUID], String) async -> Void) async throws {
+        var groups: [String: [UUID]] = [:]
+        var order: [String] = []
+        for block in blocks {
+            if groups[block.text] == nil { order.append(block.text) }
+            groups[block.text, default: []].append(block.id)
+        }
+        var idsForRequest: [String: [UUID]] = [:]
+        var requests: [TranslationSession.Request] = []
+        for text in order {
+            let cid = UUID().uuidString
+            idsForRequest[cid] = groups[text]
+            requests.append(.init(sourceText: text, clientIdentifier: cid))
+        }
+        guard !requests.isEmpty else { return }
+        for try await response in session.translate(batch: requests) {
+            guard let cid = response.clientIdentifier, let ids = idsForRequest[cid] else { continue }
+            await apply(ids, response.targetText)
         }
     }
 }

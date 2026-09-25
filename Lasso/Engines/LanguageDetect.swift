@@ -27,11 +27,40 @@ enum LanguageDetect {
         }
     }
 
+    /// The script carrying most of `text`. A Han, kana or Hangul character is roughly a word while a
+    /// Latin letter is a fifth of one, so those count triple: "被 git rebase 卡住了" is Chinese with
+    /// two English words in it, not English.
     static func dominantScript(_ text: String) -> Script? {
         var counts: [Script: Int] = [:]
-        for scalar in text.unicodeScalars { if let s = script(for: scalar) { counts[s, default: 0] += 1 } }
+        for scalar in text.unicodeScalars {
+            guard let s = script(for: scalar) else { continue }
+            counts[s, default: 0] += (s == .han || s == .kana || s == .hangul) ? 3 : 1
+        }
         if (counts[.kana] ?? 0) > 0 { return .kana }       // kana strongly implies Japanese
         return counts.max { $0.value < $1.value }?.key
+    }
+
+    /// The language of one block of text, or nil when it has no letters or nothing recognizable.
+    static func language(of text: String) -> Locale.Language? { detection(of: text)?.language }
+
+    /// The language of one block of text and how sure the detector is (0…1). Script-first like
+    /// `dominantNonTargetLanguage`; NaturalLanguage is trusted only when it agrees with the script
+    /// (which keeps zh-Hant vs zh-Hans), and decides outright for Latin text. A non-Latin script is
+    /// decisive on its own, so those report 1; Latin text reports NaturalLanguage's own probability,
+    /// which is low on short strings ("Invoice details:" is 0.75 Romanian).
+    static func detection(of text: String) -> (language: Locale.Language, confidence: Double)? {
+        guard text.contains(where: \.isLetter), let dominant = dominantScript(text) else { return nil }
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(text)
+        if let nl = recognizer.dominantLanguage?.rawValue, nl != "und",
+           script(forLanguage: baseCode(nl)) == dominant || (dominant == .han && baseCode(nl) == "ja") {
+            let confidence = dominant == .latin
+                ? recognizer.languageHypotheses(withMaximum: 1).values.first ?? 0
+                : 1
+            return (Locale.Language(identifier: nl), confidence)
+        }
+        guard let code = defaultLanguage(for: dominant, sampleText: text), code != "und" else { return nil }
+        return (Locale.Language(identifier: code), dominant == .latin ? 0 : 1)
     }
 
     /// The script a language is written in (for matching lines to the source language).

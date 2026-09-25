@@ -11,9 +11,13 @@ machine unless you decide it should.
 ## What you can do with a selection
 
 - **Copy text** — OCR pulls the words straight out of the image.
-- **Translate in place** — foreign text gets overlaid with the translation right where it sits. It
-  handles mixed selections too (e.g. Chinese with some English) without garbling the parts that are
-  already in your language.
+- **Translate in place** — foreign text gets covered with its translation right where it sits, one
+  plate per paragraph or label, coloured to match the page. Each block's language is detected on its
+  own, so a view with English *and* Japanese translates both, and text already in your language is
+  left alone. Apple's on-device translation appears first; with **Better translation** on (Settings ▸
+  Translation: Off, When I ask, Always), your text model then retranslates the whole selection with
+  context, so sentences split across lines and idioms come out right. The reading view shows it as
+  paragraphs, optionally side by side with the original, with one-click copy.
 - **Summarize / Ask AI** — get a quick summary, or ask anything about what you selected. If the
   selection is an image with no text, it'll actually *look* at the image to answer.
 - **Identify** — point it at an object, product, place, or screenshot and it tells you what it is. It
