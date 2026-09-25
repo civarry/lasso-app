@@ -14,48 +14,120 @@ import Tokenizers
 
 func eprint(_ s: String) { FileHandle.standardError.write((s + "\n").data(using: .utf8)!) }
 
+/// Mirrors AnthropicProvider.streamMessage (Lasso/Intelligence/AnthropicProvider.swift), minus tool
+/// calling — same endpoint, same SSE parsing, same request shape, so a probe run against Claude is
+/// exercising the same wire format the app actually uses, not a reimplementation guess.
+func anthropicSend(system: String, messages: [[String: Any]], apiKey: String, model: String) async throws -> String {
+    let body: [String: Any] = [
+        "model": model, "max_tokens": 1024, "stream": true, "system": system, "messages": messages,
+    ]
+    guard let data = try? JSONSerialization.data(withJSONObject: body) else {
+        throw NSError(domain: "memory-probe", code: 1, userInfo: [NSLocalizedDescriptionKey: "encode failed"])
+    }
+    var request = URLRequest(url: URL(string: "https://api.anthropic.com/v1/messages")!)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+    request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+    request.httpBody = data
+
+    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+    guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+        let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+        throw NSError(domain: "memory-probe", code: code,
+                      userInfo: [NSLocalizedDescriptionKey: "Anthropic returned HTTP \(code)"])
+    }
+    var text = ""
+    for try await line in bytes.lines {
+        guard line.hasPrefix("data:") else { continue }
+        let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+        guard let d = payload.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+              json["type"] as? String == "content_block_delta",
+              let delta = json["delta"] as? [String: Any],
+              let t = delta["text"] as? String else { continue }
+        text += t
+    }
+    return text
+}
+
 // Everything lives inside one local function (not top-level globals) so `history`/`memory` are ordinary
 // local `var`s with no actor-isolation ceremony — top-level `var`s in an async main.swift pick up
 // implicit MainActor isolation in Swift 6, which turns every access into an `await` for no real reason
 // here (nothing is actually concurrent).
 func run() async throws {
-    let modelID = CommandLine.arguments.dropFirst().first ?? "mlx-community/Qwen3-0.6B-4bit"
+    var args = CommandLine.arguments.dropFirst()
+    var provider = "mlx"
+    var modelID = "mlx-community/Qwen3-0.6B-4bit"
+    var i = args.startIndex
+    var positionalSeen = false
+    while i < args.endIndex {
+        switch args[i] {
+        case "--provider":
+            i = args.index(after: i)
+            if i < args.endIndex { provider = args[i] }
+        case "--model":
+            i = args.index(after: i)
+            if i < args.endIndex { modelID = args[i] }
+        default:
+            if !positionalSeen { modelID = args[i]; positionalSeen = true }
+        }
+        i = args.index(after: i)
+    }
+    if provider == "anthropic", !positionalSeen { modelID = "claude-opus-5" }
 
     // Stand-in for Lasso's chat system prompt — not byte-identical to the shipped one (that lives inline
     // in ChatController and wasn't worth duplicating here); not what this probe is testing — only the
     // injected memory block's content is under test.
     let systemPrompt = "You are Lasso's chat assistant. Be concise and accurate."
 
-    eprint("Loading \(modelID)…")
-    let container = try await #huggingFaceLoadModelContainer(configuration: ModelConfiguration(id: modelID))
-    eprint("Loaded.\n")
-
-    // Mirrors MLXProvider.history(from:) — Lasso rebuilds a fresh ChatSession from Swift-owned context
-    // on every turn rather than trusting the model's own session history, exactly the mechanism under test.
-    func toSessionInputs(_ turns: [ChatTurn]) -> (instructions: String, prior: [Chat.Message], prompt: String) {
-        let visible = turns.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        let last = visible.last ?? ChatTurn(role: .user, text: "")
-        let systemText = visible.dropLast().filter { $0.role == .system }.map(\.text).joined(separator: "\n\n")
-        let instructions = systemText.isEmpty ? systemPrompt : systemText
-        let prior = visible.dropLast().compactMap { turn -> Chat.Message? in
-            switch turn.role {
-            case .system: return nil
-            case .user: return .user(turn.text)
-            case .assistant: return .assistant(turn.text)
+    let send: ([ChatTurn]) async throws -> String
+    if provider == "anthropic" {
+        guard let apiKey = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"], !apiKey.isEmpty else {
+            eprint("Set ANTHROPIC_API_KEY in your shell environment first.")
+            exit(1)
+        }
+        eprint("Using Anthropic · \(modelID) (no local model load)\n")
+        send = { turns in
+            let visible = turns.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            let systemText = visible.filter { $0.role == .system }.map(\.text).joined(separator: "\n\n")
+            let wire: [[String: Any]] = visible.filter { $0.role != .system }.map {
+                ["role": $0.role.rawValue, "content": $0.text]
             }
+            return try await anthropicSend(system: systemText.isEmpty ? systemPrompt : systemText,
+                                           messages: wire, apiKey: apiKey, model: modelID)
         }
-        return (instructions, Array(prior), last.text)
-    }
+    } else {
+        eprint("Loading \(modelID)…")
+        let container = try await #huggingFaceLoadModelContainer(configuration: ModelConfiguration(id: modelID))
+        eprint("Loaded.\n")
 
-    func send(_ turns: [ChatTurn]) async throws -> String {
-        let (instructions, prior, prompt) = toSessionInputs(turns)
-        let session = ChatSession(container, instructions: instructions, history: prior,
-                                  generateParameters: .init(maxTokens: 600, temperature: 0.2))
-        var out = ""
-        for try await chunk in session.streamResponse(to: prompt, role: .user, images: [], videos: []) {
-            out += chunk
+        // Mirrors MLXProvider.history(from:) — Lasso rebuilds a fresh ChatSession from Swift-owned
+        // context on every turn rather than trusting the model's own session history.
+        func toSessionInputs(_ turns: [ChatTurn]) -> (instructions: String, prior: [Chat.Message], prompt: String) {
+            let visible = turns.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            let last = visible.last ?? ChatTurn(role: .user, text: "")
+            let systemText = visible.dropLast().filter { $0.role == .system }.map(\.text).joined(separator: "\n\n")
+            let instructions = systemText.isEmpty ? systemPrompt : systemText
+            let prior = visible.dropLast().compactMap { turn -> Chat.Message? in
+                switch turn.role {
+                case .system: return nil
+                case .user: return .user(turn.text)
+                case .assistant: return .assistant(turn.text)
+                }
+            }
+            return (instructions, Array(prior), last.text)
         }
-        return out
+        send = { turns in
+            let (instructions, prior, prompt) = toSessionInputs(turns)
+            let session = ChatSession(container, instructions: instructions, history: prior,
+                                      generateParameters: .init(maxTokens: 600, temperature: 0.2))
+            var out = ""
+            for try await chunk in session.streamResponse(to: prompt, role: .user, images: [], videos: []) {
+                out += chunk
+            }
+            return out
+        }
     }
 
     var history: [ChatContextBuilder.HistoryTurn] = []
