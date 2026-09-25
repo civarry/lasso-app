@@ -103,6 +103,12 @@ model** — each a `Protocol` picker + per-protocol config), staged in a `Draft`
       Protocol → many Connections → aggregated Models → the user selects a Model
 
   The UI must not read as Protocol → Connection → Model: that implies one connection can be current.
+- **Hand-typed models are the removable kind.** "Manually added" entries have no connection behind them,
+  so they never leave on a refresh: the picker gives each one an ✕ (`removeManualModel`), and any card
+  pointing at it heals exactly as it would if a connection had dropped the model. `apply()` commits a
+  manual selection's *model* while leaving the endpoint and key alone (it rides on whichever connection
+  is configured, as the chat switcher's manual group does); requiring a connection there meant Save &
+  Apply stored the choice and kept sending requests to the previous model.
 - **A connection carries its own transport** (`ConnectionKind`): `.openAICompatible` or `.gemini`.
   This is the *wire format*, not a second model pool — both kinds live in the same registry and their
   models merge into the one picker, so choosing a model still chooses the endpoint. `KeysRegistry`
@@ -166,23 +172,188 @@ flowchart TD
   EFF --> RV["activeVisionProvider()<br/>(nil if unusable — no silent Apple)"]
   EFF --> RE["makeEmbedder()<br/>probe → Apple fallback"]
 ```
-- **Transient-error failover** (`streamWithFailover`): every `respond(…)` streams through one wrapper.
-  If the active provider throws a *transient* error (`isTransient`: 429/timeout/5xx/network) **before the
-  first token**, it retries **once on the on-device Apple model** and prefixes a short honest note. Never
-  swaps mid-answer (would splice two models); never falls back to a *cloud* provider — the only target is
-  the always-local on-device model, so it can't leak (and local-only mode never reaches the network). Bad
-  keys / oversized prompts / cancellation are not transient → surface as-is. `setLastProvider` updates the
-  attribution + privacy badge to the model that actually answered.
+- **Failover** (`streamWithFailover` → `FallbackDriver`, `Intelligence/FreeModels/`): every `respond(…)`
+  streams through one wrapper. A failure **before the first token** moves the request on: selected model
+  → compatible free models → on-device → the selected model's error. Never after a token (no splicing),
+  never back to the cloud once on-device. The request reaches each model unchanged. The stream is only
+  ever the answering model's output: a fallback is reported beside it as a `FallbackNotice` (`onFallback`,
+  delivered with the answering model's first token, so a candidate that also fails leaves no trace). The
+  notice carries the selected model's own failure (`reason`): a 404 reads "X wasn't found (check the model
+  name and base URL)", anything else "X was temporarily unavailable". The user's selected model is never
+  written.
+  - **Slow selected model → race.** If no token arrives within `raceAfter` (Settings ▸ Language ▸ Slow
+    model; default 15 s, "Never" = off) and the pool is allowed, the best candidate starts *beside* the
+    selected model. First token wins; the loser is cancelled and nothing is recorded for it. The pool
+    budget starts at the race (or at the selected model's failure, whichever is first). A racer that
+    fails is replaced while the selected model is still silent; the selected model failing mid-race
+    leaves the racer running; a bad key or bad request from it ends the request. The notice then reads
+    "X hadn't started answering after N s". `FallbackDriver` is an event loop over concurrent attempts
+    (`delta` / `finished` / `failed` / `slow`), so only that loop makes decisions.
+  - **A routed request is still filtered.** The stand-in is re-chosen per request through
+    `FreeModelPool.substitute` (the full `exclusion` set) or `FallbackPolicy.onDeviceCanStandIn`
+    (window + no required tools); nil falls through to the normal path. Skipping the user's model must
+    not skip the checks that protect the answer.
+  - **Slow is not down.** A miss carries `selectedFailed`. All-lost-races open the circuit in
+    `.raceImmediately`: the selected model still gets every request, with the stand-in started beside it
+    (`raceAfter = 0`), so the user stops paying the wait without losing their model. Any real failure
+    opens (or upgrades to) `.routeAround`, which skips it. Chat's bar reads "Racing X · Y has been slow"
+    with Stop racing, or "Using X · Y isn't responding" with Try again.
+  - **Routed around a model that keeps missing** (`PrimaryCircuit`, in memory): a request whose selected
+    model missed (a fallback-worthy failure, or losing the race) counts; 2 misses in a row within 10 min
+    open the circuit, in `.routeAround` when any of them was a real failure (requests then go straight to
+    what last answered, with no race wait) or `.raceImmediately` when they were only lost races (see
+    "Slow is not down" above). The selection is never written. The stand-in is re-checked against each
+    request (`FreeModelPool.substitute` / `onDeviceCanStandIn`) or the request takes the normal path. Cooldown 5 min, doubling to 30 while it keeps missing; when it
+    passes, the next request tries the selected model again (`route` returns nil, "probing") and one
+    answer closes the circuit. A routed request judges only the stand-in: if another free model has to
+    answer, routing follows it. 401/400/cancelled never count. Picking a model resets it (the circuit is
+    keyed by `activePrimaryKey`). Chat shows a bar: "Using X · Y isn't responding", with Switch
+    (`switchToSubstitute`) and Try again (`retrySelectedModelNow`). The driver reports
+    `RequestOutcome` (`onOutcome`) and takes `routedFrom` (whose name the notice uses) + `exclude` (the
+    skipped model is never a candidate).
+  - **On-device as the stand-in:** it is only offered when the request fits what it can hold
+    (`FallbackPolicy.onDeviceCanHold`: `OnDeviceProvider.inputBudgetTokens` = 4,096 window minus the
+    2,048-token reply reserve). The prompt was sized for the user's model, so a long chat is far past
+    that: trying it only reaches `exceededContextWindowSize`. When it does answer, its instructions
+    carry a stand-in note (`OnDeviceProvider.standingInFor`) saying which model it is covering and to
+    continue from the conversation above: without it, a 3B model handed a conversation it never took
+    part in answers as though the last message opened a new one. `lastResort` therefore takes the
+    request's `FallbackNeeds`.
+  - **Files, one concern each:** `FreeTierRules` (A: provider-specific discovery rules, the only code
+    that knows provider names) → `KeysRegistry` (B: the cache, persisted with the connections; no
+    second model database) → `FreeModelPool` (C/D: free status, per-request filtering, ranking,
+    `FallbackPolicy`, badges) → `FallbackDriver` (E: the loop) → `ModelHealth` + `FreeModelRefresher` (F).
+  - **Callers and scope** (`FallbackScope`, a `respond(…)` parameter, default `.full`): Chat records a
+    fallback in Activity (a completed step with `notice.reasonText`; the answer step names the model that
+    answered). Grammar Fix's in-place HUD says "Proofreading with X…" and "Proofread by X". Ask AI and the
+    Proofread card show the answering model in their existing attribution footer. Identify (synthesis and
+    OCR cleanup) has no surface for a notice, so it passes `.onDeviceOnly`: never another cloud provider,
+    only the on-device retry, logged. The chat summarizer passes `.none`: no pool and no on-device retry,
+    since it runs unseen.
+  - **Attribution:** the driver calls `onAttempt(provider, isSelected)` before each provider is tried and
+    `onServe` once, at the answering model's first token. The coordinator sets `usedOffDeviceThisSession`
+    for any cloud attempt, attributes the selected model at its attempt (so the footer never shows the
+    previous request's model), and re-attributes at `onServe`. A candidate or the on-device last resort
+    is named only at its first token, so one that fails is never named. A selected model that finishes
+    with no tokens is still attributed.
+  - **Who may use the pool** (`FallbackPolicy.poolAllowed`, opt-in `intelligence.fallback.freeModels`,
+    Settings ▸ Language ▸ Fallback): on, not local-only, and the primary **not local**. Local means
+    `provider.isLocal` (loopback, `KeysRegistry.isLocalURL`) or an OpenAI-compatible base URL on the user's
+    own network (`KeysRegistry.isPrivateNetworkURL`: 10/8, 172.16/12, 192.168/16, 169.254/16, 100.64/10,
+    fc00::/7, fe80::/10, loopback, a dotless single-label host such as `mac-studio`, and `*.local`,
+    `*.ts.net`, `*.home.arpa`, `*.lan`, `*.internal`), via `FallbackPolicy.primaryIsLocal`. Re-checked before
+    every pool attempt, so turning on local-only mid-request stops the next cloud attempt. Triggers on
+    429 (and Groq's tokens-per-minute 413), 5xx / timeout, unreachable host, 404 and OpenRouter's 400
+    "is not a valid model ID" (`ModelFailure.triggersFallback`); not on 401/403 or other 400/413/422. With the pool off,
+    `isTransient` (429 · 5xx · timeout · unreachable, from the same `ModelFailure.classify`) → on-device.
+  - **Budget:** max 3 candidates; no new one once 30 s have passed **since the selected model failed**
+    (not since the request started, so a primary that times out at 60 s still reaches a candidate). The
+    selected model keeps the 60 s request timeout; candidates are built with 20 s
+    (`FallbackDriver.candidateTimeout`, `requestTimeout` on the OpenAI-compatible and Gemini providers).
+    A candidate stream that ends with no tokens is a failure (`IntelligenceError.emptyResponse` →
+    unavailable) and the next one is tried. If the caller cancels, nothing new starts and no health is
+    recorded.
+  - **Consent per connection:** a connection contributes only with **Use as fallback** on
+    (`RegisteredKey.useForFallback`, off by default, in Manage connections for every kind, a server on
+    this Mac included). "Only models Lasso can confirm are free are used."
+  - **Free detection** (`RegistryModel.freeOffer`: `always` / `freePlan` / `never` / nil). OpenRouter:
+    `pricing` all "0" → `always`, anything else (incl. "-1") → `never`; `openrouter/*` routers flagged
+    `isRouter`. Groq: billing FAQ says the Free tier has no usage charges → every model `freePlan`;
+    Compound (`groq/compound*`, `compound-*`) flagged `isRouter` (an agentic system, not a model). Google
+    (native and the `/v1beta/openai/` shim): the pricing page's per-model "Free of charge" / "Not
+    available" table → `freePlan` / `never`, unlisted → nil. Checked 2026-09-15. Any other provider → nil.
+    Hosts match the domain or a subdomain (`groq.com`, `*.groq.com`), never a suffix. The rules run at
+    discovery **and every time the pool reads the registry** (`FreeTierRules.annotate` is idempotent and
+    never overwrites OpenRouter's pricing), so a rule shipped in an update applies without a refresh.
+    Only a rule sets `freePlan`, so on a connection with no rule (or OpenRouter) a leftover `freePlan`
+    from the provider it pointed at before is cleared; `always` / `never` from pricing are kept. Saving a
+    connection whose provider has no Free tier switch saves Free tier off.
+    `FreeModelDetector`: `always` → confirmed; `never` → not_free; `freePlan` → confirmed only if the
+    connection's **Free tier** switch is on, else unknown; nil → confirmed for a localhost server, else
+    unknown. Unknown never enters the pool. Health never changes free status.
+  - **Billed Free tier keys:** when the selected model sits on a Free tier connection and is documented
+    as not on the free plan (`freeOffer == never`), the key is billed, so that connection's `freePlan`
+    models are excluded (`FreeModelPool.billedConnections`, exclusion `.billedKey`), get no badge, and
+    aren't counted in the Settings caption. OpenRouter's zero-priced models are unaffected.
+  - **Chat eligibility:** `.language`, `outputsOnlyText != false`, not a router. Classifier/guard/safety
+    models, speech, TTS, image and embedding models are marked non-chat.
+  - **Per-request filters** (`FreeModelPool.exclusion`, counts logged at debug level): not tried, not
+    benched, not billed; images → accepts images (reported, else inferred vision); tools `.required`
+    (Chat turn whose web intent is an explicit search) → excludes candidates known unable to call tools,
+    including every native-Gemini candidate (no tool loop); context → estimated tokens +
+    `outputReserveTokens` must fit the reported window, else the name-inferred one, else the 32K default;
+    quality floor → skip a candidate two size bands below the primary (small for large).
+  - **Tools:** a `.required` turn never falls back to on-device (no tool loop there): the selected
+    model's error surfaces instead. A candidate whose list reports no tool support is built with
+    `supportsToolCalls = false` and answers without tools. Chat memoizes the `web_search` executor per turn
+    on `name + argumentsJSON` (`ChatController.ToolCallMemo`), so a retried candidate reuses the evidence
+    without a second search or a duplicate "Searching…" step. Arguments are compared as JSON (re-encoded
+    with sorted keys), so spacing or key order from another model still matches.
+  - **Ranking** (no invented scores): the selected model itself on another connection first (ids
+    normalized: lowercase, no `models/`, no vendor path, no `:free`); then size band large > medium >
+    unknown > small (`ModelSize`: the parameter count in the id, else a known large family without one:
+    DeepSeek V3/R1 (not distills)/chat, Kimi K2, GLM-4.5/4.6 (not Air), Qwen3 Coder, MiniMax-M1, else the
+    family suffix); within a band a published parameter count before a name signal; tool support when
+    tools are in play; connections not yet tried in this request; more parameters first; then alternate
+    connections. Quality outranks diversity.
+  - **Health** (`ModelHealth`, in memory, `availability(of:)`): 429 → model 60 s; 429s from two models on a
+    connection within 2 min → connection 10 min (the selected model's own 429 doesn't count toward this:
+    `countsTowardSharedCap: false`); 5xx → model 2 min; other 400 → model 2 min; unreachable → connection
+    2 min; 404 or OpenRouter's 400 "is not a valid model ID" (verified live) → model, and 401/403 →
+    connection, until the next refresh (Settings ▸ Refresh clears these too).
+  - **Refresh** (`FreeModelRefresher`): Settings on open / add / edit / Refresh (stamps
+    `modelsCheckedAt`); at launch when on and any list is >24 h old; in the background when a request
+    reads a stale registry; in the background, once per request, when the pool is empty or 3 candidates
+    have failed. Never awaited by a request: an empty pool goes on-device at once. Automatic refreshes
+    start at most every 10 min; concurrent callers share one in-flight task. Each connection's list is
+    replaced (models no longer free leave), re-read after the network so connections removed, repointed,
+    or re-keyed meanwhile and the Free tier switch are untouched, and a failed fetch keeps the old list.
+  - **Visible:** Settings caption "N free models across M connections · checked X ago", then which
+    switches to turn on ("Turn on Use as fallback for A, and Free tier for B in Manage connections"),
+    providers without a rule, and a billed Free tier key; `free` / `free tier` tags in the Settings picker
+    and chat switcher from `FreeModelPool.badge(s)(…, primary:)` (describe the model regardless of Use as
+    fallback, but none for a billed key's plan models);
+    "N free" in each connection's subtitle.
+  - **Verified:** `FreeModelFallbackTests` (63, fake providers; the key rules, including most review
+    fixes, were broken on purpose to confirm their test fails) and `FreeModelLiveTests` (8, opt-in
+    `TEST_RUNNER_LASSO_LIVE=1`; real
+    OpenRouter free models only, plus free `/models` calls to every configured connection).
+  - **Not covered:** `activeVisionProvider` (Identify's image model) and harness `respondJSON` calls;
+    Anthropic is a possible primary but never a candidate; structured-output requirements.
 
 ```mermaid
-flowchart LR
-  R["respond(…)"] --> P["active provider streams"]
-  P -->|first token then done| OK([answer])
-  P -->|error before any token| C{transient?<br/>429·timeout·5xx·net}
-  C -->|no| E([surface error])
-  C -->|yes| F{on-device available<br/>& primary ≠ on-device?}
-  F -->|no| E
-  F -->|yes| N["note + retry on-device (local)"] --> OK
+flowchart TD
+  R["respond(…, scope)"] --> P["onAttempt (attribute selected) · selected model streams"]
+  P -->|first token| S["onServe (attribution)"] --> OK([answer])
+  P -->|"no token after Slow model wait<br/>(pool allowed, not Never)"| RACE["race: best candidate starts beside it<br/>budget starts · first token wins · loser cancelled"]
+  RACE -->|selected answers first| S
+  RACE -->|racer answers first| S
+  RACE -->|"racer fails: next racer (≤ 3)"| RACE
+  S --> OUT["onOutcome → PrimaryCircuit"]
+  OUT -->|"2 misses in a row, any of them a failure"| OPEN["circuit open · routeAround<br/>(5 → 30 min, stand-in re-checked per request)"]
+  OUT -->|"2 lost races, no failure"| RI["circuit open · raceImmediately<br/>(model kept, stand-in starts with it)"]
+  OPEN -->|"next requests"| P2["stand-in answers · Chat bar: Switch / Try again"]
+  RI -->|"next requests"| P
+  OPEN -->|"cooldown over"| P
+  P -->|error before any token| SC{scope}
+  SC -->|none| E([surface error])
+  SC -->|full / onDeviceOnly| G{"pool allowed now?<br/>full · on · not local-only<br/>primary not local / not LAN"}
+  G -->|no| T{isTransient?<br/>429·5xx·timeout·net}
+  G -->|yes| TF{"triggersFallback?<br/>429·TPM 413·5xx·net·404·invalid-model 400"}
+  TF -->|"no: 401·400·413·cancel"| E
+  TF -->|yes| B["budget starts: 30 s from this failure"]
+  B --> C["FreeModelPool.candidates<br/>Use as fallback · confirmed free (rules at read time)<br/>not billed · chat · images · tools · context · size floor<br/>not benched · untried → ranked (same model first)"]
+  C -->|"empty"| RF["refreshInBackground (once per request, not awaited)"] --> TL
+  C -->|"next (≤ 3, < 30 s, pool still allowed)"| TRY["onAttempt · candidate (20 s timeout)"]
+  TRY -->|first token| S
+  TRY -->|"fails or ends empty before a token · record health"| C
+  C -->|"none left / cap / budget"| TL{tools required?}
+  T -->|yes| TL
+  T -->|no| E
+  TL -->|yes| E2([surface the selected model's error])
+  TL -->|no| D{on-device available?}
+  D -->|yes| N["on-device (local)"] --> S
+  D -->|no| E2
 ```
 
 ---
@@ -443,6 +614,90 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Routing around a model no longer routes around its checks**, and slow stopped being treated as down.
+  A pre-release audit found the stand-in was chosen on pool membership and health alone, so a routed
+  request could reach a model that cannot read the image, cannot run the search the turn depends on, or
+  (on-device) cannot hold the conversation, which failed on every message for the whole cooldown.
+  `FreeModelPool.substitute` / `FallbackPolicy.onDeviceCanStandIn` now re-run the per-request filters.
+  The same audit noted that losing a race counted as a miss, so a healthy-but-slow reasoning model (its
+  reasoning arrives in a field Lasso doesn't yield) was set aside for up to 30 minutes: misses now carry
+  `selectedFailed`, and all-lost-races open `CircuitMode.raceImmediately`, which keeps the model and
+  starts the stand-in with the request instead.
+- **The on-device stand-in stopped reading as lost.** Two causes, both from the prompt being built for
+  the model the user picked: it was offered requests far past its ~2K input budget (a wasted turn ending
+  in the selected model's error anyway), and it was never told it was standing in, so it answered a
+  conversation it hadn't been part of as if it had just started. Now gated by
+  `FallbackPolicy.onDeviceCanHold` and given a short stand-in note. Still open (deliberately): the
+  prompt itself, including which formatting rules it gets, is sized for the selected model.
+- **A model that keeps missing is routed around.** Racing fixed the wait *within* a request, but every
+  new message still started on a model that was plainly down. `PrimaryCircuit` remembers across requests:
+  2 misses in a row (within 10 min) send the next messages straight to what last answered, for 5 min
+  doubling to 30, then one more chance for the selected model; an answer closes it. The user's selection
+  is never rewritten (their rule): Chat shows "Using X · Y isn't responding" with Switch and Try again.
+  Errors the user must fix (401/400) and cancelled replies never count. `FallbackDriver` gained
+  `onOutcome` (who answered), `routedFrom` (the notice names the skipped model) and `exclude`.
+- **Slow models are raced, not abandoned.** A fallback used to start only when the selected model failed,
+  and a model that hangs takes a full timeout to fail. `FallbackDriver` is now an event loop over
+  concurrent attempts: after `raceAfter` seconds with no token (Settings ▸ Language ▸ Slow model: never,
+  8, 15 (default), 30, 60; `intelligence.fallback.raceAfterSeconds`), the best candidate starts beside
+  the selected model and the first token decides; the other is cancelled and nothing is recorded for
+  it. Racing, not switching, because a model thinking silently (reasoning sent in a field Lasso doesn't
+  read) would otherwise be killed a moment before answering. Only where the pool is allowed. A bad key
+  or bad request from the selected model mid-race still ends the request. The notice reads "X hadn't
+  started answering after N s". `SlowModelRaceTests` drive every ordering through gated fake providers
+  (deterministic, 30 consecutive runs green) with a 5 s bound so a broken race fails instead of hanging.
+- **Free-model fallback, review fixes.** An independent review found the fallback worked in tests but
+  not always in the app, and sent requests further than it should. Timing: the 30 s pool budget started
+  with the request, so a primary that timed out at 60 s never reached a candidate; it now starts at the
+  primary's failure, candidates get a 20 s timeout, and an empty pool no longer blocks on a `/models`
+  refresh. Classification: `isTransient` rejected any message mentioning "api key", which every
+  OpenAI-compatible 5xx and every Anthropic error does, so those never failed over; it now shares
+  `ModelFailure.classify`, which also reads Groq's tokens-per-minute 413 as a rate limit (the provider's
+  error message is now kept in the error). Consent and privacy: each connection needs **Use as fallback**
+  (localhost too), a primary on the user's LAN never falls back to the cloud, local-only is re-checked
+  before every attempt, the chat summarizer never falls back, and a Free tier key billed by a paid
+  selected model contributes no free-plan models. Honesty: attribution is set at the answering model's
+  first token, a 404 says "wasn't found", badges say "free tier" for plan-based models, and Grammar Fix's
+  HUD names the stand-in. Quality: the same model on another connection ranks first, then more
+  parameters within a band, and known large families without a count rank as large. Tools: a turn that
+  needs its search never falls back to the tool-less on-device model, toolless candidates run without
+  tools, and a retried search reuses its evidence. Rules now apply at read time. The timing, cancellation,
+  classification, consent, ranking, tools, attribution, refresh and `</think>` fixes were each broken on
+  purpose to confirm their test fails. A second pass: a dotless or `.ts.net` / `.home.arpa` / `.lan` /
+  `.internal` host counts as the user's network; the footer names the selected model as soon as it's
+  tried; Identify falls back on-device only; a billed key's plan models lose their badge and leave the
+  caption's count; the search memo compares arguments as JSON; OpenRouter's "not a valid model ID" 400
+  is a missing model; and a repointed connection drops `freePlan` labels and a Free tier switch that no
+  longer applies. Each of these except Identify's call sites (UI code) has a test confirmed to fail
+  without it.
+- **Fallback notices left the answer text; streams from unfamiliar models are cleaned up.** The "Answered
+  by…" note was yielded into the stream, so it showed in the chat bubble, would have been pasted back by
+  Grammar Fix, and pushed a reasoning model's output around. It is now a `FallbackNotice` shown in Chat's
+  Activity. Live streams from OpenRouter's free models also showed: an upstream failure sent *inside* a
+  200 stream (`{"choices":[],"error":{"code":502}}`), which ended the reply empty and never triggered a
+  fallback (now thrown with its status); a tool call written as `<tool_call><function=…>` text instead of
+  `tool_calls`, which leaked markup and skipped the search (`TextToolCallExtractor` turns it into a real
+  call, even on the final no-tools round, and a model that never answers is an error, not an empty reply);
+  and `splitReasoning` now separates every `<think>` block and a leading close tag, not just the first block.
+- **Free-model fallback, refined for quality and verified against real providers.** Free tier now means
+  "this key may use the provider's free plan": which models that covers comes from each provider's
+  documented rule (Groq: all; Google: its per-model pricing table), not from the switch, and the switch
+  only appears where such a rule exists. Detection is normalized at discovery (`FreeOffer`), so the pool
+  and loop never see provider names. Candidates must now fit the request (images, required tools on
+  explicit-search turns, context plus reply room) and stay close to the selected model: size bands from
+  published parameter counts, a floor two bands down, quality before provider diversity. Live runs found
+  and fixed four things fake providers couldn't: OpenRouter reports a withdrawn model as HTTP 400, a
+  zero-priced safety classifier and the `openrouter/free` router entered the pool, and a name-only "pro"
+  outranked a published 120B. Refreshes are rate-limited, run at launch when stale, and rebuild lists
+  instead of accumulating them. Code split into `Intelligence/FreeModels/`.
+- **Free-model fallback.** A cloud request that fails before answering can now be retried on free
+  models from the configured connections before the on-device model (§4 Failover). Opt-in, never from
+  a local primary, never in local-only. Discovery keeps each model's pricing/modality/tool/context
+  metadata; OpenRouter's zero prices, localhost servers, and a per-connection **Free tier** switch are
+  the only sources of "free", because Groq and Gemini expose nothing that could prove it. The retry
+  loop moved into `FallbackDriver` so `FreeModelFallbackTests` runs it against fake providers; the
+  coalesced refresh, the no-splice guard and the pricing-beats-switch rule were each broken on purpose
+  to confirm their test fails.
 - **LaTeX reached the screen as markup.** Asked for the cosine-similarity formula, the model ignored
   the prompt's "no LaTeX" line (they do) and the panel showed a stray `[`, a line of `\frac{...}`, and
   every bullet full of `\mathbf{A} \cdot \mathbf{B}`. The prompt was also lying: it claimed the app

@@ -49,6 +49,22 @@ struct RegistryModel: Codable, Equatable, Sendable, Identifiable {
     var tag: String
     var capabilities: Set<ModelCapability>
 
+    // What the endpoint's own model list reported, when it reported anything. nil always means "the
+    // provider didn't say", never "no" — Groq and Gemini publish none of this, OpenRouter all of it.
+    // Optional so registries saved before these existed decode unchanged.
+
+    /// What the provider offers for free, from its pricing metadata or its documented free plan
+    /// (`FreeTierRules`). nil = no rule covers this model, which the fallback pool treats as unknown.
+    var freeOffer: FreeOffer?
+    /// Produces text and nothing else — a zero-priced music model is not a chat fallback.
+    var outputsOnlyText: Bool?
+    var acceptsImages: Bool?
+    var supportsTools: Bool?
+    var contextTokens: Int?
+    /// A router that forwards to a model of its own choosing. Its quality and capabilities can't be
+    /// known ahead of the request, so it is never a fallback candidate.
+    var isRouter: Bool?
+
     var id: String { name }
 
     init(name: String, tag: String = "", capabilities: Set<ModelCapability>? = nil) {
@@ -71,6 +87,18 @@ struct RegisteredKey: Codable, Equatable, Sendable, Identifiable {
     /// Which wire protocol to speak. Decoded leniently so registries written before native Gemini
     /// existed keep working — everything back then was OpenAI-compatible.
     var kind: ConnectionKind
+    /// "This key is allowed to use the provider's free tier." Not a list of free models: which models
+    /// that covers comes from the provider's own rules (`FreeOffer.freePlan`). Needed because Groq and
+    /// Gemini expose no billing information, so nothing an API call returns can prove a key is on the
+    /// free plan.
+    var freeTier: Bool
+    /// When `models` was last filled from the endpoint. nil = never discovered (or a pre-fallback save).
+    var modelsCheckedAt: Date?
+    /// "Lasso may send a request here when the user's own model is unavailable." Consent is per
+    /// connection, not only the global Fallback switch: a free model still receives the conversation,
+    /// and which providers may see it is the user's call, one connection at a time. Off by default and
+    /// for every connection saved before it existed, a server on this Mac included.
+    var useForFallback: Bool
 
     /// Keychain account for this key's secret.
     var keychainAccount: String { "keys.registry.\(id).key" }
@@ -80,7 +108,8 @@ struct RegisteredKey: Codable, Equatable, Sendable, Identifiable {
 
     init(id: String = UUID().uuidString, name: String, baseURL: String,
          keyNotRequired: Bool, enabled: Bool = true, models: [RegistryModel] = [],
-         kind: ConnectionKind = .openAICompatible) {
+         kind: ConnectionKind = .openAICompatible, freeTier: Bool = false,
+         modelsCheckedAt: Date? = nil, useForFallback: Bool = false) {
         self.id = id
         self.name = name
         self.baseURL = kind.fixedBaseURL ?? baseURL
@@ -88,6 +117,9 @@ struct RegisteredKey: Codable, Equatable, Sendable, Identifiable {
         self.enabled = enabled
         self.models = models
         self.kind = kind
+        self.freeTier = freeTier
+        self.modelsCheckedAt = modelsCheckedAt
+        self.useForFallback = useForFallback
     }
 
     init(from decoder: Decoder) throws {
@@ -99,6 +131,9 @@ struct RegisteredKey: Codable, Equatable, Sendable, Identifiable {
         enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         models = try container.decodeIfPresent([RegistryModel].self, forKey: .models) ?? []
         kind = try container.decodeIfPresent(ConnectionKind.self, forKey: .kind) ?? .openAICompatible
+        freeTier = try container.decodeIfPresent(Bool.self, forKey: .freeTier) ?? false
+        modelsCheckedAt = try container.decodeIfPresent(Date.self, forKey: .modelsCheckedAt)
+        useForFallback = try container.decodeIfPresent(Bool.self, forKey: .useForFallback) ?? false
     }
 }
 
@@ -199,16 +234,62 @@ struct KeysRegistry: Codable, Equatable, Sendable {
 
     var hasAnyEnabledKey: Bool { entries.contains { $0.enabled } }
 
-    /// Models a connection serves, discovered through whichever protocol it speaks. One place, so
-    /// adding a transport doesn't mean hunting down every discovery call site.
-    static func discoverModels(for entry: RegisteredKey, apiKey: String) async -> [String] {
+    /// Models a connection serves, discovered through whichever protocol it speaks, with whatever the
+    /// endpoint reports about each (pricing, modalities, tools, context). One place, so adding a
+    /// transport doesn't mean hunting down every discovery call site.
+    ///
+    /// nil means the request failed — distinct from an endpoint that genuinely lists nothing, so a
+    /// background refresh can keep the last good list instead of wiping it on a network blip.
+    static func discoverModels(for entry: RegisteredKey, apiKey: String) async -> [RegistryModel]? {
+        guard !PrivacyMode.localOnly || entry.isLocal else { return nil }
+        let models: [RegistryModel]?
         switch entry.kind {
         case .gemini:
-            return await GeminiAPI.availableModels(apiKey: apiKey)
+            models = await GeminiAPI.discoverModels(apiKey: apiKey)
         case .openAICompatible:
-            guard let url = URL(string: entry.baseURL) else { return [] }
-            return await OpenAICompatibleProvider.discoverModels(baseURL: url, apiKey: apiKey)
+            guard let url = URL(string: entry.baseURL) else { return nil }
+            models = await OpenAICompatibleProvider.discoverModels(baseURL: url, apiKey: apiKey)
         }
+        return models.map { FreeTierRules.annotate($0, for: entry) }
+    }
+
+    /// Parse an OpenAI-style `GET /models` body. Every field beyond `id` is optional on the wire:
+    /// OpenRouter sends `pricing`, `architecture` and `supported_parameters`; Groq sends
+    /// `context_window`; a bare server sends ids only. Absent stays nil. Internal for tests.
+    static func parseOpenAIModelList(_ data: Data) -> [RegistryModel]? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let list = json["data"] as? [[String: Any]] else { return nil }
+        return list.compactMap { entry -> RegistryModel? in
+            guard let id = entry["id"] as? String else { return nil }
+            var model = RegistryModel(name: id)
+            if let pricing = entry["pricing"] as? [String: Any] {
+                // Only the flat string prices count; `overrides` is a list of long-prompt tiers.
+                let prices = pricing.values.compactMap { value -> Decimal? in
+                    guard let string = value as? String else { return nil }
+                    return Decimal(string: string, locale: Locale(identifier: "en_US_POSIX"))
+                }
+                // Every price exactly zero is free for everyone. A negative price is OpenRouter's
+                // "variable" marker (its auto-router), so it counts as priced.
+                if pricing["prompt"] != nil, pricing["completion"] != nil, !prices.isEmpty {
+                    model.freeOffer = prices.allSatisfy { $0 == 0 } ? .always : .never
+                }
+            }
+            if let arch = entry["architecture"] as? [String: Any] {
+                if let outputs = arch["output_modalities"] as? [String] {
+                    model.outputsOnlyText = outputs == ["text"]
+                }
+                if let inputs = arch["input_modalities"] as? [String] {
+                    model.acceptsImages = inputs.contains("image")
+                }
+            }
+            if let params = entry["supported_parameters"] as? [String] {
+                model.supportsTools = params.contains("tools")
+            }
+            for key in ["context_length", "context_window", "max_context_length"] {
+                if let n = entry[key] as? Int, n > 0 { model.contextTokens = n; break }
+            }
+            return model
+        }.sorted { $0.name < $1.name }
     }
 
     /// Whether a connection answers right now — the Connections row's test, per protocol.
@@ -226,9 +307,56 @@ struct KeysRegistry: Codable, Equatable, Sendable {
 
     // MARK: - Static utilities
 
+    /// This Mac only (loopback). Drives the privacy badge ("on this Mac") and the no-key default.
     static func isLocalURL(_ urlString: String) -> Bool {
-        let host = (URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines))?.host ?? "").lowercased()
+        let host = host(of: urlString)
         return host == "localhost" || host == "127.0.0.1" || host == "0.0.0.0" || host == "::1"
+    }
+
+    /// This Mac or a network the user is on: loopback, the RFC 1918 ranges, link-local, carrier-grade
+    /// NAT (100.64/10, which Tailscale uses), IPv6 unique-local and link-local, and names only a local
+    /// resolver answers: a single-label host ("mac-studio"), mDNS `.local`, Tailscale's `.ts.net`, and
+    /// the home/private-use suffixes `.home.arpa` (RFC 8375), `.lan`, and `.internal`.
+    ///
+    /// Not "local" in the privacy badge's sense (the request does leave this Mac), but a server on the
+    /// user's own network is still their machine. For the free-model fallback that difference decides
+    /// everything: a request the user kept in-house mustn't be retried on a cloud provider.
+    static func isPrivateNetworkURL(_ urlString: String) -> Bool {
+        var host = host(of: urlString)
+        guard !host.isEmpty else { return false }
+        if let zone = host.firstIndex(of: "%") { host = String(host[..<zone]) }   // fe80::1%en0
+        if host == "localhost" { return true }
+        if [".local", ".ts.net", ".home.arpa", ".lan", ".internal"].contains(where: host.hasSuffix) { return true }
+        // A dotless name can only come from the local resolver's search domain. A letter is required so
+        // a decimal-encoded IPv4 ("http://134744072") isn't mistaken for one.
+        if !host.contains("."), !host.contains(":"), host.contains(where: \.isLetter) { return true }
+        if host.contains(":") {
+            // IPv4-mapped IPv6 ("::ffff:192.168.1.5") is the IPv4 address it carries.
+            if host.contains("."), let v4 = host.split(separator: ":").last { return isPrivateIPv4(String(v4)) }
+            if host == "::1" { return true }
+            let first = host.split(separator: ":", omittingEmptySubsequences: false).first ?? ""
+            guard !first.isEmpty, let hextet = UInt16(first, radix: 16) else { return false }
+            return hextet & 0xFE00 == 0xFC00      // fc00::/7, unique local
+                || hextet & 0xFFC0 == 0xFE80      // fe80::/10, link local
+        }
+        return isPrivateIPv4(host)
+    }
+
+    private static func isPrivateIPv4(_ host: String) -> Bool {
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false).compactMap { UInt8($0) }
+        guard parts.count == 4 else { return false }
+        let (a, b) = (parts[0], parts[1])
+        return a == 127                                  // loopback
+            || parts == [0, 0, 0, 0]
+            || a == 10                                   // 10/8
+            || (a == 172 && (16...31).contains(b))       // 172.16/12
+            || (a == 192 && b == 168)                    // 192.168/16
+            || (a == 169 && b == 254)                    // 169.254/16, link local
+            || (a == 100 && (64...127).contains(b))      // 100.64/10, carrier-grade NAT
+    }
+
+    private static func host(of urlString: String) -> String {
+        (URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines))?.host ?? "").lowercased()
     }
 
     /// Infer a model's capabilities from its id, since the `/models` endpoint doesn't report them.

@@ -16,6 +16,8 @@ final class GrammarFixService {
 
     private let intelligence = IntelligenceCoordinator.shared
     private var running = false
+    /// Set when a model other than the selected one answered this run, so the HUD can say which.
+    private var answeredBy: String?
 
     /// 'c' and 'v' ANSI virtual key codes (kVK_ANSI_C / kVK_ANSI_V).
     private let keyC: CGKeyCode = 8
@@ -60,6 +62,7 @@ final class GrammarFixService {
         let editable = isSelectionEditable()
 
         StatusHUD.shared.show(icon: "text.badge.checkmark", text: "Proofreading…", spinner: true)
+        answeredBy = nil
         let corrected: String
         do {
             corrected = try await correct(selected)
@@ -82,7 +85,12 @@ final class GrammarFixService {
             pb.clearContents()
             pb.setString(corrected, forType: .string)
             sendKey(keyV)
-            StatusHUD.shared.show(icon: "checkmark.circle.fill", text: "Proofread", persist: 1.2)
+            // A stand-in model rewrote the user's text in place: say which, a little longer.
+            if let answeredBy {
+                StatusHUD.shared.show(icon: "checkmark.circle.fill", text: "Proofread by \(answeredBy)", persist: 2.5)
+            } else {
+                StatusHUD.shared.show(icon: "checkmark.circle.fill", text: "Proofread", persist: 1.2)
+            }
             try? await Task.sleep(nanoseconds: 250_000_000)   // let the paste land before restoring
             restore(savedClipboard, to: pb)
         } else {
@@ -124,8 +132,14 @@ final class GrammarFixService {
     /// then clean it so a chatty small model can't paste labels or extra example turns.
     private func correct(_ text: String) async throws -> String {
         var out = ""
-        for try await delta in intelligence.respond(prompt: GrammarFixAction.framedPrompt(for: text),
-                                                    context: nil) {
+        let stream = intelligence.respond(prompt: GrammarFixAction.framedPrompt(for: text), context: nil,
+                                          onFallback: { [weak self] notice in
+            // The HUD is this flow's only surface: while it spins, name the model actually proofreading.
+            self?.answeredBy = notice.answeredBy
+            StatusHUD.shared.show(icon: "text.badge.checkmark",
+                                  text: "Proofreading with \(notice.answeredBy)…", spinner: true)
+        })
+        for try await delta in stream {
             out += delta
         }
         let cleaned = GrammarFixAction.cleanCorrection(out)

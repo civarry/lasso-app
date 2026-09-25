@@ -4,7 +4,7 @@ import SwiftUI
 /// The Chat panel UI: a scrollable conversation with a composer. Renders `ChatController.shared`.
 struct ChatView: View {
     @Bindable private var chat = ChatController.shared
-    private let intelligence = IntelligenceCoordinator.shared
+    @Bindable private var intelligence = IntelligenceCoordinator.shared
     @AppStorage("ui.resultTextScale") private var textScale = 1.0
     @FocusState private var inputFocused: Bool
     @State private var isDropTarget = false
@@ -15,6 +15,7 @@ struct ChatView: View {
         VStack(spacing: 0) {
             header
             Divider()
+            routedAroundBar
             conversation
             composer
         }
@@ -60,6 +61,42 @@ struct ChatView: View {
         // Drag the window by its header (the panel is no longer movable-by-background, so body
         // controls stay clickable). Sits behind the buttons, which capture their own clicks.
         .background(WindowDragArea())
+    }
+
+    /// Shown while the selected model is being skipped after repeated misses: what is answering instead,
+    /// and the two ways out. The selection itself is untouched, so the header chip still shows it.
+    @ViewBuilder
+    private var routedAroundBar: some View {
+        if let routed = intelligence.routedAround, routed.primaryKey == intelligence.activePrimaryKey {
+            HStack(spacing: 8) {
+                Image(systemName: routed.mode == .routeAround ? "arrow.triangle.branch" : "hare")
+                    .foregroundStyle(.secondary)
+                Text(routed.mode == .routeAround
+                     ? "Using \(Self.shortModel(routed.substituteName)) · "
+                       + "\(Self.shortModel(routed.primaryName)) isn't responding"
+                     : "Racing \(Self.shortModel(routed.substituteName)) · "
+                       + "\(Self.shortModel(routed.primaryName)) has been slow")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 6)
+                if routed.substitute?.ref != nil {
+                    Button("Switch") { intelligence.switchToSubstitute() }
+                        .buttonStyle(.link).font(.caption)
+                        .help("Make \(Self.shortModel(routed.substituteName)) your model")
+                }
+                Button(routed.mode == .routeAround ? "Try again" : "Stop racing") {
+                    intelligence.retrySelectedModelNow()
+                }
+                .buttonStyle(.link).font(.caption)
+                .help(routed.mode == .routeAround
+                      ? "Send the next message to \(Self.shortModel(routed.primaryName))"
+                      : "Go back to waiting for \(Self.shortModel(routed.primaryName))")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.quaternary.opacity(0.4))
+            Divider()
+        }
     }
 
     /// Title of the active conversation + a menu to switch between open conversations or start a new
@@ -137,6 +174,7 @@ struct ChatView: View {
                 }
                 // One submenu per configured connection, listing every model it serves — the same
                 // shape as Ollama/MLX above, and the same aggregated list Settings offers.
+                let badges = chat.freeModelBadges
                 ForEach(chat.registryGroups) { group in
                     Menu(group.name) {
                         ForEach(group.models) { model in
@@ -145,6 +183,7 @@ struct ChatView: View {
                                     Label(model.name, systemImage: "checkmark")
                                 } else { Text(model.name) }
                             }
+                            .badge(badges[ModelRef(keyID: group.keyID, model: model.name)].map { Text($0) })
                         }
                     }
                 }

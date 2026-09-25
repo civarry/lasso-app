@@ -17,7 +17,12 @@ struct GrammarFixAction: CaptureAction {
     }
 
     func perform(_ ctx: CaptureContext) async throws -> ActionResult {
-        .stream(intelligence.respond(prompt: Self.framedPrompt(for: ctx.ocrText ?? ""), context: nil))
+        // The result card's footer names the answering model (attribution is set at its first token),
+        // and the card has no other status line, so a fallback is only logged here.
+        .stream(intelligence.respond(prompt: Self.framedPrompt(for: ctx.ocrText ?? ""), context: nil,
+                                     onFallback: { notice in
+            Log.intelligence.notice("Proofread card · \(notice.text, privacy: .public)")
+        }))
     }
 
     /// The instruction + few-shot examples. Enumerating the error types and showing the hard cases

@@ -499,6 +499,11 @@ final class ChatController {
     var registryGroups: [RegistryModelGroup] {
         PrivacyMode.localOnly ? [] : intelligence.registryGroups(for: .language)
     }
+    /// The switcher's "free" / "free tier" badges, one registry read for the whole menu. The active
+    /// model decides whether a Free tier key is being billed (its plan models then get no badge).
+    var freeModelBadges: [ModelRef: String] {
+        FreeModelPool.badges(in: KeysRegistry.load(), primary: intelligence.activeModelRef)
+    }
     /// Cloud engines are only offered when configured (key + model) and not in local-only mode.
     var anthropicReady: Bool {
         !PrivacyMode.localOnly && !intelligence.anthropicModel.isEmpty
@@ -1110,13 +1115,20 @@ final class ChatController {
 
         // The web_search tool executor (used only on the tool path): runs the user's connectors for
         // the model's query, surfaces a "Searching…" step, and returns evidence text to ground on.
+        //
+        // Memoized for the turn: when a fallback candidate retries the turn after the selected model
+        // (or another candidate) already searched, the same query returns the same evidence without a
+        // second search or a duplicate "Searching…" step in Activity.
         let toolBoxed = boxed
         let toolOCR = ocrText
+        let toolMemo = ToolCallMemo()
         let executor: ToolExecutor = { [weak self] call in
-            guard let self else { return "Web search is unavailable." }
-            let query = call.string("query") ?? typed
-            return await self.runWebSearchTool(query: query, boxed: toolBoxed,
-                                               ocrText: toolOCR, assistantID: assistantID)
+            await toolMemo.result(for: call) { [weak self] in
+                guard let self else { return "Web search is unavailable." }
+                let query = call.string("query") ?? typed
+                return await self.runWebSearchTool(query: query, boxed: toolBoxed,
+                                                   ocrText: toolOCR, assistantID: assistantID)
+            }
         }
 
         var deltas = 0
@@ -1140,10 +1152,27 @@ final class ChatController {
             }
         }
 
+        // A fallback answer is recorded in the Activity trace, never in the reply: the answer step names
+        // the model that actually answered, and a completed step says why it isn't the selected one.
+        let answeringModel = AnsweringModel(label: textLabel)
+        let onFallback: @MainActor (FallbackNotice) -> Void = { [weak self] notice in
+            guard let self else { return }
+            answeringModel.label = notice.onDevice ? "\(notice.answeredBy) (on-device)" : notice.answeredBy
+            // Above the answer step, which was added before the request went out: the trace should
+            // read in the order things happened, not the order the UI learned about them.
+            let step = self.insertStep(assistantID, icon: "arrow.triangle.branch", text: notice.reasonText,
+                                       before: answerStepID)
+            self.completeStep(assistantID, step)
+        }
+
         do {
             let stream = toolPath
-                ? intelligence.respond(messages: turns, tools: exposedTools, execute: executor)
-                : intelligence.respond(messages: turns)
+                // An explicit search request depends on the tool, so a fallback model must be able to
+                // call it; otherwise the tool is optional and the fallback only prefers one that can.
+                ? intelligence.respond(messages: turns, tools: exposedTools,
+                                       toolNeed: intent == .search ? .required : .preferred,
+                                       onFallback: onFallback, execute: executor)
+                : intelligence.respond(messages: turns, onFallback: onFallback)
             for try await delta in stream {
                 if Task.isCancelled {
                     publish(Date())   // keep what arrived since the last coalesced publish
@@ -1153,8 +1182,8 @@ final class ChatController {
                 }
                 if firstTokenMs < 0 {
                     firstTokenMs = ms(); loadingHint?.cancel()
-                    if let answerStepID { setStepText(assistantID, answerStepID, "Answering · \(textLabel)") }
-                    else { answerStepID = addStep(assistantID, icon: "sparkles", text: "Answering · \(textLabel)") }
+                    if let answerStepID { setStepText(assistantID, answerStepID, "Answering · \(answeringModel.label)") }
+                    else { answerStepID = addStep(assistantID, icon: "sparkles", text: "Answering · \(answeringModel.label)") }
                     Log.chat.notice("runTurn · first token (+\(firstTokenMs, privacy: .public)ms)")
                 }
                 deltas += 1; chars += delta.count
@@ -1171,7 +1200,7 @@ final class ChatController {
             }
             publish(Date())   // the tail between the last publish and the end of the stream
             loadingHint?.cancel()
-            if let answerStepID { completeStep(assistantID, answerStepID, text: "Answered · \(textLabel)") }
+            if let answerStepID { completeStep(assistantID, answerStepID, text: "Answered · \(answeringModel.label)") }
         } catch {
             loadingHint?.cancel()
             Log.chat.error("runTurn · stream ERROR after \(chars, privacy: .public) chars: \(error.localizedDescription, privacy: .public) (+\(ms(), privacy: .public)ms)")
@@ -2153,9 +2182,13 @@ final class ChatController {
             let prompt = Self.summarizationPrompt(prior: priorMemory, newTranscript: transcript)
             // A plain single-turn request through the active provider — provider-agnostic, no tools,
             // no grounding. Keep it tight; strip any <think> the model emits.
+            //
+            // No fallback of any kind: this runs unseen in the background, so a free model would receive
+            // the conversation without the user ever seeing a notice, and an on-device retry would take
+            // the model away from the user's next turn. A failed pass just retries on the next overflow.
             var raw = ""
             do {
-                for try await delta in self.intelligence.respond(prompt: prompt, context: nil) {
+                for try await delta in self.intelligence.respond(prompt: prompt, context: nil, scope: .none) {
                     if Task.isCancelled { return }
                     raw += delta
                 }
@@ -2381,6 +2414,21 @@ final class ChatController {
         return step.id
     }
 
+    /// Add a step above `other` (or at the end when it has gone). The answer step is created before the
+    /// request leaves, so anything that turns out to have happened first has to be placed, not appended.
+    @discardableResult
+    private func insertStep(_ id: UUID, icon: String, text: String, before other: UUID?) -> UUID {
+        let step = ActivityStep(icon: icon, text: text)
+        update(id) { message in
+            if let other, let index = message.steps.firstIndex(where: { $0.id == other }) {
+                message.steps.insert(step, at: index)
+            } else {
+                message.steps.append(step)
+            }
+        }
+        return step.id
+    }
+
     /// Update an in-progress step's text (without marking it done).
     private func setStepText(_ id: UUID, _ stepID: UUID, _ text: String) {
         update(id) { msg in
@@ -2398,23 +2446,85 @@ final class ChatController {
         }
     }
 
+    /// One turn's tool results, keyed on the call (`name` + canonical arguments). A fallback retries the
+    /// whole turn on another model, which typically asks for the same search; this hands it the
+    /// evidence already gathered instead of searching again. An identical call already running is
+    /// joined, not repeated. Arguments are compared as JSON, not text: another model writes the same
+    /// `{"query": "x"}` with different spacing or key order.
+    @MainActor
+    final class ToolCallMemo {
+        private var results: [String: Task<String, Never>] = [:]
+
+        func result(for call: ToolCall, run: @escaping @MainActor () async -> String) async -> String {
+            let key = call.name + "\u{0}" + Self.canonicalArguments(call.argumentsJSON)
+            if let existing = results[key] { return await existing.value }
+            let task = Task { @MainActor in await run() }
+            results[key] = task
+            return await task.value
+        }
+
+        /// The arguments re-encoded with sorted keys and no whitespace; the raw text if it isn't JSON.
+        nonisolated static func canonicalArguments(_ json: String) -> String {
+            guard let data = json.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]),
+                  let encoded = try? JSONSerialization.data(withJSONObject: object,
+                                                            options: [.sortedKeys, .fragmentsAllowed]),
+                  let text = String(data: encoded, encoding: .utf8)
+            else { return json }
+            return text
+        }
+    }
+
+    /// The model answering the current turn: the selected one until a fallback takes over. A reference,
+    /// because the fallback callback sets it while the stream loop reads it.
+    @MainActor
+    private final class AnsweringModel {
+        var label: String
+        init(label: String) { self.label = label }
+    }
+
     /// Split a model's raw stream into reasoning (inside `<think>…</think>`) and the answer. Handles
     /// the partial mid-stream state (open tag, not yet closed) so the thought streams live.
+    ///
+    /// Every block counts, not just the first: a reasoning model in a tool loop thinks again after each
+    /// tool result, and the rounds arrive in one stream. A leading close tag with no open tag is
+    /// reasoning too, from models whose chat template opens the block inside the prompt, but only when
+    /// it is markup: an answer that explains the tag ("close it with `</think>`") keeps its text.
     static func splitReasoning(_ raw: String) -> (reasoning: String, answer: String, thinking: Bool) {
-        guard let open = raw.range(of: "<think>", options: [.caseInsensitive]) else {
-            return ("", raw, false)
+        var reasoning: [Substring] = []
+        var answer = ""
+        var rest = Substring(raw)
+        var thinking = false
+        if let close = rest.range(of: "</think>", options: [.caseInsensitive]),
+           rest[..<close.lowerBound].range(of: "<think>", options: [.caseInsensitive]) == nil,
+           !isInsideCode(rest[..<close.lowerBound]) {
+            reasoning.append(rest[..<close.lowerBound])
+            rest = rest[close.upperBound...]
         }
-        let prefix = String(raw[..<open.lowerBound])
-        let afterOpen = raw[open.upperBound...]
-        if let close = afterOpen.range(of: "</think>", options: [.caseInsensitive]) {
-            let reasoning = String(afterOpen[..<close.lowerBound])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let answer = (prefix + String(afterOpen[close.upperBound...]))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return (reasoning, answer, false)
+        while let open = rest.range(of: "<think>", options: [.caseInsensitive]) {
+            answer += rest[..<open.lowerBound]
+            let afterOpen = rest[open.upperBound...]
+            if let close = afterOpen.range(of: "</think>", options: [.caseInsensitive]) {
+                reasoning.append(afterOpen[..<close.lowerBound])
+                rest = afterOpen[close.upperBound...]
+            } else {
+                reasoning.append(afterOpen)
+                rest = ""
+                thinking = true
+            }
         }
-        return (String(afterOpen).trimmingCharacters(in: .whitespacesAndNewlines),
-                prefix.trimmingCharacters(in: .whitespacesAndNewlines), true)
+        answer += rest
+        let thought = reasoning.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }.joined(separator: "\n\n")
+        return (thought, answer.trimmingCharacters(in: .whitespacesAndNewlines), thinking)
+    }
+
+    /// Whether text ending here is inside a Markdown code fence or an inline code span: an odd number
+    /// of ``` fences, or, outside fences, an odd number of backticks.
+    private static func isInsideCode(_ prefix: Substring) -> Bool {
+        let fences = prefix.components(separatedBy: "```").count - 1
+        if fences % 2 == 1 { return true }
+        return prefix.replacingOccurrences(of: "```", with: "").filter { $0 == "`" }.count % 2 == 1
     }
 
     private func finishStreaming(_ id: UUID) {

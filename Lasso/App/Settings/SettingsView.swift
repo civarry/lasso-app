@@ -44,6 +44,8 @@ struct SettingsView: View {
         var visionSelection = ModelSelection.none
         var embeddingSelection = ModelSelection.none
         var langContext: Int = 0          // manual context-window override for the selected language model (0 = Auto)
+        var autoFallback = false          // retry a failed cloud request on a free model from the connections
+        var fallbackRaceAfter = 15        // seconds before a free model races a slow one; 0 = never
         var anthropicBaseURL = "https://api.anthropic.com"
         var anthropicModel = "claude-3-5-haiku-latest"
         var anthropicKey = ""
@@ -305,7 +307,8 @@ struct SettingsView: View {
             discovering: discoveringKeyIDs,
             discover: { id in Task { await discoverModels(forKeyID: id) } },
             onChanged: { connectionsDidChange() },
-            dismiss: { showConnections = false })
+            dismiss: { showConnections = false },
+            primary: draftPrimaryRef)
     }
 
     // MARK: - The three model sections (one template, three instances)
@@ -347,6 +350,10 @@ struct SettingsView: View {
                         }
                     }
                     mlxDownloadRow
+                }
+                if draft.provider == .openAICompatible || draft.provider == .anthropic {
+                    autoFallbackRow
+                    if draft.autoFallback, !draft.localOnly { slowModelRow }
                 }
             },
             contextControl: {
@@ -451,6 +458,106 @@ struct SettingsView: View {
             apiKey: nil,
             test: nil,
             footnote: embeddingHint)
+    }
+
+    /// Free-model fallback. Only offered for a cloud language model: a local choice never falls back to
+    /// the cloud, so the switch would promise something that can't happen.
+    /// How long a slow model gets before a free one races it. A race, not a hand-over: the selected model
+    /// keeps going and still wins if it starts answering first.
+    private var slowModelRow: some View {
+        SettingsRow("Slow model", caption: draft.fallbackRaceAfter == 0
+                    ? "Wait for your model however long it takes."
+                    : "If your model hasn't started answering by then, the best free model starts too. "
+                      + "The first to answer wins.") {
+            Picker("", selection: $draft.fallbackRaceAfter) {
+                ForEach(IntelligenceCoordinator.raceAfterChoices, id: \.self) { seconds in
+                    Text(seconds == 0 ? "Never" : "After \(seconds) s").tag(seconds)
+                }
+            }
+            .labelsHidden()
+            .fixedSize()
+        }
+    }
+
+    private var autoFallbackRow: some View {
+        SettingsRow("Fallback", caption: autoFallbackCaption) {
+            HStack(spacing: 10) {
+                if draft.autoFallback, !draft.localOnly, !draft.registry.entries.isEmpty {
+                    if discoveringKeyIDs.isEmpty {
+                        Button { Task { await refreshAllKeys() } } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.secondary)
+                        .help("Check connections for free models again")
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+                SettingsSwitch(title: "Free models", isOn: $draft.autoFallback,
+                               info: "If your model is rate limited, down, or withdrawn before it answers, "
+                                   + "Lasso retries on the closest free model from the connections you set to "
+                                   + "Use as fallback that can handle the request, then on-device. That sends "
+                                   + "the request to a different provider, and free plans may use requests to "
+                                   + "improve their models. The reply says which model answered; your selected "
+                                   + "model doesn't change.")
+                    .disabled(draft.localOnly)
+            }
+        }
+    }
+
+    private var autoFallbackCaption: String {
+        if draft.localOnly { return "Paused in local-only mode." }
+        guard draft.autoFallback else { return "Retry on a free model when yours is unavailable." }
+        if !discoveringKeyIDs.isEmpty { return "Checking connections for free models…" }
+        guard !draft.registry.entries.isEmpty else { return "Add a connection to find free models." }
+        return Self.autoFallbackStatus(registry: draft.registry, primary: draftPrimaryRef, now: Date())
+    }
+
+    /// The registry model the draft's language selection points at, when it's a connection's model.
+    private var draftPrimaryRef: ModelRef? {
+        guard draft.provider == .openAICompatible, case .model(let keyID, let name) = draft.langSelection
+        else { return nil }
+        return ModelRef(keyID: keyID, model: name)
+    }
+
+    /// The Fallback caption once the feature is on: what the pool holds, then what would change it.
+    /// Pure, so the wording (and its single trailing period) is tested rather than eyeballed.
+    static func autoFallbackStatus(registry: KeysRegistry, primary: ModelRef?, now: Date) -> String {
+        let summary = FreeModelPool.summary(of: registry, primary: primary)
+        var sentences: [String] = []
+        if summary.models == 0 {
+            sentences.append("No free models found")
+        } else {
+            var first = "\(summary.models) free model\(summary.models == 1 ? "" : "s") across "
+                + "\(summary.connections) connection\(summary.connections == 1 ? "" : "s")"
+            if let checked = summary.oldestCheck {
+                first += " · checked " + RelativeDateTimeFormatter().localizedString(for: checked, relativeTo: now)
+            }
+            sentences.append(first)
+        }
+        // Say which connections are left out and what would change that, instead of a count that
+        // looks like a bug: one sentence for the switches to turn on, one for providers without a rule.
+        let idle = FreeModelPool.nonContributing(in: registry)
+        func names(_ entries: [RegisteredKey]) -> String {
+            ListFormatter.localizedString(byJoining: entries.map(\.name))
+        }
+        var switches: [String] = []
+        if !idle.notOptedIn.isEmpty { switches.append("Use as fallback for \(names(idle.notOptedIn))") }
+        if !idle.needsFreeTier.isEmpty { switches.append("Free tier for \(names(idle.needsFreeTier))") }
+        if !switches.isEmpty {
+            sentences.append("Turn on " + switches.joined(separator: ", and ") + " in Manage connections")
+        }
+        if !idle.unsupported.isEmpty {
+            sentences.append("Lasso can't detect free models on \(names(idle.unsupported)) yet")
+        }
+        // A Free tier key that the selected model is billing: its "free" plan models would be billed too.
+        for id in FreeModelPool.billedConnections(in: registry, primary: primary).sorted() {
+            guard let entry = registry.key(withID: id) else { continue }
+            sentences.append("\(entry.name) is marked Free tier but your selected model there is paid-only, "
+                             + "so the key is billed")
+        }
+        return sentences.joined(separator: ". ") + "."
     }
 
     /// Ollama's server plumbing. Not a model-type section, so not an instance of the template — but it
@@ -1153,9 +1260,12 @@ struct SettingsView: View {
         guard let entry = draft.registry.key(withID: keyID) else { return }
         discoveringKeyIDs.insert(keyID)
         defer { discoveringKeyIDs.remove(keyID) }
-        let ids = await KeysRegistry.discoverModels(for: entry, apiKey: registryKeyValue(keyID))
+        let discovered = await KeysRegistry.discoverModels(for: entry, apiKey: registryKeyValue(keyID))
         guard let idx = draft.registry.entries.firstIndex(where: { $0.id == keyID }) else { return }
-        draft.registry.entries[idx].models = ids.map { RegistryModel(name: $0) }
+        // A failed fetch still empties the list here: in Settings, "no models yet" is how a bad key or
+        // URL shows itself. Only a successful one counts as a check for the free-model pool.
+        draft.registry.entries[idx].models = discovered ?? []
+        if discovered != nil { draft.registry.entries[idx].modelsCheckedAt = Date() }
         // Newly discovered models may satisfy a section that was empty; heal selections + status.
         for cap in ModelCapability.allCases { healSelection(cap) }
         refreshEmbeddingStatus()
@@ -1210,6 +1320,9 @@ struct SettingsView: View {
     private func modelPickerPanel(for capability: ModelCapability) -> some View {
         let groups = filteredGroups(for: capability)
         let selection = selectionBinding(capability).wrappedValue
+        // Free status as the pool judges it (provider rules, Free tier, a billed key), but describing the
+        // model: unlike the pool, it doesn't depend on the connection's "Use as fallback".
+        let badges = FreeModelPool.badges(in: draft.registry, primary: draftPrimaryRef)
 
         VStack(spacing: 0) {
             TextField("Search models", text: searchBinding(capability))
@@ -1236,8 +1349,9 @@ struct SettingsView: View {
                         ForEach(group.models) { model in
                             modelPickerItem(
                                 title: model.name,
-                                tag: model.tag,
-                                checked: isSelected(model.name, keyID: group.keyID, in: selection)) {
+                                tag: badges[ModelRef(keyID: group.keyID, model: model.name)] ?? model.tag,
+                                checked: isSelected(model.name, keyID: group.keyID, in: selection),
+                                onRemove: group.keyID.isEmpty ? { removeManualModel(model.name) } : nil) {
                                 selectModel(model.name, keyID: group.keyID, capability: capability)
                                 modelPickerOpenFor = nil
                             }
@@ -1265,30 +1379,46 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
+    /// `onRemove` is only passed for hand-typed models: they are the one kind of row the user can take
+    /// back out, since a discovered model comes and goes with its connection. The remove button is its
+    /// own button beside the row rather than inside it, so a click can't select and delete at once.
     private func modelPickerItem(title: String, tag: String = "", systemImage: String? = nil,
                                  checked: Bool = false, muted: Bool = false,
+                                 onRemove: (() -> Void)? = nil,
                                  action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: "checkmark")
-                    .font(.caption).foregroundStyle(.tint)
-                    .opacity(checked ? 1 : 0)
-                    .frame(width: 12)
-                if let systemImage { Image(systemName: systemImage).font(.caption).foregroundStyle(.secondary) }
-                Text(title)
-                    .foregroundStyle(muted ? .secondary : .primary)
-                    .lineLimit(1).truncationMode(.middle)
-                Spacer(minLength: 6)
-                if !tag.isEmpty {
-                    Text(tag).font(.caption2).foregroundStyle(.secondary)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(RoundedRectangle(cornerRadius: 4).fill(.secondary.opacity(0.15)))
+        HStack(spacing: 0) {
+            Button(action: action) {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark")
+                        .font(.caption).foregroundStyle(.tint)
+                        .opacity(checked ? 1 : 0)
+                        .frame(width: 12)
+                    if let systemImage { Image(systemName: systemImage).font(.caption).foregroundStyle(.secondary) }
+                    Text(title)
+                        .foregroundStyle(muted ? .secondary : .primary)
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 6)
+                    if !tag.isEmpty {
+                        Text(tag).font(.caption2).foregroundStyle(.secondary)
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(RoundedRectangle(cornerRadius: 4).fill(.secondary.opacity(0.15)))
+                    }
                 }
+                .contentShape(Rectangle())
+                .padding(.leading, 10).padding(.trailing, onRemove == nil ? 10 : 4).padding(.vertical, 5)
             }
-            .contentShape(Rectangle())
-            .padding(.horizontal, 10).padding(.vertical, 5)
+            .buttonStyle(.plain)
+
+            if let onRemove {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .padding(.trailing, 8).padding(.vertical, 5)
+                }
+                .buttonStyle(.plain)
+                .help("Remove \(title) from the list")
+            }
         }
-        .buttonStyle(.plain)
     }
 
     private func isSameAsLanguage(_ selection: ModelSelection) -> Bool {
@@ -1351,7 +1481,10 @@ struct SettingsView: View {
         field.placeholderString = "e.g. my-custom-model"
         alert.accessoryView = field
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+        // Trailing punctuation is a paste artefact, never part of a model id, and it would be sent
+        // to the provider verbatim.
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ",;."))
         guard !name.isEmpty else { return }
         // Union the card's capability with anything the name signals, so a manual "gpt-4o" also
         // surfaces in the Image card.
@@ -1366,10 +1499,22 @@ struct SettingsView: View {
         if capability == .embedding { refreshEmbeddingStatus() }
     }
 
+    /// Take a hand-typed model back out. It is the only removable kind: everything else belongs to a
+    /// connection. Any card pointing at it falls back the same way it would if a connection had dropped
+    /// the model on a refresh.
+    private func removeManualModel(_ name: String) {
+        draft.registry.manualModels.removeAll { $0.name == name }
+        for capability in ModelCapability.allCases { healSelection(capability) }
+        refreshEmbeddingStatus()
+    }
+
     private func refreshAllKeys() async {
         for entry in draft.registry.entries where entry.enabled {
             await discoverModels(forKeyID: entry.id)
         }
+        // Fresh lists are fresh evidence: a model benched as withdrawn, or a connection benched for a
+        // rejected key, gets another chance (timed cooldowns keep running).
+        intelligence.modelHealth.clearRefreshMarks()
     }
 
     // MARK: Model-aware Test connection
@@ -1819,6 +1964,8 @@ struct SettingsView: View {
         d.visionSelection = loadSelection("intelligence.keys.selection.vision") ?? .none
         d.embeddingSelection = loadSelection("intelligence.keys.selection.embedding") ?? .none
         d.langContext = UserDefaults.standard.integer(forKey: "intelligence.keys.language.context")
+        d.autoFallback = intelligence.autoFallbackEnabled
+        d.fallbackRaceAfter = intelligence.fallbackRaceAfterSeconds
         // Seed the in-memory key values from the Keychain (Draft never carries secrets).
         var keyVals: [String: String] = [:]
         for entry in d.registry.entries {
@@ -1930,22 +2077,31 @@ struct SettingsView: View {
         UserDefaults.standard.set(encodeSelection(draft.visionSelection), forKey: "intelligence.keys.selection.vision")
         UserDefaults.standard.set(encodeSelection(draft.embeddingSelection), forKey: "intelligence.keys.selection.embedding")
         UserDefaults.standard.set(draft.langContext, forKey: "intelligence.keys.language.context")
+        intelligence.autoFallbackEnabled = draft.autoFallback
+        intelligence.fallbackRaceAfterSeconds = draft.fallbackRaceAfter
 
-        // Effective language config → the single endpoint the coordinator drives.
-        if let lang = resolveRegistrySelection(draft.langSelection, capability: .language), let key = lang.key {
-            intelligence.openAIBaseURL = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Effective language config → the single endpoint the coordinator drives. A hand-typed model
+        // has no connection of its own: it rides on whichever endpoint is already configured, exactly
+        // as the chat switcher's "Manually added" group does. Requiring a connection here meant Save &
+        // Apply stored the choice and then kept sending requests to the previous model.
+        if let lang = resolveRegistrySelection(draft.langSelection, capability: .language) {
             intelligence.openAIModel = lang.model
-            // The connection's protocol travels with the flattened config, because that's what
-            // decides which transport `buildProvider()` constructs.
-            intelligence.openAIConnectionKind = key.kind
-            Keychain.set(registryKeyValues[key.id] ?? "", for: "openai.apiKey")
+            if let key = lang.key {
+                intelligence.openAIBaseURL = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                // The connection's protocol travels with the flattened config, because that's what
+                // decides which transport `buildProvider()` constructs.
+                intelligence.openAIConnectionKind = key.kind
+                Keychain.set(registryKeyValues[key.id] ?? "", for: "openai.apiKey")
+            }
         }
         // Effective image config (resolving "same as language" against the language selection).
-        if let vis = resolveRegistrySelection(draft.visionSelection, capability: .vision), let key = vis.key {
-            intelligence.visionOpenAIBaseURL = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let vis = resolveRegistrySelection(draft.visionSelection, capability: .vision) {
             intelligence.visionOpenAIModel = vis.model
-            intelligence.visionOpenAIConnectionKind = key.kind
-            Keychain.set(registryKeyValues[key.id] ?? "", for: "vision.openai.apiKey")
+            if let key = vis.key {
+                intelligence.visionOpenAIBaseURL = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                intelligence.visionOpenAIConnectionKind = key.kind
+                Keychain.set(registryKeyValues[key.id] ?? "", for: "vision.openai.apiKey")
+            }
         }
 
         for connector in Connectors.all {
@@ -1975,11 +2131,13 @@ struct SettingsView: View {
         intelligence.embeddingOllamaModel = draft.embeddingOllamaModel.trimmingCharacters(in: .whitespacesAndNewlines)
         intelligence.embeddingMLXModel = draft.embeddingMLXModel.trimmingCharacters(in: .whitespacesAndNewlines)
         // Effective embedding config (its own endpoint, resolved from the shared registry).
-        if let emb = resolveRegistrySelection(draft.embeddingSelection, capability: .embedding), let key = emb.key {
-            intelligence.embeddingOpenAIBaseURL = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let emb = resolveRegistrySelection(draft.embeddingSelection, capability: .embedding) {
             intelligence.embeddingOpenAIModel = emb.model.trimmingCharacters(in: .whitespacesAndNewlines)
-            intelligence.embeddingOpenAIConnectionKind = key.kind
-            Keychain.set(registryKeyValues[key.id] ?? "", for: "embedding.openai.apiKey")
+            if let key = emb.key {
+                intelligence.embeddingOpenAIBaseURL = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                intelligence.embeddingOpenAIConnectionKind = key.kind
+                Keychain.set(registryKeyValues[key.id] ?? "", for: "embedding.openai.apiKey")
+            }
         }
         if embeddingChanged { ChatController.shared.embeddingConfigChanged() }
         Task { await intelligence.refreshVisionAvailability() }   // re-grey vision features as needed

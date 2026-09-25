@@ -449,7 +449,13 @@ struct IdentifyView: View {
             let tSynth = Date()
             var firstToken: Date?
             do {
-                for try await delta in intelligence.respond(prompt: prompt, context: nil) {
+                // Identify has no attribution footer or status line for the answering model, so it
+                // never moves to another provider the user can't see: on-device only, logged.
+                let stream = intelligence.respond(prompt: prompt, context: nil, scope: .onDeviceOnly,
+                                                  onFallback: { notice in
+                    Log.intelligence.notice("Identify synthesis · \(notice.text, privacy: .public)")
+                })
+                for try await delta in stream {
                     if Task.isCancelled { break }
                     if firstToken == nil { firstToken = Date() }
                     summary += delta
@@ -717,7 +723,12 @@ private struct TextActionsView: View {
         cleaning = true
         cleanTask = Task {
             do {
-                for try await delta in intelligence.respond(prompt: Self.cleanupPrompt(text), context: nil) {
+                // No surface for a notice here either: on-device only, logged.
+                let stream = intelligence.respond(prompt: Self.cleanupPrompt(text), context: nil,
+                                                  scope: .onDeviceOnly, onFallback: { notice in
+                    Log.intelligence.notice("OCR cleanup · \(notice.text, privacy: .public)")
+                })
+                for try await delta in stream {
                     if Task.isCancelled { break }
                     cleaned += delta
                 }

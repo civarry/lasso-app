@@ -145,7 +145,13 @@ struct AskAIView: View {
             }
 
             do {
-                for try await delta in intelligence.respond(prompt: q, context: context) {
+                // The footer below names the answering model (attribution is set at its first token,
+                // so a fallback shows as the model that actually answered). `status` only shows before
+                // the first token, which is exactly when a notice arrives, so it has nothing to add.
+                let stream = intelligence.respond(prompt: q, context: context, onFallback: { notice in
+                    Log.intelligence.notice("Ask AI · \(notice.text, privacy: .public)")
+                })
+                for try await delta in stream {
                     if Task.isCancelled { break }
                     answer += delta
                 }

@@ -316,6 +316,8 @@ final class IntelligenceCoordinator {
         self.embeddingOpenAIConnectionKind = Self.storedKind(Self.embeddingKindKey)
         self.visionAnthropicBaseURL = defaults.string(forKey: "intelligence.vision.anthropic.baseURL") ?? "https://api.anthropic.com"
         self.visionAnthropicModel = defaults.string(forKey: "intelligence.vision.anthropic.model") ?? "claude-3-5-sonnet-latest"
+        self.autoFallbackEnabled = defaults.bool(forKey: Self.autoFallbackKey)
+        self.fallbackRaceAfterSeconds = defaults.object(forKey: Self.raceAfterKey) as? Int ?? 15
         // Vision engine: stored choice, else migrate from the legacy "Image model" override (a set
         // visionModel meant "use this local Ollama model"; empty meant "use the main/text model").
         if let raw = defaults.string(forKey: "intelligence.vision.engine"), let v = VisionEngine(rawValue: raw) {
@@ -358,6 +360,9 @@ final class IntelligenceCoordinator {
     /// `keyID` is "" for a hand-typed model in the "Manually added" group; its endpoint is then
     /// resolved by name, the same fallback the settings panel uses.
     func selectRegistryModel(keyID: String, model: String) {
+        // A new choice is a fresh start: whatever the old one kept doing is no longer this model's story.
+        primaryCircuit.reset()
+        routedAround = nil
         let registry = KeysRegistry.load()
         let entry = keyID.isEmpty ? registry.enabledKey(exposingModel: model)
                                   : registry.key(withID: keyID)
@@ -576,7 +581,7 @@ final class IntelligenceCoordinator {
 
     /// Best-effort context window from a model id when the endpoint doesn't report one — covers the
     /// common families so a custom gateway serving Claude/GPT/Llama isn't wrongly clamped to the default.
-    static func inferContextFromModelName(_ model: String) -> Int? {
+    nonisolated static func inferContextFromModelName(_ model: String) -> Int? {
         let m = model.lowercased()
         if m.contains("1m") { return 1_000_000 }
         if m.contains("gemini") { return 1_000_000 }
@@ -873,7 +878,8 @@ final class IntelligenceCoordinator {
     func noteOffDeviceUse() { usedOffDeviceThisSession = true }
 
     /// Record which provider actually served a request (drives the result-footer attribution and the
-    /// privacy badge). Called again after a failover so the UI reflects the model that truly answered.
+    /// privacy badge). Called at the answering provider's first token, so the UI names the model that
+    /// truly answered and never a fallback candidate that failed.
     private func setLastProvider(_ provider: IntelligenceProvider) {
         lastProviderName = provider.name
         lastProviderIsAppleOnDevice = provider.isAppleOnDevice
@@ -890,79 +896,273 @@ final class IntelligenceCoordinator {
         return onDevice
     }
 
-    /// Whether an error is worth retrying on the fallback: transient outages (rate limits, timeouts,
-    /// 5xx, network blips) — NOT bad keys, oversized prompts, or cancellation (retrying those just fails
-    /// again, or is the user's own doing). Errors surface as `IntelligenceError.server(msg)` (HTTP text)
-    /// or `URLError`, so we classify on both.
+    /// Whether an error is worth retrying on the on-device fallback: transient outages (rate limits,
+    /// timeouts, 5xx, network blips), NOT bad keys, oversized prompts, or cancellation (retrying those
+    /// just fails again, or is the user's own doing).
+    ///
+    /// One classifier for both fallbacks (`ModelFailure.classify`), reading the HTTP status first. The
+    /// old substring test here treated any message mentioning "api key" as a bad key, and every
+    /// OpenAI-compatible 5xx ("… Check the API key, base URL, and model.") and every Anthropic error
+    /// ("… Check the API key and model.") mentions it, so a 503 or 429 never failed over at all.
     static func isTransient(_ error: Error) -> Bool {
-        if error is CancellationError { return false }
-        if let urlError = error as? URLError {
-            switch urlError.code {
-            case .timedOut, .cannotConnectToHost, .cannotFindHost, .networkConnectionLost,
-                 .notConnectedToInternet, .dnsLookupFailed, .resourceUnavailable:
-                return true
-            default:
-                return false
-            }
-        }
-        let m = error.localizedDescription.lowercased()
-        // Explicit non-transient signals win (a rate-limit message never contains these).
-        if m.contains("401") || m.contains("403") || m.contains("api key") || m.contains("unauthor")
-            || m.contains("invalid") || m.contains("too large") || m.contains("cancel") {
-            return false
-        }
-        return m.contains("429") || m.contains("rate limit") || m.contains("timed out")
-            || m.contains("timeout") || m.contains("overloaded")
-            || m.contains("500") || m.contains("502") || m.contains("503") || m.contains("504")
+        [.rateLimited, .unavailable, .connectionDown].contains(ModelFailure.classify(error))
     }
 
-    /// Shared streaming core with **pre-first-token** failover. Resolves the active provider, streams via
-    /// `open`, and — if the stream throws a *transient* error **before any token was emitted** — retries
-    /// once on the on-device model (never cloud), prefixing a short honest note. Once tokens have
-    /// streamed we never swap mid-answer (that would splice two models); the error surfaces instead.
+    // MARK: - Free-model fallback
+
+    static let autoFallbackKey = "intelligence.fallback.freeModels"
+
+    /// Opt-in: retry a failed cloud request on a free model from the configured connections before the
+    /// on-device model. Off by default because it sends the conversation to a different provider.
+    var autoFallbackEnabled: Bool {
+        didSet { UserDefaults.standard.set(autoFallbackEnabled, forKey: Self.autoFallbackKey) }
+    }
+
+    static let raceAfterKey = "intelligence.fallback.raceAfterSeconds"
+    /// The choices Settings offers for racing a slow model; 0 = never.
+    static let raceAfterChoices = [0, 8, 15, 30, 60]
+
+    /// Seconds the selected cloud model may go without starting its answer before the best free model
+    /// races it (first to answer wins). 0 = never race. Only acts where the free pool is allowed.
+    var fallbackRaceAfterSeconds: Int {
+        didSet { UserDefaults.standard.set(fallbackRaceAfterSeconds, forKey: Self.raceAfterKey) }
+    }
+
+    let modelHealth = ModelHealth()
+
+    @ObservationIgnored
+    private(set) lazy var freeModelRefresher = FreeModelRefresher(
+        onRefreshed: { [weak self] in self?.modelHealth.clearRefreshMarks() })
+
+    @ObservationIgnored
+    private lazy var fallbackDriver = FallbackDriver(
+        health: modelHealth,
+        poolAllowed: { [weak self] primary in
+            guard let self else { return false }
+            // Read live on every attempt: local-only or the switch can change mid-request.
+            return FallbackPolicy.poolAllowed(
+                enabled: self.autoFallbackEnabled, localOnly: PrivacyMode.localOnly,
+                primaryIsLocal: FallbackPolicy.primaryIsLocal(providerIsLocal: primary.isLocal,
+                                                              preferred: self.effectivePreferred,
+                                                              baseURL: self.openAIBaseURL))
+        },
+        candidates: { [weak self] needs, tried in
+            guard let self else { return [] }
+            // Normal operation reads the cached registry; a stale one is re-checked for next time.
+            if self.freeModelRefresher.isStale { self.refreshFreeModelsInBackground() }
+            let registry = KeysRegistry.load()
+            return FreeModelPool.candidates(
+                in: registry, needs: needs, excluding: tried,
+                billed: FreeModelPool.billedConnections(in: registry, primary: self.activeModelRef),
+                isBenched: { self.modelHealth.isBenched($0) })
+        },
+        refreshInBackground: { [weak self] in self?.refreshFreeModelsInBackground() },
+        makeProvider: { candidate in Self.provider(for: candidate) },
+        lastResort: { [weak self] primary, needs in
+            guard let self else { return nil }
+            guard FallbackPolicy.onDeviceCanHold(needs) else {
+                Log.intelligence.notice("on-device skipped: ~\(needs.estimatedTokens, privacy: .public) tokens is past its window")
+                return nil
+            }
+            return await self.failoverProvider(from: primary).map {
+                // Only the on-device model comes back from here, and it needs to know why it is here.
+                ($0 as? OnDeviceProvider).map { device in
+                    var standIn = device
+                    standIn.standingInFor = primary.name
+                    return standIn as IntelligenceProvider
+                } ?? $0
+            }
+        },
+        raceAfter: { [weak self] in
+            guard let self, self.fallbackRaceAfterSeconds > 0 else { return nil }   // "Never" means never
+            // A model that has been losing on time lately is raced from the first moment, so the user
+            // stops paying the wait on every message while still getting their own model when it is
+            // ready in time.
+            if self.primaryCircuit.racesImmediately(primaryKey: self.activePrimaryKey) { return 0 }
+            return TimeInterval(self.fallbackRaceAfterSeconds)
+        })
+
+    /// An automatic re-check, rate-limited by the refresher. Never in local-only mode.
+    func refreshFreeModelsInBackground() {
+        guard !PrivacyMode.localOnly else { return }
+        Task { await freeModelRefresher.refreshIfDue() }
+    }
+
+    /// At launch: bring a day-old list up to date before the first request needs it. Only when the
+    /// feature is on, since it calls every connection's model list.
+    func refreshFreeModelsIfStale() {
+        guard autoFallbackEnabled, freeModelRefresher.isStale else { return }
+        refreshFreeModelsInBackground()
+    }
+
+    /// The model id the user selected, when it's a cloud model the pool could stand in for.
+    private var activePrimaryModelID: String? {
+        switch effectivePreferred {
+        case .openAICompatible: openAIModel
+        case .anthropic: anthropicModel
+        default: nil
+        }
+    }
+
+    /// Build the provider a pool candidate routes to, with its own connection's key, the shorter
+    /// candidate timeout, and no tool loop when its model list says it can't call tools.
+    static func provider(for candidate: FallbackCandidate,
+                         keyValue: (String) -> String = { Keychain.get($0) ?? "" }) -> IntelligenceProvider {
+        let key = keyValue(candidate.keychainAccount)
+        switch candidate.kind {
+        case .gemini:
+            return GeminiProvider(apiKey: key, model: candidate.model.name, displayName: candidate.connectionName,
+                                  requestTimeout: FallbackDriver.candidateTimeout)
+        case .openAICompatible:
+            let url = URL(string: candidate.baseURL) ?? URL(string: "https://api.openai.com/v1")!
+            return OpenAICompatibleProvider(baseURL: url, apiKey: key, model: candidate.model.name,
+                                            displayName: candidate.connectionName,
+                                            requestTimeout: FallbackDriver.candidateTimeout,
+                                            supportsToolCalls: candidate.toolSupport != false)
+        }
+    }
+
+    let primaryCircuit = PrimaryCircuit()
+
+    /// Set while the selected model is being routed around after repeated misses; drives the Chat
+    /// header's notice. Its buttons call `switchToSubstitute` / `retrySelectedModelNow`.
+    private(set) var routedAround: RoutedAround?
+
+    /// Identifies the selected model across requests, so the circuit resets by itself when the user
+    /// picks something else. Not the display name: that changes with a connection's rename.
+    var activePrimaryKey: String {
+        let model = activeModelRef.map { "\($0.keyID)\t\($0.model)" } ?? (activePrimaryModelID ?? "")
+        return "\(effectivePreferred.rawValue)|\(model)"
+    }
+
+    /// Make the stand-in the user's own choice. Only for a registry model (a pool candidate always is).
+    func switchToSubstitute() {
+        guard let routed = routedAround, let ref = routed.substitute?.ref else { return }
+        selectRegistryModel(keyID: ref.keyID, model: ref.model)
+        primaryCircuit.reset()
+        routedAround = nil
+    }
+
+    /// "Try again" / "Stop racing": the next request goes to the selected model on its own terms. The
+    /// bar goes away now rather than after that request, so the button visibly does something; if the
+    /// model misses again, the next outcome brings it back.
+    func retrySelectedModelNow() {
+        primaryCircuit.retryNow()
+        routedAround = nil
+    }
+
+    /// The stand-in to use right now, if the circuit is open and it is still usable for **this** request.
+    /// Skipping the model the user chose must not also skip the checks that protect the answer: a
+    /// stand-in still has to be free, opted in, healthy, and able to serve this particular request
+    /// (images, tools, context, size). When nothing qualifies, nil sends the request down the normal
+    /// path, where the selected model is tried and the pool's own filters apply.
+    private func usableSubstitute(_ routed: RoutedAround, needs: FallbackNeeds) async -> (provider: IntelligenceProvider, ref: ModelRef?)? {
+        guard let candidate = routed.substitute else {
+            guard FallbackPolicy.onDeviceCanStandIn(needs), await onDevice.checkAvailability() else { return nil }
+            var standIn = onDevice
+            standIn.standingInFor = routed.primaryName
+            return (standIn, nil)
+        }
+        let registry = KeysRegistry.load()
+        guard let fresh = FreeModelPool.substitute(
+            candidate.ref, in: registry, needs: needs,
+            billed: FreeModelPool.billedConnections(in: registry, primary: activeModelRef),
+            isBenched: { self.modelHealth.isBenched($0) }) else { return nil }
+        return (Self.provider(for: fresh), fresh.ref)
+    }
+
+    /// The registry model behind the active language selection, when there is one.
+    var activeModelRef: ModelRef? {
+        guard effectivePreferred == .openAICompatible,
+              let stored = UserDefaults.standard.string(forKey: Self.languageSelectionKey),
+              let rest = stored.dropPrefixIfPresent("model:") else { return nil }
+        let parts = rest.components(separatedBy: "\t")
+        return parts.count == 2 ? ModelRef(keyID: parts[0], model: parts[1]) : nil
+    }
+
+    /// Shared streaming core with **pre-first-token** failover (see `FallbackDriver`): a request that
+    /// fails before its first token moves to a free model (when enabled and allowed), then on-device.
+    /// Once tokens have streamed we never swap mid-answer (that would splice two models).
+    ///
+    /// Attribution (`lastProvider…`) names the selected model as soon as it is tried, so the footer never
+    /// shows a previous request's model, and is replaced at the answering model's first token if a
+    /// fallback answers. A candidate (or the on-device last resort) is named only at its first token:
+    /// one that fails must never appear as the one that answered. The privacy flag is set as soon as a
+    /// request leaves for a cloud provider, answered or not.
     private func streamWithFailover(
-        label: String,
+        label: String, needs: FallbackNeeds, scope: FallbackScope,
+        onFallback: (@MainActor (FallbackNotice) -> Void)?,
         _ open: @escaping @Sendable (IntelligenceProvider) -> AsyncThrowingStream<String, Error>
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task { [weak self] in
                 guard let self else { continuation.finish(); return }
                 let t0 = Date()
-                var provider = await self.activeProvider()
-                self.setLastProvider(provider)
+                let provider = await self.activeProvider()
                 Log.intelligence.notice("\(label, privacy: .public) · provider=\(provider.name, privacy: .public) local=\(provider.isLocal, privacy: .public) (+\(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public)ms)")
-                var didFailover = false
-                while true {
-                    var emitted = false
-                    do {
-                        for try await delta in open(provider) {
-                            emitted = true
-                            continuation.yield(delta)
-                        }
-                        continuation.finish()
-                        return
-                    } catch {
-                        if !emitted, !didFailover, Self.isTransient(error),
-                           let fallback = await self.failoverProvider(from: provider) {
-                            didFailover = true
-                            Log.intelligence.notice("\(label, privacy: .public) · \(provider.name, privacy: .public) failed transiently (\(error.localizedDescription, privacy: .public)); failing over to \(fallback.name, privacy: .public)")
-                            continuation.yield("_(\(provider.name) was unavailable — answered on-device with \(fallback.name).)_\n\n")
-                            provider = fallback
-                            self.setLastProvider(fallback)
-                            continue
-                        }
-                        continuation.finish(throwing: error)
-                        return
-                    }
+
+                // A selected model that keeps missing is skipped for a while: the request goes straight
+                // to what last answered, instead of waiting out the race on every message. Only where
+                // the pool is allowed, and only while the stand-in is still usable.
+                let primaryKey = self.activePrimaryKey
+                let primaryName = provider.name
+                let counts = scope == .full && self.fallbackDriver.poolAllowed(provider)
+                var selected = provider
+                var selectedRef = self.activeModelRef
+                var routedFrom: String?
+                if counts, let routed = self.primaryCircuit.route(primaryKey: primaryKey),
+                   let substitute = await self.usableSubstitute(routed, needs: needs) {
+                    selected = substitute.provider
+                    selectedRef = substitute.ref
+                    routedFrom = provider.name
+                    Log.intelligence.notice("\(label, privacy: .public) · routing around \(provider.name, privacy: .public); using \(substitute.provider.name, privacy: .public)")
+                }
+                let wasRouted = routedFrom != nil
+                let stream = self.fallbackDriver.stream(
+                    primary: selected, primaryRef: selectedRef, needs: needs, label: label,
+                    scope: scope,
+                    routedFrom: routedFrom,
+                    exclude: wasRouted ? Set([self.activeModelRef].compactMap { $0 }) : [],
+                    onOutcome: { [weak self] outcome, answeredBy in
+                        guard let self, counts else { return }
+                        self.primaryCircuit.record(primaryKey: primaryKey, primaryName: primaryName,
+                                                   outcome: outcome, answeredBy: answeredBy, routed: wasRouted)
+                        self.routedAround = self.primaryCircuit.routed
+                    },
+                    onAttempt: { [weak self] provider, isSelected in
+                        guard let self else { return }
+                        if !provider.isLocal { self.usedOffDeviceThisSession = true }
+                        if isSelected { self.setLastProvider(provider) }
+                    },
+                    onServe: { [weak self] in self?.setLastProvider($0) },
+                    onFallback: { notice in
+                        Log.intelligence.notice("\(label, privacy: .public) · \(notice.text, privacy: .public)")
+                        onFallback?(notice)
+                    },
+                    open: open)
+                do {
+                    for try await delta in stream { continuation.yield(delta) }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
         }
     }
 
-    /// Stream a response from the active provider.
-    func respond(prompt: String, context: String?) -> AsyncThrowingStream<String, Error> {
-        streamWithFailover(label: "respond(prompt)") { $0.respond(prompt: prompt, context: context) }
+    /// Stream a response from the active provider. The stream is only ever the answering model's output;
+    /// if a fallback answered, `onFallback` says so (the result footer's provider name reflects it too).
+    ///
+    /// `scope` limits the fallback: `.none` for background work the user doesn't see (the summarizer),
+    /// which mustn't send their conversation to a provider they didn't pick.
+    func respond(prompt: String, context: String?, scope: FallbackScope = .full,
+                 onFallback: (@MainActor (FallbackNotice) -> Void)? = nil) -> AsyncThrowingStream<String, Error> {
+        streamWithFailover(label: "respond(prompt)",
+                           needs: FallbackNeeds(prompt: prompt, context: context, primaryModel: activePrimaryModelID),
+                           scope: scope, onFallback: onFallback) {
+            $0.respond(prompt: prompt, context: context)
+        }
     }
 
     /// Whether the active **text** provider supports native tool calling — so the Chat panel knows to
@@ -986,11 +1186,20 @@ final class IntelligenceCoordinator {
     /// Stream a multi-turn response with tools the model may call (the Chat panel's grounded path).
     /// The resolved provider runs the tool loop; if it turns out not to support tools, it transparently
     /// answers without them.
-    func respond(messages: [ChatTurn], tools: [ChatTool],
+    ///
+    /// `toolNeed` tells the free-model fallback whether a model without a tool loop may stand in:
+    /// `.required` when the turn depends on the tool (the user asked for a search), `.preferred` when
+    /// the model merely may use it.
+    func respond(messages: [ChatTurn], tools: [ChatTool], toolNeed: ToolNeed = .preferred,
+                 scope: FallbackScope = .full,
+                 onFallback: (@MainActor (FallbackNotice) -> Void)? = nil,
                  execute: @escaping ToolExecutor) -> AsyncThrowingStream<String, Error> {
-        // The failover target (on-device) has no tool loop, so `supportsTools` is re-checked per
-        // provider: the fallback transparently answers without tools.
-        streamWithFailover(label: "respond(tools)") { provider in
+        // `supportsTools` is re-checked per provider: the on-device last resort (reached only when the
+        // tool is optional) and a candidate known unable to call tools answer without them.
+        streamWithFailover(label: "respond(tools)",
+                           needs: FallbackNeeds(messages: messages, tools: toolNeed,
+                                                primaryModel: activePrimaryModelID),
+                           scope: scope, onFallback: onFallback) { provider in
             provider.supportsTools
                 ? provider.respond(messages: messages, tools: tools, execute: execute)
                 : provider.respond(messages: messages)
@@ -998,8 +1207,13 @@ final class IntelligenceCoordinator {
     }
 
     /// Stream a response to a multi-turn conversation from the active provider (the Chat panel).
-    func respond(messages: [ChatTurn]) -> AsyncThrowingStream<String, Error> {
-        streamWithFailover(label: "respond(messages)") { $0.respond(messages: messages) }
+    func respond(messages: [ChatTurn], scope: FallbackScope = .full,
+                 onFallback: (@MainActor (FallbackNotice) -> Void)? = nil) -> AsyncThrowingStream<String, Error> {
+        streamWithFailover(label: "respond(messages)",
+                           needs: FallbackNeeds(messages: messages, tools: .none, primaryModel: activePrimaryModelID),
+                           scope: scope, onFallback: onFallback) {
+            $0.respond(messages: messages)
+        }
     }
 
     /// Whether the active **text** model can natively accept an image in a chat message. Drives the

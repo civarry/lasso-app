@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await OllamaEndpoint.autodetect()
             }
             await IntelligenceCoordinator.shared.refreshVisionAvailability()
+            IntelligenceCoordinator.shared.refreshFreeModelsIfStale()
         }
 
         Log.app.notice("Lasso launched. Capture hotkey active.")

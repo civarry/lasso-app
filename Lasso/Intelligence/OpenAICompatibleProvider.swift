@@ -8,13 +8,20 @@ struct OpenAICompatibleProvider: IntelligenceProvider {
     let apiKey: String
     let model: String
     let displayName: String   // "OpenAI" / "Groq" / "Custom" …
+    /// Seconds a streaming request may go without data before it fails (`URLRequest.timeoutInterval`).
+    /// The selected model keeps URLSession's usual 60; a free-model fallback candidate gets less
+    /// (`FallbackDriver.candidateTimeout`), so one silent stand-in can't eat the whole fallback.
+    var requestTimeout: TimeInterval = 60
+    /// Whether to run the tool loop. On for the selected model (the endpoint is assumed to support it,
+    /// as before); off for a fallback candidate whose model list says it can't call tools, which then
+    /// answers without them instead of rejecting the request.
+    var supportsToolCalls: Bool = true
 
     var name: String { "\(displayName) · \(model)" }
     let isAppleOnDevice = false
-    var isLocal: Bool {
-        guard let host = baseURL.host?.lowercased() else { return false }
-        return host == "localhost" || host == "127.0.0.1" || host == "::1"
-    }
+    /// This Mac only, the same test the connection form and the registry use (`KeysRegistry.isLocalURL`),
+    /// so the privacy badge and the fallback policy never disagree about a 0.0.0.0 server.
+    var isLocal: Bool { KeysRegistry.isLocalURL(baseURL.absoluteString) }
 
     private static let systemPrompt = """
     You help the user understand and act on text they selected on their screen. Be concise and \
@@ -55,22 +62,21 @@ struct OpenAICompatibleProvider: IntelligenceProvider {
         return chatModels(models.compactMap { $0["id"] as? String })
     }
 
-    /// Discover *every* model id the endpoint advertises via `GET /models`, unfiltered — for the
+    /// Discover *every* model the endpoint advertises via `GET /models`, unfiltered — for the
     /// omni-router registry, which tags each model's capabilities (language / vision / embedding)
-    /// itself instead of dropping non-chat models. Empty on any failure.
-    static func discoverModels(baseURL: URL, apiKey: String) async -> [String] {
+    /// itself instead of dropping non-chat models, and keeps any pricing/modality metadata the
+    /// endpoint sends. nil on any failure.
+    static func discoverModels(baseURL: URL, apiKey: String) async -> [RegistryModel]? {
         var trimmed = baseURL.absoluteString
         while trimmed.hasSuffix("/") { trimmed.removeLast() }
         if trimmed.hasSuffix("/chat/completions") { trimmed.removeLast("/chat/completions".count) }
-        guard let url = URL(string: trimmed + "/models") else { return [] }
+        guard let url = URL(string: trimmed + "/models") else { return nil }
         var request = URLRequest(url: url)
         request.timeoutInterval = 10
         if !apiKey.isEmpty { request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
         guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let models = json["data"] as? [[String: Any]] else { return [] }
-        return models.compactMap { $0["id"] as? String }.sorted()
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return KeysRegistry.parseOpenAIModelList(data)
     }
 
     /// Drop obvious non-chat models (embeddings, audio, image, moderation) so the picker stays useful.
@@ -81,6 +87,36 @@ struct OpenAICompatibleProvider: IntelligenceProvider {
             let lower = id.lowercased()
             return !exclude.contains { lower.contains($0) }
         }.sorted()
+    }
+
+    /// OpenRouter (and some gateways) report an upstream failure *inside* a 200 stream:
+    /// `{"choices":[],"error":{"code":502,"message":"Upstream error from Nvidia: …overloaded"}}` (seen
+    /// live). Ignored, the stream just ends empty: no answer, and no error for the fallback to act on.
+    /// Surfaced with its status code, so it's classified like the same status on the response itself.
+    static func streamError(in json: [String: Any], displayName: String) -> IntelligenceError? {
+        guard let error = json["error"] as? [String: Any] else { return nil }
+        let code = (error["code"] as? Int) ?? Int(error["code"] as? String ?? "")
+        let message = error["message"] as? String ?? "Upstream error."
+        return .server("\(displayName) HTTP \(code.map(String.init) ?? "error") in stream. \(message)")
+    }
+
+    /// The provider's own explanation from an error response body (`{"error":{"message":…}}`), read
+    /// only up to a few KB. It is what distinguishes, say, Groq's tokens-per-minute 413 (a rate limit)
+    /// from a request that is simply too large, so it's appended to the error rather than dropped.
+    static func errorDetail(from bytes: URLSession.AsyncBytes) async -> String? {
+        var data = Data()
+        do {
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count >= 4_096 { break }
+            }
+        } catch {
+            return nil
+        }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let message = (json["error"] as? [String: Any])?["message"] as? String ?? json["error"] as? String
+        guard let message, !message.isEmpty else { return nil }
+        return String(message.prefix(300))
     }
 
     static func hint(for code: Int) -> String {
@@ -126,7 +162,7 @@ struct OpenAICompatibleProvider: IntelligenceProvider {
 
     // MARK: - Tool calling (industry-standard function calling)
 
-    var supportsTools: Bool { true }
+    var supportsTools: Bool { supportsToolCalls }
 
     /// Build the wire `messages` array (system + turns, with multimodal content for image turns).
     private func wireMessages(_ messages: [ChatTurn]) -> [[String: Any]] {
@@ -162,15 +198,21 @@ struct OpenAICompatibleProvider: IntelligenceProvider {
                          "function": ["name": $0.name, "description": $0.description,
                                       "parameters": $0.jsonSchema]]
                     }
+                    let toolNames = Set(tools.map(\.name))
                     // Loop: stream a completion; if the model called tools, run them, append the
                     // results, and stream again. Final answer (no tool calls) streams to the user.
                     for round in 0..<maxToolRounds {
                         // On the last allowed round, drop tools so the model must answer.
                         let offerTools = round < maxToolRounds - 1
                         let calls = try await self.streamCompletion(
-                            messages: wire, tools: offerTools ? toolsWire : [],
+                            messages: wire, tools: offerTools ? toolsWire : [], toolNames: toolNames,
                             continuation: continuation)
                         guard !calls.isEmpty else { continuation.finish(); return }
+                        // Tools were withdrawn and the model still only wrote a call: there is no answer.
+                        // Say so, rather than finishing with an empty reply.
+                        guard offerTools else {
+                            throw IntelligenceError.server("\(self.displayName) kept calling tools instead of answering.")
+                        }
 
                         // Append the assistant's tool-call message, then each tool result.
                         wire.append([
@@ -199,7 +241,7 @@ struct OpenAICompatibleProvider: IntelligenceProvider {
 
     /// Stream one chat completion: yield text deltas live, and assemble any `tool_calls` deltas.
     /// Returns the assembled tool calls (empty when the model answered directly).
-    private func streamCompletion(messages: [[String: Any]], tools: [[String: Any]],
+    private func streamCompletion(messages: [[String: Any]], tools: [[String: Any]], toolNames: Set<String>,
                                   continuation: AsyncThrowingStream<String, Error>.Continuation)
         async throws -> [AssembledToolCall] {
         var bodyDict: [String: Any] = ["model": model, "stream": true, "messages": messages]
@@ -212,26 +254,33 @@ struct OpenAICompatibleProvider: IntelligenceProvider {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if !apiKey.isEmpty { request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
         request.httpBody = body
+        request.timeoutInterval = requestTimeout
 
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let detail = await Self.errorDetail(from: bytes).map { " \($0)" } ?? ""
             throw IntelligenceError.server(
-                "\(displayName) HTTP \(code) at \(request.url?.absoluteString ?? "?"). " + Self.hint(for: code))
+                "\(displayName) HTTP \(code) at \(request.url?.absoluteString ?? "?"). " + Self.hint(for: code) + detail)
         }
 
         var partials: [Int: AssembledToolCall] = [:]
+        // Some models write the call into the text instead of `tool_calls`, including on the round where
+        // tools are withdrawn, so the markup is always kept out of the reply.
+        var textCalls = TextToolCallExtractor(toolNames: toolNames)
         for try await line in bytes.lines {
             guard line.hasPrefix("data:") else { continue }
             let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
             if payload == "[DONE]" { break }
             guard let data = payload.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let choice = (json["choices"] as? [[String: Any]])?.first,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            if let error = Self.streamError(in: json, displayName: displayName) { throw error }
+            guard let choice = (json["choices"] as? [[String: Any]])?.first,
                   let delta = choice["delta"] as? [String: Any] else { continue }
 
             if let content = delta["content"] as? String, !content.isEmpty {
-                continuation.yield(content)
+                let visible = toolNames.isEmpty ? content : textCalls.consume(content)
+                if !visible.isEmpty { continuation.yield(visible) }
             }
             // Assemble streamed tool_calls by index (id/name arrive once; arguments stream in pieces).
             if let toolCalls = delta["tool_calls"] as? [[String: Any]] {
@@ -247,10 +296,13 @@ struct OpenAICompatibleProvider: IntelligenceProvider {
                 }
             }
         }
-        return partials.sorted { $0.key < $1.key }.map(\.value).filter { !$0.name.isEmpty }
+        let structured = partials.sorted { $0.key < $1.key }.map(\.value).filter { !$0.name.isEmpty }
+        let (tail, written) = textCalls.finish()
+        if !tail.isEmpty { continuation.yield(tail) }
+        return structured.isEmpty ? written : structured
     }
 
-    struct AssembledToolCall {
+    struct AssembledToolCall: Equatable {
         var id = ""
         var name = ""
         var argumentsJSON = ""
@@ -330,21 +382,25 @@ struct OpenAICompatibleProvider: IntelligenceProvider {
                         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
                     }
                     request.httpBody = body
+                    request.timeoutInterval = requestTimeout
 
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
                     guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                         let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                        let detail = await Self.errorDetail(from: bytes).map { " \($0)" } ?? ""
                         throw IntelligenceError.server(
                             "\(displayName) HTTP \(code) at \(request.url?.absoluteString ?? "?"). "
-                            + Self.hint(for: code))
+                            + Self.hint(for: code) + detail)
                     }
                     let decoder = JSONDecoder()
                     for try await line in bytes.lines {
                         guard line.hasPrefix("data:") else { continue }
                         let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
                         if payload == "[DONE]" { break }
-                        guard let data = payload.data(using: .utf8),
-                              let chunk = try? decoder.decode(ChatChunk.self, from: data),
+                        guard let data = payload.data(using: .utf8) else { continue }
+                        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                           let error = Self.streamError(in: json, displayName: displayName) { throw error }
+                        guard let chunk = try? decoder.decode(ChatChunk.self, from: data),
                               let delta = chunk.choices.first?.delta.content, !delta.isEmpty else { continue }
                         continuation.yield(delta)
                     }
@@ -357,6 +413,107 @@ struct OpenAICompatibleProvider: IntelligenceProvider {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+}
+
+/// Some models, when offered tools, write the call into the answer text instead of the API's
+/// `tool_calls` field. Seen live on OpenRouter's `nvidia/nemotron-3-super-120b-a12b:free`:
+///
+///     <tool_call>
+///     <function=web_search>
+///     <parameter=query>
+///     2025 Formula 1 most recent race winner
+///     </parameter>
+///     </function>
+///     </tool_call>
+///
+/// Left alone, that markup lands in the chat reply and the search never runs. This holds back anything
+/// that could be the start of such a block, turns complete blocks for an offered tool into real calls,
+/// and releases everything else as text. The JSON form (`<tool_call>{"name":…,"arguments":{…}}`) is
+/// handled too.
+struct TextToolCallExtractor {
+    private static let open = "<tool_call>"
+    private static let close = "</tool_call>"
+
+    let toolNames: Set<String>
+    private var held = ""
+    private var calls: [OpenAICompatibleProvider.AssembledToolCall] = []
+
+    init(toolNames: Set<String>) {
+        self.toolNames = toolNames
+    }
+
+    /// Feed a content delta; returns the part that is safe to show now.
+    mutating func consume(_ delta: String) -> String {
+        held += delta
+        var visible = ""
+        while true {
+            guard let start = held.range(of: Self.open) else {
+                // Keep a trailing fragment that could still become "<tool_call>".
+                let keep = Self.partialOpenSuffixLength(held)
+                visible += held.dropLast(keep)
+                held = String(held.suffix(keep))
+                return visible
+            }
+            visible += held[..<start.lowerBound]
+            guard let end = held.range(of: Self.close, range: start.upperBound..<held.endIndex) else {
+                held = String(held[start.lowerBound...])
+                return visible
+            }
+            let block = String(held[start.lowerBound..<end.upperBound])
+            if let call = parse(String(held[start.upperBound..<end.lowerBound])) {
+                calls.append(call)
+                // The line break that followed the block was part of the markup, not the answer.
+                held = String(held[end.upperBound...].drop(while: \.isWhitespace))
+            } else {
+                visible += block
+                held = String(held[end.upperBound...])
+            }
+        }
+    }
+
+    /// End of stream: whatever is still held (an unclosed block, a stray "<") and the calls found.
+    mutating func finish() -> (text: String, calls: [OpenAICompatibleProvider.AssembledToolCall]) {
+        var text = held
+        if held.hasPrefix(Self.open), let call = parse(String(held.dropFirst(Self.open.count))) {
+            calls.append(call)
+            text = ""
+        }
+        held = ""
+        let trimmed = calls.isEmpty ? text : text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed, calls)
+    }
+
+    private static func partialOpenSuffixLength(_ text: String) -> Int {
+        for length in stride(from: min(open.count - 1, text.count), to: 0, by: -1)
+        where open.hasPrefix(String(text.suffix(length))) {
+            return length
+        }
+        return 0
+    }
+
+    private func parse(_ body: String) -> OpenAICompatibleProvider.AssembledToolCall? {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        var name: String?
+        var arguments: [String: Any] = [:]
+        if trimmed.hasPrefix("{"), let data = trimmed.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            name = json["name"] as? String
+            arguments = (json["arguments"] as? [String: Any]) ?? (json["parameters"] as? [String: Any]) ?? [:]
+        } else if let fn = trimmed.range(of: #"<function=([^>]+)>"#, options: .regularExpression) {
+            name = String(trimmed[fn].dropFirst("<function=".count).dropLast())
+            let pattern = try? NSRegularExpression(pattern: #"<parameter=([^>]+)>(.*?)</parameter>"#,
+                                                   options: [.dotMatchesLineSeparators])
+            let ns = trimmed as NSString
+            for match in pattern?.matches(in: trimmed, range: NSRange(location: 0, length: ns.length)) ?? [] {
+                arguments[ns.substring(with: match.range(at: 1))] =
+                    ns.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        guard let name, toolNames.contains(name),
+              let data = try? JSONSerialization.data(withJSONObject: arguments),
+              let argumentsJSON = String(data: data, encoding: .utf8) else { return nil }
+        return .init(id: "text_call_\(calls.count + 1)", name: name, argumentsJSON: argumentsJSON)
     }
 }
 

@@ -19,6 +19,9 @@ struct ConnectionsSheet: View {
     /// Selections may dangle once a connection is removed or repointed.
     var onChanged: () -> Void
     var dismiss: () -> Void
+    /// The selected language model, so a connection proven billed (`FreeModelPool.billedConnections`)
+    /// doesn't advertise free models the picker no longer tags.
+    var primary: ModelRef? = nil
 
     private enum Editor: Equatable {
         case none
@@ -32,6 +35,8 @@ struct ConnectionsSheet: View {
     @State private var url = ""
     @State private var secret = ""
     @State private var requiresKey = true
+    @State private var freeTier = false
+    @State private var useForFallback = false
     @State private var removing: RegisteredKey?
 
     var body: some View {
@@ -132,7 +137,9 @@ struct ConnectionsSheet: View {
         if discovering.contains(entry.id) { return "\(endpoint) · discovering models…" }
         let count = entry.models.count
         let models = count == 0 ? "no models yet" : "\(count) model\(count == 1 ? "" : "s")"
-        return "\(endpoint) · \(models)"
+        // What the connection serves, whether or not it's used as a fallback.
+        let free = FreeModelPool.badges(in: registry, primary: primary).keys.filter { $0.keyID == entry.id }.count
+        return "\(endpoint) · \(models)" + (free > 0 ? " · \(free) free" : "")
     }
 
     // MARK: Add / edit form
@@ -195,6 +202,23 @@ struct ConnectionsSheet: View {
                             .settingsFieldWidth()
                     }
                 }
+                // Only for providers with a documented free plan the API can't reveal. OpenRouter prices
+                // every model itself, a server on this Mac is free anyway, and an unknown provider has
+                // no rule for the switch to unlock.
+                if let provider = FreeTierProvider.identify(kind: kind, baseURL: url), provider.hasFreePlanSwitch {
+                    SettingsRow("Free tier", caption: "Turn on if this key uses \(provider.displayName)'s free "
+                                + "plan. Lasso then uses the models \(provider.displayName) offers on that plan "
+                                + "as fallbacks. \(provider.displayName) doesn't report the plan, so Lasso "
+                                + "can't check it.") {
+                        SettingsSwitch(title: "", isOn: $freeTier)
+                    }
+                }
+                // Every kind, a server on this Mac included: a fallback sends the user's conversation
+                // somewhere they didn't pick for this request, so each destination is their call.
+                SettingsRow("Use as fallback", caption: "Lets Lasso send a request here when your model is "
+                            + "unavailable. Only models Lasso can confirm are free are used.") {
+                    SettingsSwitch(title: "", isOn: $useForFallback)
+                }
             }
 
             HStack(spacing: 8) {
@@ -251,7 +275,7 @@ struct ConnectionsSheet: View {
 
     private func beginAdding() {
         kind = .openAICompatible
-        name = ""; url = ""; secret = ""; requiresKey = true
+        name = ""; url = ""; secret = ""; requiresKey = true; freeTier = false; useForFallback = false
         editor = .adding
     }
 
@@ -260,6 +284,8 @@ struct ConnectionsSheet: View {
         name = entry.name
         url = entry.baseURL
         requiresKey = !entry.keyNotRequired
+        freeTier = entry.freeTier
+        useForFallback = entry.useForFallback
         secret = keyValues[entry.id] ?? ""
         editor = .editing(entry.id)
     }
@@ -281,6 +307,8 @@ struct ConnectionsSheet: View {
             registry.entries[index].baseURL = trimmedURL
             registry.entries[index].keyNotRequired = !needsKey
             registry.entries[index].kind = kind
+            registry.entries[index].freeTier = savedFreeTier
+            registry.entries[index].useForFallback = useForFallback
             keyValues[id] = needsKey ? secret : ""
             editor = .none
             onChanged()
@@ -289,12 +317,24 @@ struct ConnectionsSheet: View {
         }
 
         let entry = RegisteredKey(name: trimmedName, baseURL: trimmedURL,
-                                  keyNotRequired: !needsKey, enabled: true, kind: kind)
+                                  keyNotRequired: !needsKey, enabled: true, kind: kind,
+                                  freeTier: savedFreeTier, useForFallback: useForFallback)
         registry.entries.append(entry)
         keyValues[entry.id] = needsKey ? secret : ""
         editor = .none
         onChanged()
         discover(entry.id)
+    }
+
+    /// The switch only means something while it's shown. Repointed from Groq to a provider without a
+    /// free-plan rule, a stale "on" would come back to life if the URL were ever pointed at such a
+    /// provider again, so it's saved off.
+    private var savedFreeTier: Bool {
+        Self.freeTierToSave(kind: kind, baseURL: url, switchOn: freeTier)
+    }
+
+    static func freeTierToSave(kind: ConnectionKind, baseURL: String, switchOn: Bool) -> Bool {
+        switchOn && FreeTierProvider.identify(kind: kind, baseURL: baseURL)?.hasFreePlanSwitch == true
     }
 
     private func remove(_ entry: RegisteredKey) {

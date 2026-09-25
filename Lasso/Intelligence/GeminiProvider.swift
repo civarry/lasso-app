@@ -70,6 +70,29 @@ enum GeminiAPI {
         }.sorted()
     }
 
+    /// The same list as `availableModels`, as registry entries carrying the input limit Gemini
+    /// reports. Gemini's list carries no pricing; `FreeTierRules` applies Google's documented free
+    /// plan afterwards. nil on any failure.
+    static func discoverModels(apiKey: String) async -> [RegistryModel]? {
+        guard !apiKey.isEmpty, let url = URL(string: "\(baseURL)/models?pageSize=200") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = json["models"] as? [[String: Any]] else { return nil }
+        let usable = Set(["generateContent", "embedContent", "batchEmbedContents"])
+        return models.compactMap { entry -> RegistryModel? in
+            guard let name = entry["name"] as? String else { return nil }
+            let methods = Set(entry["supportedGenerationMethods"] as? [String] ?? [])
+            guard !methods.isDisjoint(with: usable) else { return nil }
+            var model = RegistryModel(name: name)
+            if let limit = entry["inputTokenLimit"] as? Int, limit > 0 { model.contextTokens = limit }
+            return model
+        }.sorted { $0.name < $1.name }
+    }
+
     /// Split `ChatTurn`s into Gemini's shape: a top-level system instruction plus `contents` whose
     /// roles are `user` / `model`.
     static func wire(_ messages: [ChatTurn], fallbackSystem: String) -> (system: String, contents: [[String: Any]]) {
@@ -105,6 +128,9 @@ struct GeminiProvider: IntelligenceProvider {
     /// The connection's friendly name, so errors and the privacy badge name the endpoint the user
     /// configured rather than a generic "Gemini".
     var displayName: String = "Google Gemini"
+    /// Seconds the stream may go without data before it fails. Shorter for a free-model fallback
+    /// candidate (`FallbackDriver.candidateTimeout`) than for the selected model.
+    var requestTimeout: TimeInterval = 60
 
     var name: String { "\(displayName) · \(GeminiAPI.bareModelID(model))" }
     let isAppleOnDevice = false
@@ -175,6 +201,7 @@ struct GeminiProvider: IntelligenceProvider {
         let url = GeminiAPI.endpoint(model: model, method: "streamGenerateContent", query: "?alt=sse")
         let key = apiKey
         let label = displayName
+        let timeout = requestTimeout
 
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -182,7 +209,7 @@ struct GeminiProvider: IntelligenceProvider {
                     guard let body, let url else {
                         throw IntelligenceError.server("Couldn't encode the Gemini request.")
                     }
-                    let request = GeminiAPI.request(url, apiKey: key, body: body, timeout: 60)
+                    let request = GeminiAPI.request(url, apiKey: key, body: body, timeout: timeout)
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
                     guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                         let code = (response as? HTTPURLResponse)?.statusCode ?? -1

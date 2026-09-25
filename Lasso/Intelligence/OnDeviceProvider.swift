@@ -8,6 +8,17 @@ struct OnDeviceProvider: IntelligenceProvider {
     let isAppleOnDevice = true
     let isLocal = true
 
+    /// Set when this model is answering in place of one that is unavailable. A small local model handed
+    /// a conversation it didn't take part in tends to answer as if the topic were new; being told what
+    /// it is doing, and to work from the conversation in front of it, is the difference between a useful
+    /// stand-in answer and one that reads as lost.
+    var standingInFor: String?
+
+    /// Apple's on-device window, and what's left for input once the reply is reserved (`replyOptions`).
+    /// The pool's own filters use the same arithmetic for cloud candidates.
+    static let contextTokens = 4_096
+    static let inputBudgetTokens = contextTokens - 2_048
+
     private static let instructions = """
     You transform and reason over text the user selected on their screen. \
     Be concise, accurate, and do not invent facts that are not present in the provided context.
@@ -35,7 +46,7 @@ struct OnDeviceProvider: IntelligenceProvider {
     /// and run past, inventing fake follow-up turns. The system prompt (plus any injected rolling
     /// summary) becomes the transcript's `.instructions`.
     func respond(messages: [ChatTurn]) -> AsyncThrowingStream<String, Error> {
-        let instructions = Self.mergedInstructions(from: messages)
+        let instructions = mergedInstructions(from: messages)
         let convo = messages.filter { $0.role != .system && !$0.text.isEmpty }
 
         // The trailing user turn is the question to answer now; everything before it is prior context.
@@ -61,9 +72,24 @@ struct OnDeviceProvider: IntelligenceProvider {
 
     /// Combine every system-role turn (the base prompt + any rolling-summary block injected by
     /// `ChatContextBuilder`) into one instructions string. Falls back to the default when there are none.
-    private static func mergedInstructions(from messages: [ChatTurn]) -> String {
+    private func mergedInstructions(from messages: [ChatTurn]) -> String {
         let systems = messages.filter { $0.role == .system && !$0.text.isEmpty }.map(\.text)
-        return systems.isEmpty ? instructions : systems.joined(separator: "\n\n")
+        return Self.withStandInNote(systems.isEmpty ? Self.instructions : systems.joined(separator: "\n\n"),
+                                    standingInFor: standingInFor)
+    }
+
+    /// The prompt was written for the model the user chose. Say plainly what this one is, so it answers
+    /// from the conversation instead of treating the last message as the start of a new one.
+    static func withStandInNote(_ instructions: String, standingInFor: String?) -> String {
+        guard let standingInFor else { return instructions }
+        return instructions + """
+
+
+        You are a smaller on-device model answering in place of \(standingInFor), which is unavailable \
+        right now. This conversation began with that model: read the messages above and continue it. \
+        Answer from what is in front of you, keep it brief, and say so in one line if something you'd \
+        need was not included, rather than guessing or starting over.
+        """
     }
 
     // MARK: - Tool calling
@@ -89,7 +115,8 @@ struct OnDeviceProvider: IntelligenceProvider {
         }
         guard !fmTools.isEmpty else { return respond(messages: messages) }
 
-        let instructions = messages.first(where: { $0.role == .system })?.text ?? Self.instructions
+        let instructions = Self.withStandInNote(messages.first(where: { $0.role == .system })?.text ?? Self.instructions,
+                                                standingInFor: standingInFor)
         let transcript = messages
             .filter { $0.role != .system && !$0.text.isEmpty }
             .map { turn -> String in
@@ -273,11 +300,15 @@ struct GeneratedTableRow {
 enum IntelligenceError: LocalizedError {
     case unavailable(String)
     case server(String)
+    /// A stream that finished without a single token. Only raised for a fallback candidate (the free
+    /// pool), where an empty answer means "try the next one" rather than "the model had nothing to say".
+    case emptyResponse(String)
 
     var errorDescription: String? {
         switch self {
         case .unavailable(let m): m
         case .server(let m): m
+        case .emptyResponse(let name): "\(name) returned an empty response."
         }
     }
 }
