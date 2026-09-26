@@ -48,6 +48,60 @@ enum LLMTranslation {
         min(maxChunkCharacters, max(800, contextTokens * 35 / 100))
     }
 
+    /// The system prompt, plus writing rules for targets where models default to an unnatural
+    /// register. `targetCode` is the target's base code.
+    static func systemPrompt(targetName: String, targetCode: String) -> String {
+        guard let style = styleNotes[targetCode] else { return systemPrompt(targetName: targetName) }
+        return systemPrompt(targetName: targetName) + "\n\n" + style
+    }
+
+    /// Models write Filipino as textbook Tagalog ("Pinahahalagahang Tagasubskribe", "teknikal na
+    /// koponan", "pagpapanumbalik"), which Filipinos find stiff. These rules follow the San Francisco
+    /// Filipino Translation Style Guide (Barrios-LeBlanc & Panopio) and Mozilla's Tagalog style guide.
+    static let styleNotes: [String: String] = [
+        "fil": """
+        Writing Filipino:
+        - Write Filipino the way people write it today, not deep or old-fashioned Tagalog. Choose the
+          everyday word: gusto, not nais; para, not upang; trabaho, not hanapbuhay; i-enjoy, not
+          tamasahin. Use puwede for "can" and "may" (ability, permission): "puwede mong i-cancel".
+          Keep maaaring only for possibility: "maaaring ma-delay".
+        - Put the verb or the new information first. Filipinos rarely write "X ay Y": "Bukas ang
+          meeting", not "Ang meeting ay bukas"; "Pinapabilis ng update ang app", not "Ang update ay
+          nagpapabilis ng app".
+        - Leave out stiff honorifics: "Dear Valued Subscriber" → "Mahal naming Subscriber".
+        - Keep the English words Filipinos already use instead of coining Tagalog for them:
+          technical team, network, connection, account, subscriber, invoice, email, password, app,
+          update, meeting, schedule, case, concern, delay, refund, and names of documents and
+          requirements (valid ID, proof of billing). When Filipinos say a whole English phrase as-is,
+          keep the whole phrase rather than translating half of it: business days, battery life,
+          unlimited access, sign-in attempt, flash sale.
+        - But don't over-anglicize. Use the Filipino word when it's the one people say (igisa, not
+          i-sauté; walang pasok for classes being called off), and never leave a whole sentence or
+          UI label in English: "Save changes" → "I-save ang mga pagbabago". A formal notice is
+          Filipino sentences with English terms in them, not English sentences with Filipino glue.
+        - For app and tech actions, write the English verb with a Filipino affix, the way
+          Filipinos do: i-check, i-track, i-download, i-reset, na-receive, pag-restore (not suriin,
+          subaybayan, pagpapanumbalik). Use mag- when the reader does it themselves (mag-login,
+          mag-upgrade, mag-cancel) and i- when they act on something (i-reset ang password).
+        - Idioms and slang become what a Filipino would actually say, not a careful paraphrase:
+          "take it with a grain of salt" → "huwag masyadong seryosohin"; "break a leg" → "galingan
+          mo!". If the English image would sound foreign in Filipino, say what it means instead;
+          never translate the image word for word.
+        - Turn stacked English noun phrases into how Filipinos say them, usually a clause:
+          "avoid unnecessary travel" → "iwasan ang pagbiyahe kung hindi kailangan", not "iwasan ang
+          hindi kailangang pagbiyahe".
+        - Grammar: "nang" for how, how long and when ("nang 10 segundo"); "ng" before a noun.
+          "Press and hold" is "pindutin nang matagal", not "pindutin at hawakan". Link a verb
+          directly: "pagtatangkang mag-sign in", not "pagtatangka ng pag-sign in".
+        - Don't translate "a/an" as "isang" unless it means "one". With "mga", drop the English
+          plural: "mga email", "mga bug".
+        - Keep one register. A formal notice uses kayo/inyo/ninyo throughout, and po only goes
+          with those, never with mo/ka/iyong. A casual message stays casual (ka/mo) and may mix in
+          English (Taglish) the way the original does.
+        - Dates keep the English order: "Setyembre 21, 2026"; times stay "8:00 am".
+        """,
+    ]
+
     static func systemPrompt(targetName: String) -> String {
         """
         You translate text that was read off a screen by OCR into \(targetName).
@@ -211,26 +265,29 @@ struct NDJSONTranslationParser {
 /// so the free-model fallback, routing and local-only rules apply unchanged. Never called from the
 /// prewarmer: a cloud request is only spent once the user has chosen Translate.
 struct LLMTranslator: Sendable {
-    typealias Transport = @Sendable ([ChatTurn]) async -> AsyncThrowingStream<String, Error>
+    /// The turns, plus the base codes of the languages involved (so the coordinator never hands a
+    /// language to a model that doesn't support it).
+    typealias Transport = @Sendable ([ChatTurn], Set<String>) async -> AsyncThrowingStream<String, Error>
 
     let transport: Transport
 
-    static let live = LLMTranslator { messages in
-        await IntelligenceCoordinator.shared.respond(messages: messages)
+    static let live = LLMTranslator { messages, languages in
+        await IntelligenceCoordinator.shared.respond(messages: messages, languages: languages)
     }
 
     /// Translate `blocks` into `targetName`, calling `apply` for every block as its line arrives.
     /// Ids the model invents, repeats for the context block, or returns empty are ignored. Throws
     /// only when a chunk's request fails; whatever already arrived has been applied by then.
-    func translate(_ blocks: [TextBlock], targetName: String, chunkLimit: Int,
+    func translate(_ blocks: [TextBlock], targetName: String, targetCode: String = "",
+                   chunkLimit: Int, languages: Set<String> = [],
                    apply: @Sendable (UUID, String) async -> Void) async throws {
-        let system = LLMTranslation.systemPrompt(targetName: targetName)
+        let system = LLMTranslation.systemPrompt(targetName: targetName, targetCode: targetCode)
         for chunk in LLMTranslation.chunks(blocks, limit: chunkLimit) {
             try Task.checkCancellation()
             let (user, ids) = LLMTranslation.userTurn(for: chunk)
             var parser = NDJSONTranslationParser()
             let stream = await transport([ChatTurn(role: .system, text: system),
-                                          ChatTurn(role: .user, text: user)])
+                                          ChatTurn(role: .user, text: user)], languages)
             for try await delta in stream {
                 for item in parser.feed(delta) {
                     guard let blockID = ids[item.id],

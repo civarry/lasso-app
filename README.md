@@ -16,8 +16,9 @@ machine unless you decide it should.
   own, so a view with English *and* Japanese translates both, and text already in your language is
   left alone. Apple's on-device translation appears first; with **Better translation** on (Settings ▸
   Translation: Off, When I ask, Always), your text model then retranslates the whole selection with
-  context, so sentences split across lines and idioms come out right. The reading view shows it as
-  paragraphs, optionally side by side with the original, with one-click copy.
+  context, so sentences split across lines and idioms come out right. Filipino, which Apple's
+  translation doesn't cover, goes straight to your text model in either direction. The reading view
+  shows it as paragraphs, optionally side by side with the original, with one-click copy.
 - **Summarize / Ask AI** — get a quick summary, or ask anything about what you selected. If the
   selection is an image with no text, it'll actually *look* at the image to answer.
 - **Identify** — point it at an object, product, place, or screenshot and it tells you what it is. It

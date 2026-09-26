@@ -46,13 +46,17 @@ struct TranslationPrewarmer: View {
 
         // The largest group of blocks not already in the target (nil when nothing is foreign). Only
         // that group is pre-translated; the overlay translates any other language's blocks itself.
+        // The first group whose pair is installed: never prompt a download speculatively, and skip
+        // languages Apple can't translate at all (Filipino), which only the model pass handles.
         let blocks = TextBlocks.group(lines)
-        guard let first = TranslationPlan.groups(blocks, target: systemTarget, override: nil).first
-        else { return }
-
-        // Only act when the pair is installed — never prompt a download speculatively.
-        let status = await LanguageAvailability().status(from: first.source, to: systemTarget)
-        guard status == .installed else { return }
+        var chosen: (source: Locale.Language, blocks: [TextBlock])?
+        for group in TranslationPlan.groups(blocks, target: systemTarget, override: nil) {
+            if await LanguageAvailability().status(from: group.source, to: systemTarget) == .installed {
+                chosen = group
+                break
+            }
+        }
+        guard let first = chosen else { return }
 
         target = systemTarget
         work = first.blocks

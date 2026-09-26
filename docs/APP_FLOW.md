@@ -442,12 +442,14 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-  Lines["OCR lines"] --> Blocks["TextBlocks.group<br/>lines → blocks (paragraph, heading, label)<br/>language detected per block; an unsure short Latin block takes the selection's confident Latin language"]
+  Lines["OCR lines"] --> Blocks["TextBlocks.group<br/>lines → blocks (paragraph, heading, label, each list item)<br/>language detected per block (Filipino by function words, since NaturalLanguage reads it as Indonesian); an unsure short Latin block takes the selection's confident Latin language"]
   Blocks --> Plan["TranslationPlan<br/>block in target language → left alone<br/>others grouped by source language<br/>(manual source override → every block)"]
-  Plan --> P1["Pass 1: Apple Translation<br/>one session per source language<br/>(prewarmer may have done the largest group)"]
+  Plan --> P1["Pass 1: Apple Translation<br/>one session per source language Apple supports<br/>(prewarmer may have done the largest installed group)"]
+  Plan -->|"pair Apple lacks (Filipino, either side):<br/>model-only, pass 2 starts unasked;<br/>Better translation Off → bar: 'Filipino needs AI'"| P2
   P1 --> Plates["Plates: one opaque plate per translated block<br/>colour sampled from the capture; too long → widens into free space beside it, then grows + pushes down; never overlaps"]
-  Plan -->|"Better translation: Always, or 'Improve with AI' (When I ask)<br/>never from the prewarmer"| P2["Pass 2: LLMTranslator<br/>whole selection, ≤6k chars/chunk + previous block as context<br/>IntelligenceCoordinator.respond(messages:) → NDJSON stream"]
+  Plan -->|"Better translation: Always, or 'Improve with AI' (When I ask)<br/>never from the prewarmer"| P2["Pass 2: LLMTranslator<br/>whole selection, ≤6k chars/chunk + previous block as context<br/>IntelligenceCoordinator.respond(messages:) → NDJSON stream<br/>into Filipino: + modern-usage rules (LLMTranslation.styleNotes)"]
   P2 -->|"each {id, t} as it arrives"| Plates
+  P2 -.->|"a language Apple Intelligence doesn't support (Filipino):<br/>never answered on-device, chosen or as fallback;<br/>bar: 'Filipino needs a model' menu → switch to a configured cloud model, or Settings"| Plates
   P2 -.->|"missing / empty / failed → keep pass 1, log, no error card"| Plates
   Plates --> Reading["Reading view: one paragraph per block<br/>Translation | Side by side · Copy"]
 ```

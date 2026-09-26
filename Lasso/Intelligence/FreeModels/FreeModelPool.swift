@@ -97,6 +97,9 @@ struct FallbackNeeds: Equatable, Sendable {
     /// The model the user chose, normalized (`FreeModelPool.normalizedModelID`), so the same model
     /// served free by another connection can be tried first. nil when there is no cloud model.
     var primaryModel: String?
+    /// Base codes of the languages the answer must read or write (a translation's source and target).
+    /// Empty when the caller doesn't say. Gates the on-device model, which supports only some.
+    var languages: Set<String> = []
 
     /// Rough input size (4 characters a token, plus a flat allowance per image). Only used to rule out
     /// windows that are plainly too small.
@@ -160,6 +163,7 @@ enum FallbackPolicy {
     /// `exceededContextWindowSize`, and the user sees their own model's error a beat later anyway.
     static func onDeviceCanHold(_ needs: FallbackNeeds) -> Bool {
         needs.estimatedTokens <= OnDeviceProvider.inputBudgetTokens
+            && OnDeviceProvider.supports(languages: needs.languages)
     }
 
     /// Whether the selected model counts as local for the pool: on this Mac (the provider says so), or

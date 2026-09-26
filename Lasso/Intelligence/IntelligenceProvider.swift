@@ -1120,6 +1120,16 @@ final class IntelligenceCoordinator {
                 let provider = await self.activeProvider()
                 Log.intelligence.notice("\(label, privacy: .public) · provider=\(provider.name, privacy: .public) local=\(provider.isLocal, privacy: .public) (+\(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public)ms)")
 
+                // Apple's model writes languages it doesn't support anyway, badly. Whether it's the
+                // chosen model or `activeProvider` fell back to it, refuse rather than answer.
+                if provider.isAppleOnDevice, !OnDeviceProvider.supports(languages: needs.languages) {
+                    let names = OnDeviceProvider.unsupportedNames(needs.languages)
+                    Log.intelligence.notice("\(label, privacy: .public) · on-device refused: doesn't support \(names, privacy: .public)")
+                    continuation.finish(throwing: IntelligenceError.unavailable(
+                        "Apple Intelligence doesn't support \(names). Choose a cloud or Ollama model in Settings ▸ Intelligence."))
+                    return
+                }
+
                 // A selected model that keeps missing is skipped for a while: the request goes straight
                 // to what last answered, instead of waiting out the race on every message. Only where
                 // the pool is allowed, and only while the stand-in is still usable.
@@ -1226,10 +1236,12 @@ final class IntelligenceCoordinator {
     }
 
     /// Stream a response to a multi-turn conversation from the active provider (the Chat panel).
-    func respond(messages: [ChatTurn], scope: FallbackScope = .full,
+    func respond(messages: [ChatTurn], scope: FallbackScope = .full, languages: Set<String> = [],
                  onFallback: (@MainActor (FallbackNotice) -> Void)? = nil) -> AsyncThrowingStream<String, Error> {
-        streamWithFailover(label: "respond(messages)",
-                           needs: FallbackNeeds(messages: messages, tools: .none, primaryModel: activePrimaryModelID),
+        var needs = FallbackNeeds(messages: messages, tools: .none, primaryModel: activePrimaryModelID)
+        needs.languages = languages
+        return streamWithFailover(label: "respond(messages)",
+                           needs: needs,
                            scope: scope, onFallback: onFallback) {
             $0.respond(messages: messages)
         }

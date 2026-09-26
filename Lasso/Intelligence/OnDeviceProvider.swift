@@ -19,6 +19,25 @@ struct OnDeviceProvider: IntelligenceProvider {
     static let contextTokens = 4_096
     static let inputBudgetTokens = contextTokens - 2_048
 
+    /// Base codes of the languages Apple's model supports (23 on macOS 26; Filipino isn't one). It
+    /// writes an unsupported language anyway, badly, so callers that know their languages ask first.
+    static let supportedLanguageCodes: Set<String> =
+        Set(SystemLanguageModel.default.supportedLanguages.map {
+            LanguageDetect.baseCode($0.languageCode?.identifier ?? $0.minimalIdentifier)
+        })
+
+    /// Whether the model can read and write every language in `languages` (base codes).
+    static func supports(languages: Set<String>) -> Bool {
+        languages.isSubset(of: supportedLanguageCodes)
+    }
+
+    /// Display names of `languages` the model doesn't support, for an explanation.
+    static func unsupportedNames(_ languages: Set<String>) -> String {
+        languages.subtracting(supportedLanguageCodes).sorted()
+            .map { Locale.current.localizedString(forLanguageCode: $0) ?? $0 }
+            .joined(separator: ", ")
+    }
+
     private static let instructions = """
     You transform and reason over text the user selected on their screen. \
     Be concise, accurate, and do not invent facts that are not present in the provided context.

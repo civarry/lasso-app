@@ -51,6 +51,8 @@ struct InlineTranslationView: View {
     /// Model results by (block ids, target, source override), so toggling views never re-runs it.
     @State private var modelCache: [String: (model: String, texts: [UUID: String])] = [:]
     @State private var plateStyles: [UUID: PlateStyle] = [:]
+    /// Base codes Apple's Translation framework supports; nil until loaded (then assume it can).
+    @State private var appleLanguages: Set<String>?
     @State private var config: TranslationSession.Configuration?
     @State private var sourceOverride: Locale.Language?
     @State private var showOriginal = false
@@ -59,11 +61,12 @@ struct InlineTranslationView: View {
     @State private var sideBySide = false
     @State private var copied = false
     @AppStorage("ui.resultTextScale") private var textScale = 1.0
+    @Environment(\.openSettings) private var openSettings
     @State private var target: Locale.Language =
         Locale.Language(identifier: Locale.current.language.languageCode?.identifier ?? "en")
 
     private let languageChoices: [Locale.Language] = [
-        "en", "zh-Hant", "zh-Hans", "ja", "ko", "es", "fr", "de", "it", "pt", "ru", "ar", "hi", "th",
+        "en", "fil", "zh-Hant", "zh-Hans", "ja", "ko", "es", "fr", "de", "it", "pt", "ru", "ar", "hi", "th",
     ].map(Locale.Language.init(identifier:))
 
     var body: some View {
@@ -88,7 +91,7 @@ struct InlineTranslationView: View {
             languageBar.position(barPoint(in: geo.size))
         }
         .frame(width: geo.size.width, height: geo.size.height)
-        .task { start() }
+        .task { await start() }
         .onDisappear { modelTask?.cancel() }
         .onChange(of: target) { _, _ in restart() }
         .onChange(of: sourceOverride) { _, _ in restart() }
@@ -160,6 +163,9 @@ struct InlineTranslationView: View {
                 content = .untranslated
             } else if let text = displayText(block) {
                 content = .text(text)
+            } else if isModelOnly(block) {
+                // Only the model can translate it: a skeleton while it works, else the original.
+                content = modelPass == .running ? .pending : .untranslated
             } else {
                 // Pass 1 finished without this block (its session failed): show the original rather
                 // than a skeleton that never resolves.
@@ -370,13 +376,14 @@ struct InlineTranslationView: View {
     @ViewBuilder
     private var engineStatus: some View {
         let translatable = blocks.filter(needsTranslation)
+        let onDevice = translatable.filter { !isModelOnly($0) }
         if detected != nil, translatable.isEmpty {
             Text("Already in \(displayName(target))")
                 .font(.caption).foregroundStyle(.primary)
         } else if !pass1Done {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
-                Text("\(translatable.filter { pass1[$0.id] != nil }.count)/\(translatable.count)")
+                Text("\(onDevice.filter { pass1[$0.id] != nil }.count)/\(onDevice.count)")
                     .font(.caption).monospacedDigit().foregroundStyle(.primary)
             }
         } else {
@@ -397,11 +404,17 @@ struct InlineTranslationView: View {
                     .help("Improved by \(model). Blocks it missed keep the on-device translation.")
             case .idle, .failed:
                 HStack(spacing: 4) {
-                    Label("On-device · \(translatable.count) \(translatable.count == 1 ? "block" : "blocks")",
-                          systemImage: "cpu")
-                        .font(.caption).monospacedDigit().foregroundStyle(.primary)
-                        .help(pass1Duration.map { String(format: "Apple Translation, %.2fs", $0) } ?? "Apple Translation")
-                    if case .failed(let reason) = modelPass, modelAvailable {
+                    if !onDevice.isEmpty {
+                        Label("On-device · \(onDevice.count) \(onDevice.count == 1 ? "block" : "blocks")",
+                              systemImage: "cpu")
+                            .font(.caption).monospacedDigit().foregroundStyle(.primary)
+                            .help(pass1Duration.map { String(format: "Apple Translation, %.2fs", $0) } ?? "Apple Translation")
+                    }
+                    if !modelOnlyIDs.isEmpty, !modelAvailable {
+                        // Apple can't translate these and the model pass can't run: say so, and offer
+                        // the way out right here.
+                        modelNeededMenu
+                    } else if case .failed(let reason) = modelPass, modelAvailable {
                         Button { startModelPass() } label: {
                             Image(systemName: "sparkles").foregroundStyle(.orange)
                         }
@@ -417,6 +430,48 @@ struct InlineTranslationView: View {
                 }
             }
         }
+    }
+
+    /// "Filipino needs a model ▾": why the text is untouched, the configured cloud models to switch
+    /// to (the same choice the chat header offers), and Settings.
+    private var modelNeededMenu: some View {
+        let intelligence = IntelligenceCoordinator.shared
+        let canSwitch = LLMTranslation.Mode.current != .off && !PrivacyMode.localOnly
+        return Menu {
+            Text(modelUnavailableReason ?? "")
+            if canSwitch {
+                let groups = intelligence.registryGroups()
+                if !groups.isEmpty {
+                    Divider()
+                    ForEach(groups) { group in
+                        Menu("Translate with \(group.name)") {
+                            ForEach(group.models) { model in
+                                Button(model.name) {
+                                    intelligence.selectRegistryModel(keyID: group.keyID, model: model.name)
+                                    startModelPass()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Divider()
+            Button("Open Settings…") {
+                CaptureCoordinator.shared.cancel()
+                openSettings()
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Text(LLMTranslation.Mode.current == .off ? "\(appleMissing) needs AI" : "\(appleMissing) needs a model")
+                    .fontWeight(.medium)
+                Image(systemName: "chevron.up.chevron.down").font(.caption2)
+            }
+            .font(.caption)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Apple Translation doesn't cover \(appleMissing). \(modelUnavailableReason ?? "")")
     }
 
     private var swapSource: Locale.Language? {
@@ -454,7 +509,8 @@ struct InlineTranslationView: View {
         LLMTranslation.display(pass1: pass1[block.id], llm: llm[block.id])
     }
 
-    private func start() {
+    private func start() async {
+        appleLanguages = await Self.appleLanguageCodes()
         blocks = TextBlocks.group(lines)
         detected = TranslationPlan.detectedLanguages(blocks, name: displayName)
         samplePlateColors()
@@ -476,7 +532,8 @@ struct InlineTranslationView: View {
         pass1Duration = nil
         pass1Started = Date()
 
-        let groups = TranslationPlan.groups(blocks, target: target, override: sourceOverride)
+        let groups = TranslationPlan.groups(blocks, target: target, override: sourceOverride,
+                                            supported: appleSupports)
         pass1Queue = groups.filter { $0.blocks.contains { pass1[$0.id] == nil } }.map(\.source)
         advancePass1()
 
@@ -486,7 +543,11 @@ struct InlineTranslationView: View {
         } else {
             llm = [:]
             modelPass = .idle
-            if LLMTranslation.Mode.current == .always, modelAvailable { startModelPass() }
+            // Blocks only the model can translate (Filipino, say) start it without being asked:
+            // choosing that language was the ask.
+            if modelAvailable, LLMTranslation.Mode.current == .always || !modelOnlyIDs.isEmpty {
+                startModelPass()
+            }
         }
     }
 
@@ -507,7 +568,7 @@ struct InlineTranslationView: View {
     private func pass1Work() -> (blocks: [TextBlock], generation: Int)? {
         guard let source = pass1Source else { return nil }
         let work = blocks.filter {
-            needsTranslation($0) && pass1[$0.id] == nil
+            needsTranslation($0) && !isModelOnly($0) && pass1[$0.id] == nil
                 && TranslationPlan.source(of: $0, override: sourceOverride)?.minimalIdentifier == source.minimalIdentifier
         }
         return (work, generation)
@@ -515,10 +576,74 @@ struct InlineTranslationView: View {
 
     // MARK: - Pass 2 (model)
 
+    private func appleSupports(_ language: Locale.Language) -> Bool {
+        appleLanguages?.contains(TranslationPlan.base(language)) ?? true
+    }
+
+    private func isModelOnly(_ block: TextBlock) -> Bool {
+        needsTranslation(block)
+            && !TranslationPlan.appleCanTranslate(block, target: target, override: sourceOverride,
+                                                  supported: appleSupports)
+    }
+
+    private var modelOnlyIDs: [UUID] {
+        TranslationPlan.modelOnly(blocks, target: target, override: sourceOverride, supported: appleSupports)
+    }
+
+    /// The languages in play that Apple can't translate ("Filipino"), for the bar.
+    private var appleMissing: String {
+        let sources = blocks.filter(isModelOnly).compactMap { TranslationPlan.source(of: $0, override: sourceOverride) }
+        var names: [String] = []
+        for lang in [target] + sources where !appleSupports(lang) {
+            let name = displayName(lang)
+            if !names.contains(name) { names.append(name) }
+        }
+        return names.isEmpty ? "This text" : names.joined(separator: ", ")
+    }
+
+    /// Apple's supported languages by base code, loaded once per launch.
+    @MainActor private static var appleLanguageCache: Set<String>?
+    private static func appleLanguageCodes() async -> Set<String> {
+        if let cached = appleLanguageCache { return cached }
+        let codes = await fetchAppleLanguages()
+        appleLanguageCache = codes
+        return codes
+    }
+
+    nonisolated private static func fetchAppleLanguages() async -> Set<String> {
+        Set(await LanguageAvailability().supportedLanguages.map(TranslationPlan.base))
+    }
+
     private var modelAvailable: Bool {
-        LLMTranslation.Mode.current != .off
-            && IntelligenceCoordinator.shared.textModelConfigured
-            && blocks.contains(where: needsTranslation)
+        modelUnavailableReason == nil && blocks.contains(where: needsTranslation)
+    }
+
+    /// Why the model pass can't run for this selection, or nil when it can.
+    private var modelUnavailableReason: String? {
+        let intelligence = IntelligenceCoordinator.shared
+        if LLMTranslation.Mode.current == .off {
+            return "Turn on Better translation in Settings ▸ General to translate it with your language model."
+        }
+        if !intelligence.textModelConfigured {
+            return "Choose a language model in Settings ▸ Intelligence to translate it."
+        }
+        // Apple's model writes languages it doesn't support anyway, badly: don't offer it.
+        if intelligence.effectivePreferred == .onDevice, !OnDeviceProvider.supports(languages: modelLanguages) {
+            return "Apple Intelligence doesn't support \(OnDeviceProvider.unsupportedNames(modelLanguages)). "
+                + "Choose a cloud or Ollama model in Settings ▸ Intelligence."
+        }
+        return nil
+    }
+
+    /// Base codes the model pass reads or writes: the target and every translated block's source.
+    private var modelLanguages: Set<String> {
+        var codes: Set<String> = [TranslationPlan.base(target)]
+        for block in blocks where needsTranslation(block) {
+            if let source = TranslationPlan.source(of: block, override: sourceOverride) {
+                codes.insert(TranslationPlan.base(source))
+            }
+        }
+        return codes
     }
 
     private var modelCacheKey: String {
@@ -537,11 +662,15 @@ struct InlineTranslationView: View {
         let targetName = Locale(identifier: "en").localizedString(forIdentifier: target.minimalIdentifier)
             ?? target.minimalIdentifier
         let limit = LLMTranslation.chunkLimit(contextTokens: IntelligenceCoordinator.shared.effectiveContextTokens)
+        let languages = modelLanguages
+        let targetCode = TranslationPlan.base(target)
         modelPass = .running
         modelTask = Task {
             var failure: String?
             do {
-                try await LLMTranslator.live.translate(input, targetName: targetName, chunkLimit: limit) { id, text in
+                try await LLMTranslator.live.translate(input, targetName: targetName, targetCode: targetCode,
+                                                       chunkLimit: limit,
+                                                       languages: languages) { id, text in
                     await MainActor.run {
                         guard generation == gen else { return }
                         withAnimation(.easeInOut(duration: 0.25)) { llm[id] = text }

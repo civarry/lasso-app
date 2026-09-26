@@ -50,6 +50,9 @@ enum LanguageDetect {
     /// which is low on short strings ("Invoice details:" is 0.75 Romanian).
     static func detection(of text: String) -> (language: Locale.Language, confidence: Double)? {
         guard text.contains(where: \.isLetter), let dominant = dominantScript(text) else { return nil }
+        if dominant == .latin, let confidence = filipinoConfidence(text) {
+            return (Locale.Language(identifier: "fil"), confidence)
+        }
         let recognizer = NLLanguageRecognizer()
         recognizer.processString(text)
         if let nl = recognizer.dominantLanguage?.rawValue, nl != "und",
@@ -62,6 +65,40 @@ enum LanguageDetect {
         guard let code = defaultLanguage(for: dominant, sampleText: text), code != "und" else { return nil }
         return (Locale.Language(identifier: code), dominant == .latin ? 0 : 1)
     }
+
+    /// NaturalLanguage has no Filipino and reads it as Indonesian, often at 1.00 ("Salamat sa inyong
+    /// tulong…"). So Latin text is checked for Filipino function words first. Words shared with
+    /// Indonesian/Malay (kami, kita, apa, ada…) count for neither; Indonesian/Malay's own words count
+    /// against. Taglish carries enough of these ("ang init pero okay lang") to count as Filipino, and
+    /// English rarely has any. Returns a confidence, or nil when the text isn't Filipino.
+    static func filipinoConfidence(_ text: String) -> Double? {
+        let words = text.lowercased()
+            .split { !$0.isLetter && $0 != "-" }
+            .map { $0.split(separator: "-").last.map(String.init) ?? "" }   // "na-receive" → "receive"
+            .filter { !$0.isEmpty }
+        guard !words.isEmpty else { return nil }
+        let filipino = words.filter(filipinoWords.contains).count
+        let malay = words.filter(indonesianMalayWords.contains).count
+        guard filipino >= 2, filipino > 2 * malay,
+              Double(filipino) / Double(words.count) >= 0.2 else { return nil }
+        return min(0.99, 0.7 + 0.1 * Double(filipino))
+    }
+
+    private static let filipinoWords: Set<String> = [
+        "ang", "ng", "mga", "sa", "ay", "na", "po", "opo", "ko", "mo", "ka", "ako", "ikaw", "siya",
+        "tayo", "sila", "kayo", "niya", "natin", "namin", "nila", "ninyo", "inyong", "iyong", "hindi",
+        "oo", "salamat", "lang", "lamang", "rin", "din", "naman", "kasi", "pero", "yung", "ito", "iyan",
+        "iyon", "ano", "bakit", "paano", "saan", "kailan", "kung", "nang", "sana", "talaga", "dito",
+        "doon", "diyan", "ba", "pa", "ho", "ninyong", "atin", "amin", "akin", "magandang",
+        "maraming", "kumain", "grabe", "sobrang", "ngayon", "bukas", "kahapon", "wala", "meron",
+    ]
+
+    private static let indonesianMalayWords: Set<String> = [
+        "yang", "dan", "di", "ini", "itu", "tidak", "tak", "untuk", "dengan", "dari", "ke", "akan",
+        "saya", "juga", "sudah", "bisa", "boleh", "karena", "kerana", "atau", "pada", "oleh", "dalam",
+        "adalah", "ialah", "lebih", "sangat", "terima", "kasih", "bagaimana", "mereka", "anda", "belum",
+        "sedang", "harus", "jika", "kalau", "tahu", "silakan", "sebelum", "akhir", "bulan", "atas",
+    ]
 
     /// The script a language is written in (for matching lines to the source language).
     static func script(forLanguage base: String) -> Script {

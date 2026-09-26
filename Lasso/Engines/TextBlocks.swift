@@ -72,9 +72,30 @@ enum TextBlocks {
         let taller = max(ra.height, rb.height), shorter = min(ra.height, rb.height)
         guard taller > 0, shorter >= 0.6 * taller else { return false }
         guard rb.midY < ra.midY else { return false }          // b must be below a
+        guard !startsListItem(b.string) else { return false }  // each bullet is its own block
         let gap = ra.minY - rb.maxY
         return gap < 0.6 * taller
     }
+
+    /// Whether a line opens a list item: a bullet (•, ・, ◦, ▪, ‣, ·), a dash or star followed by a
+    /// space, or a number or letter followed by "." or ")" and a space. "-5%", "e-mail" and "3.14"
+    /// are not.
+    static func startsListItem(_ line: String) -> Bool {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        guard let first = t.first else { return false }
+        if "•・◦▪‣·●○■□➢➤►▸".contains(first) { return true }
+        let rest = t.dropFirst()
+        if "-–—*+".contains(first) { return rest.first == " " }
+        // "1. ", "12) ", "a) ", "(3) "
+        let body = first == "(" ? rest : Substring(t)
+        let marker = body.prefix { $0.isNumber || $0.isLetter }
+        guard !marker.isEmpty, marker.count <= 3,
+              marker.allSatisfy(\.isNumber) || (marker.count == 1 && marker.first!.isLetter) else { return false }
+        let after = body.dropFirst(marker.count)
+        guard let close = after.first, close == "." || close == ")" else { return false }
+        return after.dropFirst().first == " "
+    }
+
 
     /// Join lines into running text: a trailing hyphen joins the next line without a space, and two
     /// CJK characters meet without one (those scripts don't separate words).
@@ -123,13 +144,33 @@ enum TranslationPlan {
         return base(source) != base(target)
     }
 
-    /// Translatable blocks grouped by source language, largest group first. Apple's Translation
+    /// Translatable blocks Apple can handle, grouped by source language, largest group first. Apple's Translation
     /// framework takes one source per session, so pass 1 runs one session per group.
+    /// Whether Apple's Translation framework handles this block's pair. `supported` answers for one
+    /// language (Apple's `LanguageAvailability().supportedLanguages`, by base code).
+    static func appleCanTranslate(_ block: TextBlock, target: Locale.Language, override: Locale.Language?,
+                                  supported: (Locale.Language) -> Bool) -> Bool {
+        guard let source = source(of: block, override: override) else { return false }
+        return supported(source) && supported(target)
+    }
+
+    /// Blocks that need translating but only the model pass can do (Filipino on either side, for
+    /// one): pass 1 skips them, and the model pass runs for them without being asked.
+    static func modelOnly(_ blocks: [TextBlock], target: Locale.Language, override: Locale.Language?,
+                          supported: (Locale.Language) -> Bool) -> [UUID] {
+        blocks.filter {
+            needsTranslation($0, target: target, override: override)
+                && !appleCanTranslate($0, target: target, override: override, supported: supported)
+        }.map(\.id)
+    }
+
     static func groups(_ blocks: [TextBlock], target: Locale.Language,
-                       override: Locale.Language?) -> [(source: Locale.Language, blocks: [TextBlock])] {
+                       override: Locale.Language?,
+                       supported: (Locale.Language) -> Bool = { _ in true }) -> [(source: Locale.Language, blocks: [TextBlock])] {
         var order: [String] = []
         var byID: [String: (source: Locale.Language, blocks: [TextBlock])] = [:]
-        for block in blocks where needsTranslation(block, target: target, override: override) {
+        for block in blocks where needsTranslation(block, target: target, override: override)
+            && appleCanTranslate(block, target: target, override: override, supported: supported) {
             guard let src = source(of: block, override: override) else { continue }
             let key = src.minimalIdentifier
             if byID[key] == nil { order.append(key); byID[key] = (src, []) }
