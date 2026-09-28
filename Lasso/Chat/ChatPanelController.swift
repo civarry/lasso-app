@@ -8,10 +8,12 @@ import SwiftUI
 @MainActor
 final class ChatPanelController: NSObject, NSWindowDelegate {
     static let shared = ChatPanelController()
-    private var panel: FloatingPanel?
+    private(set) var panel: FloatingPanel?
     private var pasteMonitor: Any?
 
     private let defaultSize = NSSize(width: 420, height: 580)
+    /// Smallest the panel can be resized to: the header, a message and the composer still fit.
+    static let minimumSize = NSSize(width: 340, height: 360)
     private static let widthKey = "chat.panel.width"
     private static let heightKey = "chat.panel.height"
     private static let xKey = "chat.panel.x"
@@ -46,10 +48,15 @@ final class ChatPanelController: NSObject, NSWindowDelegate {
         }
 
         let size = savedSize()
-        let hosting = NSHostingController(rootView: ChatView())
-        // Fixed-size panel: don't let the hosting controller shrink the window to the SwiftUI
-        // content's fitting size (which would collapse the empty conversation to a tiny box).
-        hosting.sizingOptions = []
+        // The minimum lives in the SwiftUI root and reaches the window through `.minSize`: with an
+        // Auto Layout content view, AppKit recomputes the window's limits from constraints on the
+        // first layout pass, which silently reset a plain `panel.minSize` to 0×0 and let the panel be
+        // dragged down until nothing was visible. Only `.minSize`, not `.preferredContentSize`: the
+        // hosting controller must not shrink the window to the content's fitting size (which would
+        // collapse the empty conversation to a tiny box).
+        let hosting = NSHostingController(rootView: ChatView()
+            .frame(minWidth: Self.minimumSize.width, minHeight: Self.minimumSize.height))
+        hosting.sizingOptions = [.minSize]
 
         let panel = FloatingPanel(
             contentRect: NSRect(origin: .zero, size: size),
@@ -66,7 +73,6 @@ final class ChatPanelController: NSObject, NSWindowDelegate {
         // Off: movable-by-background swallows clicks on SwiftUI controls (turns them into window
         // drags). The header provides an explicit drag region instead (see ChatView.WindowDragArea).
         panel.isMovableByWindowBackground = false
-        panel.minSize = NSSize(width: 340, height: 360)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         // Reopen where the user last dragged it; otherwise top-right. Set *after* the content view is
@@ -146,7 +152,7 @@ final class ChatPanelController: NSObject, NSWindowDelegate {
         let d = UserDefaults.standard
         let w = d.double(forKey: Self.widthKey)
         let h = d.double(forKey: Self.heightKey)
-        guard w >= 340, h >= 360 else { return defaultSize }
+        guard w >= Self.minimumSize.width, h >= Self.minimumSize.height else { return defaultSize }
         return NSSize(width: w, height: h)
     }
 

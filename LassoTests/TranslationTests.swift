@@ -450,6 +450,41 @@ struct TranslationTests {
         #expect(plates[1].rect.minY <= paragraph.frame.minY, "paragraph plate was pushed off its text")
     }
 
+    // MARK: Code, URLs and paths stay verbatim
+
+    /// Apple's on-device model translated `print(json.dumps(...))` into Chinese in 3 of 4 live runs.
+    /// Blocks that are code, a command, a URL, an address or a path never reach any translator.
+    @Test func codeURLsAndPathsAreVerbatim() {
+        for text in ["print(json.dumps(data, indent=2))", "console.log(\"hello\");", "let x = foo(bar)",
+                     "import SwiftUI", "from typing import Optional", "if (a == b) { return; }",
+                     "SELECT * FROM users WHERE id = 1;", "$ brew install ollama", "npm install --save lasso",
+                     "git commit -m \"fix\"", "`defaults read com.cjcarito.Lasso`",
+                     "https://github.com/civarry/lasso-app/releases", "www.example.com", "support@example.com",
+                     "~/Library/Application Support/Lasso", "/usr/local/bin/ollama", "C:\\Program Files\\Lasso"] {
+            #expect(TranslationPlan.isVerbatim(text), "should stay as-is: \(text)")
+        }
+    }
+
+    @Test func proseThatLooksCodeyIsStillTranslated() {
+        for text in ["Take one tablet (twice a day) after meals.", "Amount: $0.00", "Let's set up your profile.",
+                     "Import your contacts from Google.", "Return policy: 30 days.", "return to home",
+                     "Why are you receiving this email?", "Classes are suspended (again) tomorrow.",
+                     "Price: 50% off!", "For more info, visit www.example.com today.",
+                     "Email us at support@example.com if you have questions.", "Save changes",
+                     "if you have any open case, it will be resolved", "• Invoice ID: IN-12345678"] {
+            #expect(!TranslationPlan.isVerbatim(text), "should be translated: \(text)")
+        }
+    }
+
+    @Test func verbatimBlocksGetNoPlateAndAreNotTranslated() {
+        let code = block("print(json.dumps(data, indent=2))", lang: "en")
+        let prose = block("Download the new build here:", lang: "en")
+        #expect(!TranslationPlan.needsTranslation(code, target: zhHant, override: nil))
+        #expect(TranslationPlan.needsTranslation(prose, target: zhHant, override: nil))
+        // Not even a manual source override translates code.
+        #expect(!TranslationPlan.needsTranslation(code, target: zhHant, override: Locale.Language(identifier: "en")))
+    }
+
     // MARK: 6. Untranslated block
 
     @Test func blockInTheTargetLanguageGetsNoPlate() {

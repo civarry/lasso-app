@@ -443,7 +443,7 @@ flowchart TD
 ```mermaid
 flowchart LR
   Lines["OCR lines"] --> Blocks["TextBlocks.group<br/>lines → blocks (paragraph, heading, label, each list item)<br/>language detected per block (Filipino by function words, since NaturalLanguage reads it as Indonesian); an unsure short Latin block takes the selection's confident Latin language"]
-  Blocks --> Plan["TranslationPlan<br/>block in target language → left alone<br/>others grouped by source language<br/>(manual source override → every block)"]
+  Blocks --> Plan["TranslationPlan<br/>block in target language → left alone<br/>code, commands, URLs, emails, paths → verbatim (TranslationPlan.isVerbatim)<br/>others grouped by source language<br/>(manual source override → every block)"]
   Plan --> P1["Pass 1: Apple Translation<br/>one session per source language Apple supports<br/>(prewarmer may have done the largest installed group)"]
   Plan -->|"pair Apple lacks (Filipino, either side):<br/>model-only, pass 2 starts unasked;<br/>Better translation Off → bar: 'Filipino needs AI'"| P2
   P1 --> Plates["Plates: one opaque plate per translated block<br/>colour sampled from the capture; too long → widens into free space beside it, then grows + pushes down; never overlaps"]
@@ -464,7 +464,9 @@ flowchart LR
 
 ## 7. Chat (`Chat/`)
 
-Persistent top-right panel (⌥⌘A), independent of the capture overlay. Multi-turn, **multi-image**
+Persistent top-right panel (⌥⌘A), independent of the capture overlay. Resizable down to 340×360
+(set in the SwiftUI root and passed to the window via `sizingOptions = [.minSize]`; a plain
+`panel.minSize` is wiped by AppKit's first layout pass). Multi-turn, **multi-image**
 attach (button / ⌘V / drag / capture seed; up to `maxAttachments`), two-track memory
 (`ConversationMemory`, `ChatContextBuilder`). Images: `Attachment` (structured, stable id) → native
 models get an image array per turn; text-only models get per-image "Image N:" captions + OCR. Grounds via the same keyless web search; reverse-image is the one-tap Lens

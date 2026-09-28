@@ -140,6 +140,7 @@ enum TranslationPlan {
     /// left alone, and so is one with no recognizable language.
     static func needsTranslation(_ block: TextBlock, target: Locale.Language,
                                  override: Locale.Language?) -> Bool {
+        guard !isVerbatim(block.text) else { return false }
         guard let source = source(of: block, override: override) else { return false }
         return base(source) != base(target)
     }
@@ -222,6 +223,53 @@ enum TranslationPlan {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: "\n\n")
+    }
+
+    /// Whether a block is code, a command, a URL, an email address or a file path: text that must
+    /// come back byte-identical, so it never reaches a translator. Models don't reliably leave it
+    /// alone (Apple's on-device model translated `print(json.dumps(...))` into Chinese), so this
+    /// doesn't rely on the prompt. Deliberately narrow: prose that merely mentions a URL or has
+    /// parentheses is still translated.
+    static func isVerbatim(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return false }
+
+        // Wrapped in backticks as a whole.
+        if t.count > 2, t.hasPrefix("`"), t.hasSuffix("`") { return true }
+
+        // One token: a URL, an email address, or a path.
+        if !t.contains(" ") || t.hasPrefix("~/") || t.hasPrefix("/") || t.range(of: #"^[A-Za-z]:\\"#, options: .regularExpression) != nil {
+            if t.range(of: #"^[a-z][a-z0-9+.-]*://\S+$"#, options: [.regularExpression, .caseInsensitive]) != nil { return true }
+            if t.range(of: #"^www\.\S+\.\S+$"#, options: [.regularExpression, .caseInsensitive]) != nil { return true }
+            if t.range(of: #"^[^\s@]+@[^\s@]+\.[a-z]{2,}$"#, options: [.regularExpression, .caseInsensitive]) != nil { return true }
+            if t.range(of: #"^(~|\.{1,2})?/[^\s]*(/[^/]+)*$"#, options: .regularExpression) != nil, t.contains("/") { return true }
+            if t.hasPrefix("~/") || t.range(of: #"^[A-Za-z]:\\"#, options: .regularExpression) != nil { return true }
+        }
+
+        // A shell prompt, or a command-line tool with its arguments.
+        if t.hasPrefix("$ ") { return true }
+        if t.range(of: #"^(sudo|brew|npm|npx|pip3?|git|cd|ls|curl|wget|docker|kubectl|xcodebuild|swift|python3?|node|defaults|chmod|mkdir|rm|cp|mv)\s+\S+"#,
+                   options: .regularExpression) != nil,
+           t.contains(" -") || t.contains("/") || t.contains("\"") || t.split(separator: " ").count <= 4,
+           !t.hasSuffix(".") { return true }
+
+        // A call expression: `print(json.dumps(data))`, `console.log("hi");`
+        if t.range(of: #"^[A-Za-z_$][\w$.]*\(.*\)\s*;?$"#, options: .regularExpression) != nil { return true }
+
+        // Lowercase keywords that start a line of code, followed by code-shaped text.
+        if t.range(of: #"^(import|from|using|package|#include)\s+[\w.<>"/]+"#, options: .regularExpression) != nil,
+           t.split(separator: " ").count <= 4, !t.hasSuffix(".") { return true }
+        if t.range(of: #"^(let|var|const|def|func|function|class|struct|return|if|for|while|public|private|fn)\b"#,
+                   options: .regularExpression) != nil {
+            let tokens = ["=", "(", ")", "{", "}", ";", "->", "=>", ":"]
+            if tokens.filter({ t.contains($0) }).count >= 2 { return true }
+        }
+
+        // SQL.
+        if t.range(of: #"^(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP)\s.+\s(FROM|INTO|SET|TABLE|WHERE)\s"#,
+                   options: .regularExpression) != nil { return true }
+
+        return false
     }
 
     static func base(_ lang: Locale.Language) -> String {
