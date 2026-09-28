@@ -513,11 +513,9 @@ struct SettingsView: View {
             providers: availableProviders.map { ProviderChoice(id: $0.rawValue, label: $0.label) },
             providerID: Binding(get: { draft.provider.rawValue },
                                 set: { draft.provider = ProviderKind(rawValue: $0) ?? .onDevice }),
-            providerCaption: draft.provider == .openAICompatible
-                ? "Your configured endpoints, each with its own provider" : nil,
+            providerCaption: nil,
             showsModelRow: draft.provider != .onDevice,
-            modelCaption: draft.provider == .openAICompatible
-                ? "Available from all configured connections" : nil,
+            modelCaption: nil,
             modelControl: {
                 switch draft.provider {
                 case .onDevice:
@@ -576,8 +574,7 @@ struct SettingsView: View {
                     ? "Images go to whatever the language model runs"
                     : "Images use their own protocol and model"),
             showsModelRow: draft.visionEngine != .mlx,
-            modelCaption: draft.visionEngine == .openAICompatible
-                ? "Available from all configured connections" : nil,
+            modelCaption: nil,
             modelControl: {
                 switch draft.visionEngine {
                 case .matchText, .mlx:
@@ -615,8 +612,7 @@ struct SettingsView: View {
             providerID: Binding(get: { draft.embeddingProvider.rawValue },
                                 set: { draft.embeddingProvider = EmbeddingProviderKind(rawValue: $0) ?? .automatic }),
             showsModelRow: draft.embeddingProvider == .ollama || draft.embeddingProvider == .openAICompatible,
-            modelCaption: draft.embeddingProvider == .openAICompatible
-                ? "Available from all configured connections" : nil,
+            modelCaption: nil,
             modelControl: {
                 switch draft.embeddingProvider {
                 case .automatic, .apple, .mlx:
@@ -661,8 +657,7 @@ struct SettingsView: View {
     private var slowModelRow: some View {
         SettingsRow("Slow model", caption: draft.fallbackRaceAfter == 0
                     ? "Wait for your model however long it takes."
-                    : "If your model hasn't started answering by then, the best free model starts too. "
-                      + "The first to answer wins.") {
+                    : "A free model starts too if yours hasn't answered by then.") {
             Picker("", selection: $draft.fallbackRaceAfter) {
                 ForEach(IntelligenceCoordinator.raceAfterChoices, id: \.self) { seconds in
                     Text(seconds == 0 ? "Never" : "After \(seconds) s").tag(seconds)
@@ -689,15 +684,22 @@ struct SettingsView: View {
                     }
                 }
                 SettingsSwitch(title: "Free models", isOn: $draft.autoFallback,
-                               info: "If your model is rate limited, down, or withdrawn before it answers, "
-                                   + "Lasso retries on the closest free model from the connections you set to "
-                                   + "Use as fallback that can handle the request, then on-device. That sends "
-                                   + "the request to a different provider, and free plans may use requests to "
-                                   + "improve their models. The reply says which model answered; your selected "
-                                   + "model doesn't change.")
+                               info: autoFallbackInfo)
                     .disabled(draft.localOnly)
             }
         }
+    }
+
+    private var autoFallbackInfo: String {
+        let about = "If your model is rate limited, down, or withdrawn before it answers, "
+            + "Lasso retries on the closest free model from the connections you set to "
+            + "Use as fallback that can handle the request, then on-device. That sends "
+            + "the request to a different provider, and free plans may use requests to "
+            + "improve their models. The reply says which model answered; your selected "
+            + "model doesn't change."
+        guard draft.autoFallback, !draft.localOnly, let setup = Self.autoFallbackSetup(registry: draft.registry)
+        else { return about }
+        return about + "\n\n" + setup
     }
 
     private var autoFallbackCaption: String {
@@ -715,43 +717,50 @@ struct SettingsView: View {
         return ModelRef(keyID: keyID, model: name)
     }
 
-    /// The Fallback caption once the feature is on: what the pool holds, then what would change it.
-    /// Pure, so the wording (and its single trailing period) is tested rather than eyeballed.
+    /// The Fallback caption once the feature is on: one status line. What to turn on to use more
+    /// connections lives in the ⓘ popover (`autoFallbackSetup`); a billed Free tier key stays here,
+    /// because it costs money. Pure, so the wording is tested rather than eyeballed.
     static func autoFallbackStatus(registry: KeysRegistry, primary: ModelRef?, now: Date) -> String {
         let summary = FreeModelPool.summary(of: registry, primary: primary)
-        var sentences: [String] = []
+        var parts: [String] = []
         if summary.models == 0 {
-            sentences.append("No free models found")
+            parts.append("No free models found")
         } else {
-            var first = "\(summary.models) free model\(summary.models == 1 ? "" : "s") across "
-                + "\(summary.connections) connection\(summary.connections == 1 ? "" : "s")"
+            var first = "\(summary.models) free model\(summary.models == 1 ? "" : "s")"
             if let checked = summary.oldestCheck {
                 first += " · checked " + RelativeDateTimeFormatter().localizedString(for: checked, relativeTo: now)
             }
-            sentences.append(first)
+            parts.append(first)
         }
-        // Say which connections are left out and what would change that, instead of a count that
-        // looks like a bug: one sentence for the switches to turn on, one for providers without a rule.
+        let idle = FreeModelPool.nonContributing(in: registry)
+        let notSetUp = Set((idle.notOptedIn + idle.needsFreeTier).map(\.id)).count
+        if notSetUp > 0 { parts.append("\(notSetUp) connection\(notSetUp == 1 ? "" : "s") not set up") }
+        // A Free tier key that the selected model is billing: its "free" plan models would be billed too.
+        for id in FreeModelPool.billedConnections(in: registry, primary: primary).sorted() {
+            guard let entry = registry.key(withID: id) else { continue }
+            parts.append("\(entry.name) is billed: your model there is paid-only")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// For the ⓘ popover: which connections sit out of the fallback, and the switch that would bring
+    /// each in. nil when every connection already contributes.
+    static func autoFallbackSetup(registry: KeysRegistry) -> String? {
         let idle = FreeModelPool.nonContributing(in: registry)
         func names(_ entries: [RegisteredKey]) -> String {
             ListFormatter.localizedString(byJoining: entries.map(\.name))
         }
+        var sentences: [String] = []
         var switches: [String] = []
         if !idle.notOptedIn.isEmpty { switches.append("Use as fallback for \(names(idle.notOptedIn))") }
         if !idle.needsFreeTier.isEmpty { switches.append("Free tier for \(names(idle.needsFreeTier))") }
         if !switches.isEmpty {
-            sentences.append("Turn on " + switches.joined(separator: ", and ") + " in Manage connections")
+            sentences.append("To use more: turn on " + switches.joined(separator: ", and ") + " in Manage connections.")
         }
         if !idle.unsupported.isEmpty {
-            sentences.append("Lasso can't detect free models on \(names(idle.unsupported)) yet")
+            sentences.append("Lasso can't detect free models on \(names(idle.unsupported)) yet.")
         }
-        // A Free tier key that the selected model is billing: its "free" plan models would be billed too.
-        for id in FreeModelPool.billedConnections(in: registry, primary: primary).sorted() {
-            guard let entry = registry.key(withID: id) else { continue }
-            sentences.append("\(entry.name) is marked Free tier but your selected model there is paid-only, "
-                             + "so the key is billed")
-        }
-        return sentences.joined(separator: ". ") + "."
+        return sentences.isEmpty ? nil : sentences.joined(separator: " ")
     }
 
     /// Ollama's server plumbing. Not a model-type section, so not an instance of the template — but it
@@ -1389,7 +1398,7 @@ struct SettingsView: View {
             statusText: connectionsStatusText,
             statusTint: connectionsStatusTint,
             isTesting: connectionsTest == .testing,
-            canTest: !draft.registry.entries.isEmpty,
+            canTest: draft.registry.hasAnyEnabledKey,
             onTest: { runConnectionsTest() },
             onManage: { showConnections = true })
     }
@@ -1397,8 +1406,12 @@ struct SettingsView: View {
     private var connectionsSummary: String {
         let count = draft.registry.entries.count
         guard count > 0 else { return "None configured" }
-        let models = draft.registry.entries.reduce(0) { $0 + $1.models.count }
-        return "\(count) configured · \(models) model\(models == 1 ? "" : "s") available"
+        // Only switched-on connections serve models.
+        let on = draft.registry.entries.filter(\.enabled)
+        let models = on.reduce(0) { $0 + $1.models.count }
+        let off = count - on.count
+        return "\(count) configured" + (off > 0 ? " (\(off) off)" : "")
+            + " · \(models) model\(models == 1 ? "" : "s") available"
     }
 
     private var connectionsStatusText: String {
@@ -1419,10 +1432,11 @@ struct SettingsView: View {
         }
     }
 
-    /// Test *every* configured connection, because all of them serve models — testing only the one
-    /// behind the current selection would leave the rest silently broken until first use.
+    /// Test every switched-on connection, because all of them serve models — testing only the one
+    /// behind the current selection would leave the rest silently broken until first use. A
+    /// switched-off one isn't contacted.
     private func runConnectionsTest() {
-        let entries = draft.registry.entries
+        let entries = draft.registry.entries.filter(\.enabled)
         guard !entries.isEmpty else { return }
         connectionsTest = .testing
         connectionsTestNote = nil

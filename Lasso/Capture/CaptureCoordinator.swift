@@ -374,15 +374,15 @@ final class CaptureCoordinator {
     // MARK: - Windows & input
 
     private func presentOverlays() {
-        NSApp.activate(ignoringOtherApps: true)
         for shot in shots {
             let window = OverlayWindow(shot: shot, coordinator: self)
             overlayWindows.append(window)
             window.orderFront(nil)
         }
-        // Make the primary display's overlay the key window so keyboard events (Esc) are delivered.
+        // Make the primary display's overlay the key (and main) window so keyboard events (Esc) are
+        // delivered, then activate: activating first brought an open Settings window forward.
         if let key = overlayWindows.first {
-            key.makeKeyAndOrderFront(nil)
+            AppActivation.bringForward(key)
             key.makeFirstResponder(key.contentView)
         }
     }

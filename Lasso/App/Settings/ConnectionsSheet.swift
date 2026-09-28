@@ -3,9 +3,9 @@ import SwiftUI
 /// Manage the app's OpenAI-compatible **connections**.
 ///
 /// A connection is a configured endpoint (name + base URL + credential), not a choice. Every
-/// configured connection is live at once and contributes its models to the shared model picker;
-/// picking a model is what selects the endpoint a request routes to. So this sheet only ever
-/// *configures* — it has no "use this one" affordance, deliberately.
+/// switched-on connection contributes its models to the shared model picker; picking a model is what
+/// selects the endpoint a request routes to. The per-row switch hides a connection's models (and
+/// stops Lasso contacting it) without removing its key and settings.
 ///
 /// Secrets never enter the registry: `keyValues` is the in-memory staging map keyed by connection id,
 /// committed to the Keychain by the panel's Save & Apply like every other edit.
@@ -54,7 +54,7 @@ struct ConnectionsSheet: View {
     private var connectionList: some View {
         VStack(spacing: 0) {
             header(title: "Connections",
-                   subtitle: "All configured endpoints contribute models to the model picker.",
+                   subtitle: "Switched-on connections contribute models to the model picker.",
                    showsClose: true)
 
             if registry.entries.isEmpty {
@@ -120,7 +120,15 @@ struct ConnectionsSheet: View {
                     .lineLimit(1).truncationMode(.middle)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .opacity(entry.enabled ? 1 : 0.5)
 
+            Toggle("", isOn: Binding(get: { entry.enabled }, set: { setEnabled(entry, $0) }))
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .labelsHidden()
+                .help(entry.enabled
+                      ? "Hide \(entry.name)'s models without removing the connection"
+                      : "Show \(entry.name)'s models again")
             Button("Edit") { beginEditing(entry) }
                 .buttonStyle(.bordered)
             Button("Remove") { removing = entry }
@@ -136,6 +144,7 @@ struct ConnectionsSheet: View {
         let endpoint = entry.kind.hasEditableBaseURL ? entry.baseURL : "Google Gemini API"
         if discovering.contains(entry.id) { return "\(endpoint) · discovering models…" }
         let count = entry.models.count
+        if !entry.enabled { return "\(endpoint) · off, \(count) model\(count == 1 ? "" : "s") hidden" }
         let models = count == 0 ? "no models yet" : "\(count) model\(count == 1 ? "" : "s")"
         // What the connection serves, whether or not it's used as a fallback.
         let free = FreeModelPool.badges(in: registry, primary: primary).keys.filter { $0.keyID == entry.id }.count
@@ -335,6 +344,15 @@ struct ConnectionsSheet: View {
 
     static func freeTierToSave(kind: ConnectionKind, baseURL: String, switchOn: Bool) -> Bool {
         switchOn && FreeTierProvider.identify(kind: kind, baseURL: baseURL)?.hasFreePlanSwitch == true
+    }
+
+    /// Off hides the connection's models everywhere and stops routing, fallback and refresh from
+    /// using it; its key and settings stay. A selection that used one of its models falls back the
+    /// same way it does when a connection is removed (`onChanged`).
+    private func setEnabled(_ entry: RegisteredKey, _ on: Bool) {
+        guard let index = registry.entries.firstIndex(where: { $0.id == entry.id }) else { return }
+        registry.entries[index].enabled = on
+        onChanged()
     }
 
     private func remove(_ entry: RegisteredKey) {

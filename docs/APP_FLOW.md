@@ -126,11 +126,13 @@ model** — each a `Protocol` picker + per-protocol config), staged in a `Draft`
   **connection** is a configured endpoint under it (`RegisteredKey`: stable UUID, name, base URL,
   `keyNotRequired`, discovered models), and secrets live in the Keychain under
   `keys.registry.<id>.key`, never in the Draft or the JSON. **There is no active connection.** Every
-  configured connection is live at once and contributes its models to one merged, capability-filtered
+  switched-on connection is live at once and contributes its models to one merged, capability-filtered
   list (`groups(for:)`), the user picks a *model*, and the `ModelSelection` it stores carries the exact
   **key id** — so picking the model is what routes the request, and two connections serving the same
-  model name still reach the right backend. `enabled` survives only for decoding old stores; `load()`
-  forces every entry back on, since the UI no longer has a switch to undo it. Capabilities are inferred
+  model name still reach the right backend. `enabled` is the Connections sheet's per-row switch: off
+  hides the connection's models from every picker (Settings, chat header, translate menu), and
+  routing, the free-model fallback, the daily model refresh and "Test connections" skip it; its key
+  and settings stay. A selection that used one of its models heals like a removal. Capabilities are inferred
   from the model id (`inferCapabilities`), which is what filters the one list into the Language / Image
   / Embedding pickers. Editing a connection keeps its id, so renames and rotated keys don't break
   selections.
@@ -466,7 +468,11 @@ flowchart LR
 
 Persistent top-right panel (⌥⌘A), independent of the capture overlay. Resizable down to 340×360
 (set in the SwiftUI root and passed to the window via `sizingOptions = [.minSize]`; a plain
-`panel.minSize` is wiped by AppKit's first layout pass). Multi-turn, **multi-image**
+`panel.minSize` is wiped by AppKit's first layout pass). Opening it, a result card, Lens or a capture
+goes through `AppActivation.bringForward`: the window becomes key *and main* before the app activates,
+because activation brings the app's main window forward and an open Settings window used to jump in
+front of every other app. The card is pinned to the window's size and
+the header's title and model chip truncate, so nothing pushes the card past the window. Multi-turn, **multi-image**
 attach (button / ⌘V / drag / capture seed; up to `maxAttachments`), two-track memory
 (`ConversationMemory`, `ChatContextBuilder`). Images: `Attachment` (structured, stable id) → native
 models get an image array per turn; text-only models get per-image "Image N:" captions + OCR. Grounds via the same keyless web search; reverse-image is the one-tap Lens

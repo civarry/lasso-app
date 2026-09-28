@@ -19,13 +19,11 @@ struct KeysRegistryTests {
         !registry.entries.contains { !$0.enabled }
     }
 
-    // MARK: - The old on/off flag
+    // MARK: - On/off
 
-    /// Connections used to have an on/off pill. That control is gone — every configured endpoint
-    /// contributes its models at once — but a registry written by the old UI can still carry
-    /// `enabled == false`, and `groups(for:)` skips those. Left alone, such a connection is invisible
-    /// in every picker with no control left to bring it back.
-    @Test func loadReEnablesAConnectionTheOldUISwitchedOff() {
+    /// A connection can be switched off to hide its models without removing it. (An earlier version had
+    /// no switch and forced every connection back on at load; with the switch back, off has to stick.)
+    @Test func aSwitchedOffConnectionStaysOffAndKeepsItsModels() {
         withScratchDefaults { defaults in
             let registry = KeysRegistry(entries: [
                 RegisteredKey(name: "Groq", baseURL: "https://api.groq.com/openai/v1",
@@ -38,30 +36,50 @@ struct KeysRegistryTests {
             registry.save(to: defaults)
 
             let loaded = KeysRegistry.load(from: defaults)
-
-            #expect(allEnabled(loaded))
-            // The healed value has to reach the model list, not just the struct.
-            #expect(loaded.groups(for: .language).map(\.name) == ["Groq", "AIStudio"])
+            let groq = try? #require(loaded.entries.first { $0.name == "Groq" })
+            #expect(groq?.enabled == false)
+            #expect(groq?.models.map(\.name) == ["llama-4-scout"])          // kept, just hidden
+            #expect(loaded.groups(for: .language).map(\.name) == ["AIStudio"])
+            #expect(loaded.enabledKey(exposingModel: "llama-4-scout") == nil)
         }
     }
 
-    /// Healing only the in-memory copy is what made Settings claim three connections while the chat
-    /// switcher showed one. The fix has to be written back, so every reader agrees.
-    @Test func theReEnableIsPersistedNotJustInMemory() {
+    @Test func switchingItBackOnRestoresItsModels() {
         withScratchDefaults { defaults in
-            let registry = KeysRegistry(entries: [
+            var registry = KeysRegistry(entries: [
                 RegisteredKey(name: "OpenRouter", baseURL: "https://openrouter.ai/api/v1",
                               keyNotRequired: false, enabled: false,
                               models: [RegistryModel(name: "openai/gpt-5")]),
             ])
             registry.save(to: defaults)
+            #expect(KeysRegistry.load(from: defaults).groups(for: .language).isEmpty)
 
-            _ = KeysRegistry.load(from: defaults)          // heals + writes back
-            let reread = KeysRegistry.load(from: defaults) // a second, independent reader
-
-            #expect(allEnabled(reread))
-            #expect(!reread.groups(for: .language).isEmpty)
+            registry.entries[0].enabled = true
+            registry.save(to: defaults)
+            #expect(KeysRegistry.load(from: defaults).groups(for: .language).map(\.name) == ["OpenRouter"])
         }
+    }
+
+    /// Switching a provider off also stops Lasso contacting it: the daily model-list refresh skips it,
+    /// and an old list on a switched-off connection doesn't make the registry "stale".
+    @MainActor
+    @Test func theRefresherNeverContactsASwitchedOffConnection() async {
+        let suite = "KeysRegistryTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        KeysRegistry(entries: [
+            RegisteredKey(name: "Off", baseURL: "https://off.example.com/v1", keyNotRequired: true, enabled: false),
+            RegisteredKey(name: "On", baseURL: "https://on.example.com/v1", keyNotRequired: true, enabled: true,
+                          modelsCheckedAt: Date()),
+        ]).save(to: defaults)
+
+        let asked = Asked()
+        let refresher = FreeModelRefresher(store: defaults, discover: { entry, _ in
+            await asked.add(entry.name); return [RegistryModel(name: "m")]
+        }, keyValue: { _ in "" })
+        #expect(!refresher.isStale, "a never-checked switched-off connection made the registry stale")
+        await refresher.refresh()
+        #expect(await asked.names == ["On"])
     }
 
     // MARK: - Aggregation
@@ -220,4 +238,9 @@ struct GeminiProviderTests {
         #expect(GeminiAPI.text(in: ["candidates": []]).isEmpty)
         #expect(GeminiAPI.text(in: [:]).isEmpty)
     }
+}
+
+private actor Asked {
+    var names: [String] = []
+    func add(_ name: String) { names.append(name) }
 }

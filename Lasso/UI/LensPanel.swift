@@ -18,7 +18,7 @@ final class LensPanelController: NSObject, NSWindowDelegate {
         // Wide enough that Google serves its full two-column desktop Lens layout (AI Overview beside
         // the source list) rather than the cramped single-column view. Still user-resizable.
         let size = NSSize(width: 860, height: 680)
-        let panel = NSPanel(
+        let panel = MainCapablePanel(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.titled, .closable, .resizable, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered, defer: false)
@@ -47,8 +47,7 @@ final class LensPanelController: NSObject, NSWindowDelegate {
         panel.delegate = self
 
         panel.setFrameOrigin(origin(for: size, anchor: anchor))
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
+        AppActivation.bringForward(panel)
         self.panel = panel
     }
 

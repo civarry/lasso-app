@@ -2,10 +2,30 @@ import AppKit
 import SwiftUI
 
 /// Borderless floating panel that can become key (so buttons + Esc work), and dismisses on Esc.
-final class FloatingPanel: NSPanel {
+/// A panel that can be both key and main. Main matters when the app activates: activation brings
+/// the app's main and key windows forward, so a panel that can't be main leaves some other window
+/// (an open Settings window) as main, and it jumps in front of every other app.
+class MainCapablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
+final class FloatingPanel: MainCapablePanel {
     override func cancelOperation(_ sender: Any?) {
         FloatingPanelController.shared.close()
+    }
+}
+
+/// Bring one of Lasso's own windows forward with the keyboard, without dragging the app's other
+/// windows along. Activating the app brings its main and key windows forward, so the window becomes
+/// key and main first and the app activates after; activating first (the old order) pulled an open
+/// Settings window in front of every other app whenever the chat, a result or a capture opened.
+@MainActor
+enum AppActivation {
+    static func bringForward(_ window: NSWindow) {
+        window.makeKeyAndOrderFront(nil)
+        if window.canBecomeMain { window.makeMain() }
+        NSApp.activate(ignoringOtherApps: true)
     }
 }
 
@@ -77,8 +97,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         panel.setFrame(NSRect(origin: resolved, size: size), display: false)
 
         // Activate so text fields (Ask AI) receive keystrokes; the panel still floats and persists.
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
+        AppActivation.bringForward(panel)
         self.panel = panel
     }
 

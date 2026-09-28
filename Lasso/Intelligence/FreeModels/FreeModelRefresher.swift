@@ -36,9 +36,9 @@ final class FreeModelRefresher {
         self.onRefreshed = onRefreshed
     }
 
-    /// Some connection's list is older than a day, or was never fetched.
+    /// Some switched-on connection's list is older than a day, or was never fetched.
     var isStale: Bool {
-        KeysRegistry.load(from: store).entries.contains { entry in
+        KeysRegistry.load(from: store).entries.filter(\.enabled).contains { entry in
             guard let checked = entry.modelsCheckedAt else { return true }
             return now().timeIntervalSince(checked) > Self.staleAfter
         }
@@ -71,7 +71,9 @@ final class FreeModelRefresher {
     /// "once free". Everything the user owns on the connection (name, URL, Free tier) is untouched.
     private func performRefresh() async {
         let snapshot = KeysRegistry.load(from: store)
-        let jobs = snapshot.entries.map { ($0, keyValue($0)) }
+        // A switched-off connection is left alone: switching a provider off means Lasso stops
+        // contacting it, not just that its models are hidden.
+        let jobs = snapshot.entries.filter(\.enabled).map { ($0, keyValue($0)) }
         let discover = self.discover
         let results = await withTaskGroup(of: (RegisteredKey, String, [RegistryModel]?).self) { group in
             for (entry, key) in jobs { group.addTask { (entry, key, await discover(entry, key)) } }

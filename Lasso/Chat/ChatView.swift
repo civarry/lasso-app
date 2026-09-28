@@ -12,6 +12,9 @@ struct ChatView: View {
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
+        // The card is exactly the window's size. Content that won't shrink is clipped inside the
+        // rounded card instead of stretching the card past the window, which cut its corners square.
+        GeometryReader { window in
         VStack(spacing: 0) {
             header
             Divider()
@@ -19,12 +22,13 @@ struct ChatView: View {
             conversation
             composer
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(width: window.size.width, height: window.size.height)
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
             .strokeBorder(isDropTarget ? Color.accentColor : .white.opacity(0.10),
                           lineWidth: isDropTarget ? 2 : 1))
+        }
         .onAppear { DispatchQueue.main.async { inputFocused = true } }
         // Drag-and-drop an image (from Finder or another app) onto the panel to attach it.
         .onDrop(of: [.image, .fileURL], isTargeted: $isDropTarget) { providers in
@@ -50,7 +54,7 @@ struct ChatView: View {
         HStack(spacing: 8) {
             Image(systemName: "lasso").foregroundStyle(.tint)
             conversationsMenu
-            Spacer()
+            Spacer(minLength: 4)
             modelChip
             Button { ChatPanelController.shared.close() } label: { Image(systemName: "xmark") }
                 .buttonStyle(IconButtonStyle())
@@ -127,14 +131,17 @@ struct ChatView: View {
         } label: {
             HStack(spacing: 3) {
                 Text(chat.sessions.count > 1 ? chat.active.title : "Chat")
-                    .font(.headline).lineLimit(1)
+                    .font(.headline).lineLimit(1).truncationMode(.tail)
                 Image(systemName: "chevron.down").font(.caption2).foregroundStyle(.secondary)
             }
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .buttonStyle(.plain)
-        .fixedSize()
+        // Height fixed, width free: a long title truncates instead of widening the whole card past
+        // the window (`.fixedSize()` here made the content 547pt wide at any window width).
+        .fixedSize(horizontal: false, vertical: true)
+        .layoutPriority(1)
         .help("Conversations — switch or start a new one")
     }
 
@@ -207,7 +214,7 @@ struct ChatView: View {
             HStack(spacing: 4) {
                 Image(systemName: textIcon).font(.system(size: 9))
                 Text(Self.friendlyModel(intelligence.textEngineLabel))
-                    .font(.caption).lineLimit(1)
+                    .font(.caption).lineLimit(1).truncationMode(.middle)
                 Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold))
             }
             .foregroundStyle(.secondary)
@@ -217,7 +224,8 @@ struct ChatView: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .fixedSize()
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: 170)
         .help("Switch model")
     }
 

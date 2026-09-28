@@ -41,8 +41,7 @@ final class ChatPanelController: NSObject, NSWindowDelegate {
 
     func present() {
         if let panel {
-            NSApp.activate(ignoringOtherApps: true)
-            panel.makeKeyAndOrderFront(nil)
+            AppActivation.bringForward(panel)
             Task { await ChatController.shared.refreshCapabilities() }
             return
         }
@@ -79,8 +78,7 @@ final class ChatPanelController: NSObject, NSWindowDelegate {
         // installed so the hosting controller can't override it.
         let origin = savedOrigin(for: size) ?? topRightOrigin(for: size)
         panel.setFrame(NSRect(origin: origin, size: size), display: false)
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
+        AppActivation.bringForward(panel)
         self.panel = panel
         installPasteMonitor()
 

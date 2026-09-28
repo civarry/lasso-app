@@ -1,5 +1,6 @@
 import Testing
 import AppKit
+import SwiftUI
 @testable import Lasso
 
 /// The chat panel could be resized until nothing was visible: `panel.minSize` was set, but AppKit
@@ -20,5 +21,21 @@ struct ChatPanelSizeTests {
         // And the panel keeps its real size rather than collapsing to the content's fitting size.
         #expect(panel.frame.width >= ChatPanelController.minimumSize.width)
         #expect(panel.frame.height >= ChatPanelController.minimumSize.height)
+    }
+
+    /// The header's menus were `.fixedSize()`, so a long conversation title or model name made the
+    /// whole card wider than the window (547pt at any width): the content was cut off on both sides
+    /// and the rounded corners were clipped square. At the minimum width it must fit.
+    @Test func contentFitsTheMinimumWidthWithALongModelName() {
+        let intelligence = IntelligenceCoordinator.shared
+        let saved = (intelligence.preferred, intelligence.openAIModel)
+        intelligence.preferred = .openAICompatible
+        intelligence.openAIModel = "some-provider/an-extremely-long-model-name-for-layout-testing-v2:free"
+        defer { intelligence.preferred = saved.0; intelligence.openAIModel = saved.1 }
+
+        let hosting = NSHostingController(rootView: ChatView())
+        let width = ChatPanelController.minimumSize.width
+        let needed = hosting.sizeThatFits(in: CGSize(width: width, height: ChatPanelController.minimumSize.height))
+        #expect(needed.width <= width, "chat content needs \(needed.width)pt at \(width)pt")
     }
 }

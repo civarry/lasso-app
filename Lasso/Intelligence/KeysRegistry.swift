@@ -176,18 +176,13 @@ struct KeysRegistry: Codable, Equatable, Sendable {
     /// real settings.
     static func load(from store: UserDefaults = .standard) -> KeysRegistry {
         guard let data = store.data(forKey: storeKey),
-              var decoded = try? JSONDecoder().decode(KeysRegistry.self, from: data) else {
+              let decoded = try? JSONDecoder().decode(KeysRegistry.self, from: data) else {
             return KeysRegistry()
         }
-        // Connections have no on/off any more: every configured endpoint contributes its models at
-        // once. A connection switched off by the old key-pill UI would otherwise stay invisible
-        // forever, with no control left to bring it back — and `groups(for:)` would silently drop it
-        // from every model picker. Heal it here, at the one point every reader goes through, and
-        // write it back so the fix is permanent rather than per-process.
-        if decoded.entries.contains(where: { !$0.enabled }) {
-            for index in decoded.entries.indices { decoded.entries[index].enabled = true }
-            decoded.save(to: store)
-        }
+        // `enabled` is the Connections sheet's on/off switch: off hides a connection's models from
+        // every picker and stops routing, fallback and refresh from using it, without removing it.
+        // (An earlier version had no switch and forced every connection back on here; the switch
+        // brings it back, so off has to stick.)
         return decoded
     }
 

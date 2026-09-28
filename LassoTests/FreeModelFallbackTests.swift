@@ -1006,7 +1006,9 @@ struct FreeModelFallbackTests {
         #expect(ChatController.splitReasoning("Plan it.\n</think>\n42").answer == "42", "real markup still splits")
     }
 
-    @MainActor @Test func theFallbackCaptionNamesWhatToTurnOnInOneShortSentence() {
+    /// The caption is one short status line; what to turn on (and where) moves to the ⓘ popover, which
+    /// still names every connection and switch. A billed Free tier key stays in the caption: it's cost.
+    @MainActor @Test func theFallbackCaptionIsShortAndTheSetupDetailsMoveToInfo() {
         var zero = RegistryModel(name: "a/zero-70b:free"); zero.freeOffer = .always
         let registry = KeysRegistry(entries: [
             openRouterEntry([zero], useForFallback: false),
@@ -1015,9 +1017,11 @@ struct FreeModelFallbackTests {
                           models: [RegistryModel(name: "llama")]),
         ])
         let caption = SettingsView.autoFallbackStatus(registry: registry, primary: nil, now: Date())
-        #expect(caption == "No free models found. Turn on Use as fallback for OpenRouter and Groq, and Free tier "
-                + "for Groq in Manage connections. Lasso can't detect free models on Work AI yet.")
-        #expect(!caption.contains("—") && !caption.hasSuffix(".."))
+        #expect(caption == "No free models found · 2 connections not set up")
+        #expect(!caption.contains("—"))
+        #expect(SettingsView.autoFallbackSetup(registry: registry)
+                == "To use more: turn on Use as fallback for OpenRouter and Groq, and Free tier for Groq in "
+                   + "Manage connections. Lasso can't detect free models on Work AI yet.")
 
         let google = RegisteredKey(id: "gm", name: "Gemini", baseURL: "", keyNotRequired: false,
                                    models: [RegistryModel(name: "models/gemini-3.1-pro-preview"),
@@ -1026,7 +1030,8 @@ struct FreeModelFallbackTests {
         let billed = SettingsView.autoFallbackStatus(registry: KeysRegistry(entries: [google]),
                                                      primary: ModelRef(keyID: "gm", model: "models/gemini-3.1-pro-preview"),
                                                      now: Date())
-        #expect(billed.hasSuffix("Gemini is marked Free tier but your selected model there is paid-only, so the key is billed."))
+        #expect(billed.hasSuffix("Gemini is billed: your model there is paid-only"))
+        #expect(SettingsView.autoFallbackSetup(registry: KeysRegistry(entries: [google])) == nil)
     }
 
     // MARK: - Round 2
@@ -1064,7 +1069,7 @@ struct FreeModelFallbackTests {
         let billed = FreeModelPool.summary(of: registry, primary: paid)
         #expect(billed.models == 1 && billed.connections == 1)
         #expect(SettingsView.autoFallbackStatus(registry: registry, primary: paid, now: Date())
-            .hasPrefix("1 free model across 1 connection"))
+            .hasPrefix("1 free model ·"))
     }
 
     /// A connection repointed from Groq to a provider without a rule keeps its old list until the next
