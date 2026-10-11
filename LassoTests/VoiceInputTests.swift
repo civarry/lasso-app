@@ -6,6 +6,10 @@ import AVFoundation
 /// Apple's on-device recognizer end to end, from an audio file macOS speaks for us (no microphone).
 struct AppleSpeechFileTests {
     @Test func transcribesSpokenEnglishOnDevice() async throws {
+        // Virtual Macs (the CI runner) report on-device speech as unsupported; nothing to test there.
+        guard await AppleSpeech.isSupported(localeID: "en_US") else {
+            print("skipped: on-device speech recognition is unsupported on this Mac"); return
+        }
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("lasso-voice-\(UUID()).aiff")
         defer { try? FileManager.default.removeItem(at: file) }
         let say = Process()
@@ -129,6 +133,9 @@ struct VoiceSessionTests {
 /// survive.
 struct LiveDictationTests {
     @Test func finishingFromACancelledTaskKeepsTheText() async throws {
+        guard await AppleSpeech.isSupported(localeID: "en_US") else {
+            print("skipped: on-device speech recognition is unsupported on this Mac"); return
+        }
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("lasso-live-\(UUID()).aiff")
         defer { try? FileManager.default.removeItem(at: file) }
         let say = Process()

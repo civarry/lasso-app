@@ -8,28 +8,33 @@ enum AppleSpeech {
     static func supportedLocales() async -> [Locale] { await SpeechTranscriber.supportedLocales }
     static func installedLocales() async -> [Locale] { await SpeechTranscriber.installedLocales }
 
+    /// Whether this Mac can do on-device speech recognition for `localeID` at all. Virtual Macs (CI
+    /// runners) report `unsupported`: there's no model to download, so voice input can't work there.
+    static func isSupported(localeID: String) async -> Bool {
+        let transcriber = SpeechTranscriber(locale: Locale(identifier: localeID), preset: .transcription)
+        return await AssetInventory.status(forModules: [transcriber]) != .unsupported
+    }
+
     /// Make sure the recognizer for `locale` is on this Mac. Nothing to do when the system already has
-    /// it (usually true for the Mac's own language). Otherwise the app has to *reserve* the locale
-    /// before asking for the download: without it the request fails with "<app> is not subscribed to
-    /// transcription.<lang>", which is what a fresh Mac (CI) hit on the first tap of the mic.
+    /// it (usually true for the Mac's own language); otherwise it downloads once. The installation
+    /// request reserves the locale itself (checked on a real Mac), so no separate reserve step.
     static func installIfNeeded(_ transcriber: SpeechTranscriber, locale: Locale) async throws {
-        let status = await AssetInventory.status(forModules: [transcriber])
-        if status == .installed { return }
-        // Each step names itself in the error, so a failure says where it happened (the API's own
-        // messages don't), e.g. "reserve en_US (status supported): …".
-        var reserved = false
-        do {
-            reserved = try await AssetInventory.reserve(locale: locale)
-        } catch {
-            throw VoiceInputError("Couldn't reserve \(locale.identifier) speech (status \(status)): \(error.localizedDescription)")
+        switch await AssetInventory.status(forModules: [transcriber]) {
+        case .installed:
+            return
+        case .unsupported:
+            // Otherwise the download fails with a misleading "not subscribed to transcription.en".
+            let language = Locale.current.localizedString(forIdentifier: locale.identifier) ?? locale.identifier
+            throw VoiceInputError("This Mac doesn't support on-device speech recognition for \(language).")
+        default:
+            break
         }
         do {
             if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
                 try await request.downloadAndInstall()
             }
         } catch {
-            throw VoiceInputError("Couldn't download \(locale.identifier) speech (status \(status), reserved \(reserved)): "
-                                  + error.localizedDescription)
+            throw VoiceInputError("Couldn't download \(locale.identifier) speech recognition: \(error.localizedDescription)")
         }
     }
 
