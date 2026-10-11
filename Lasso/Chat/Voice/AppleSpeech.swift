@@ -8,7 +8,13 @@ enum AppleSpeech {
     static func supportedLocales() async -> [Locale] { await SpeechTranscriber.supportedLocales }
     static func installedLocales() async -> [Locale] { await SpeechTranscriber.installedLocales }
 
-    static func installIfNeeded(_ transcriber: SpeechTranscriber) async throws {
+    /// Make sure the recognizer for `locale` is on this Mac. Nothing to do when the system already has
+    /// it (usually true for the Mac's own language). Otherwise the app has to *reserve* the locale
+    /// before asking for the download: without it the request fails with "<app> is not subscribed to
+    /// transcription.<lang>", which is what a fresh Mac (CI) hit on the first tap of the mic.
+    static func installIfNeeded(_ transcriber: SpeechTranscriber, locale: Locale) async throws {
+        if await AssetInventory.status(forModules: [transcriber]) == .installed { return }
+        _ = try await AssetInventory.reserve(locale: locale)
         if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
             try await request.downloadAndInstall()
         }
@@ -16,8 +22,9 @@ enum AppleSpeech {
 
     /// Transcribe a whole audio file. Used by the tests, which feed it speech macOS generates.
     static func transcribe(file: URL, localeID: String) async throws -> String {
-        let transcriber = SpeechTranscriber(locale: Locale(identifier: localeID), preset: .transcription)
-        try await installIfNeeded(transcriber)
+        let locale = Locale(identifier: localeID)
+        let transcriber = SpeechTranscriber(locale: locale, preset: .transcription)
+        try await installIfNeeded(transcriber, locale: locale)
         let audio = try AVAudioFile(forReading: file)
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         let collector = Task {
@@ -50,8 +57,9 @@ final class AppleLiveTranscription: AudioSink, @unchecked Sendable {
     }
 
     static func make(localeID: String) async throws -> AppleLiveTranscription {
-        let transcriber = SpeechTranscriber(locale: Locale(identifier: localeID), preset: .progressiveTranscription)
-        try await AppleSpeech.installIfNeeded(transcriber)
+        let locale = Locale(identifier: localeID)
+        let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
+        try await AppleSpeech.installIfNeeded(transcriber, locale: locale)
         guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
             throw VoiceInputError("This Mac's speech recognizer isn't ready. Try again in a moment.")
         }
