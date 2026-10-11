@@ -1,0 +1,63 @@
+# Build Lasso and run its tests on every push to main and every pull request, the way BUILDING.md
+# describes: XcodeGen, the Metal toolchain, ad-hoc signing (the repo default; no certificate here), and
+# -skipMacroValidation for the MLX package's Swift macros. Free for a public repo.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["stats/**", "**.md", "screenshots/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select the newest Xcode
+        run: |
+          set -euo pipefail
+          xcode=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+          sw_vers
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Download the Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: .dd/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles('project.yml') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      - name: Build and test
+        run: |
+          set -o pipefail
+          xcodebuild -scheme Lasso -configuration Debug -destination 'platform=macOS' \
+            -derivedDataPath .dd -skipMacroValidation test 2>&1 | tee xcodebuild.log | grep -E "^(✔|✘|◇ Test run|\*\*)|error:" || true
+          grep -q "TEST SUCCEEDED" xcodebuild.log
+
+      - name: Upload the log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: xcodebuild.log
