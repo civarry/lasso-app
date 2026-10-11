@@ -27,11 +27,14 @@ xcodebuild -downloadComponent MetalToolchain
 
 Then either:
 
-- **In Xcode:** `open Lasso.xcodeproj`, pick the **Lasso** scheme and press **⌘R**.
+- **In Xcode:** `open Lasso.xcodeproj`, pick the **Lasso** scheme and press **⌘R**. The first time,
+  Xcode asks you to trust the MLX package's Swift macros: click **Trust & Enable**.
 - **From the terminal:**
 
   ```sh
-  xcodebuild -scheme Lasso -configuration Release -derivedDataPath .build build
+  # -skipMacroValidation: the MLX package uses Swift macros, which the command line won't run
+  # until approved (the Xcode app asks instead).
+  xcodebuild -scheme Lasso -configuration Release -derivedDataPath .build -skipMacroValidation build
   cp -R .build/Build/Products/Release/Lasso.app /Applications/
   open /Applications/Lasso.app
   ```
@@ -75,7 +78,7 @@ To keep permissions across rebuilds, sign with a free Apple Development certific
 
 ```sh
 xcodebuild -scheme Lasso -configuration Debug -destination 'platform=macOS' \
-  -derivedDataPath /tmp/lasso-dd test
+  -derivedDataPath /tmp/lasso-dd -skipMacroValidation test
 ```
 
 A few suites call real models or services and are skipped unless you opt in (for example
@@ -84,6 +87,8 @@ A few suites call real models or services and are skipped unless you opt in (for
 ## Troubleshooting
 
 - **`missing Metal Toolchain`** during the build: run `xcodebuild -downloadComponent MetalToolchain`.
+- **`Macro "MLXHuggingFaceMacros" … must be enabled before it can be used`:** in Xcode, click
+  **Trust & Enable** when asked; from the terminal, add `-skipMacroValidation` to `xcodebuild`.
 - **The capture shows only your wallpaper or nothing:** Screen Recording isn't granted to this build.
   Remove Lasso from the list in Privacy & Security, add it again, and reopen Lasso.
 - **`Lasso.xcodeproj` is missing or out of date:** run `xcodegen generate`. The project file isn't
