@@ -43,6 +43,9 @@ flowchart TD
    (`MenuBarController`) starts a session. Screen-recording permission is gated by `PermissionsService`.
 2. **Freeze** — `ScreenCaptureService` grabs the display; `OverlayWindow` shows it frozen so the user
    can drag a selection (`SelectionView`); `SubjectLift` supports object/subject lift.
+   The overlay's content view accepts the first click (`FirstClickHostingView`): a hotkey only asks
+   macOS to activate Lasso, and until it does, a first click that isn't accepted just activates the app
+   and the drag doesn't register.
 3. **Pre-pass** (`runPrePass`) on the crop: `OCREngine` (text + per-line boxes), `BarcodeEngine`
    (QR/barcode), `DataDetector` (URLs/phones/emails/dates), and `prewarmVision()`. Results populate a
    `CaptureContext` (`Actions/CaptureAction.swift`).
