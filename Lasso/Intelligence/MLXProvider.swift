@@ -193,7 +193,8 @@ struct MLXProvider: IntelligenceProvider {
 
     /// Downloaded == present in the on-disk Hugging Face cache (source of truth), so models fetched
     /// before tracking existed — or by other tools — are recognised too.
-    static func isDownloaded(_ id: String) -> Bool {
+    static func isDownloaded(_ id: String, localRoots: [URL] = MLXLocalModels.searchRoots) -> Bool {
+        if MLXLocalModels.folder(for: id, roots: localRoots) != nil { return true }
         let snapshots = MLXCache.directory(for: id).appendingPathComponent("snapshots", isDirectory: true)
         if let entries = try? FileManager.default.contentsOfDirectory(atPath: snapshots.path),
            !entries.isEmpty {
@@ -313,12 +314,18 @@ private actor MLXModelCache {
         }
         Log.mlx.notice("load START \(modelID, privacy: .public) · mem=\(MemoryReport.footprintMB(), privacy: .public)MB")
         let t0 = Date()
+        // A model already in a folder on this Mac (~/models, LM Studio, or a path) loads straight from
+        // it: a directory configuration skips the download step, so nothing is fetched.
+        let configuration = MLXLocalModels.folder(for: modelID).map { ModelConfiguration(directory: $0) }
+            ?? ModelConfiguration(id: modelID)
+        if case .directory(let dir) = configuration.id {
+            Log.mlx.notice("load from folder \(dir.path, privacy: .public)")
+        }
         let task = Task<ModelContainer, Error> { [progress] in
             if let progress {
-                return try await #huggingFaceLoadModelContainer(
-                    configuration: ModelConfiguration(id: modelID), progressHandler: progress)
+                return try await #huggingFaceLoadModelContainer(configuration: configuration, progressHandler: progress)
             }
-            return try await #huggingFaceLoadModelContainer(configuration: ModelConfiguration(id: modelID))
+            return try await #huggingFaceLoadModelContainer(configuration: configuration)
         }
         loading[modelID] = task
         defer { loading[modelID] = nil }
@@ -359,6 +366,59 @@ private actor MLXModelCache {
         source.setEventHandler { Task { await MLXModelCache.shared.evictAll(reason: "memory pressure") } }
         source.resume()
         pressureSource = source
+    }
+}
+
+/// MLX models in plain folders on this Mac, outside the Hugging Face cache: `huggingface-cli download
+/// --local-dir ~/models/<org>/<name>`, LM Studio's `~/.lmstudio/models/<org>/<name>`, or any folder the
+/// user picks (its path is the model id). A folder counts when it has `config.json` and `.safetensors`
+/// weights. Before this, such a model read as "not downloaded" and Settings offered to download it again.
+enum MLXLocalModels {
+    static var searchRoots: [URL] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return [home.appendingPathComponent("models", isDirectory: true),
+                home.appendingPathComponent(".lmstudio/models", isDirectory: true)]
+    }
+
+    static func isModelFolder(_ url: URL) -> Bool {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.appendingPathComponent("config.json").path),
+              let files = try? fm.contentsOfDirectory(atPath: url.path) else { return false }
+        return files.contains { $0.hasSuffix(".safetensors") }
+    }
+
+    /// The folder holding `id`: the id itself when it's a path, else `<root>/<id>` in a search root.
+    static func folder(for id: String, roots: [URL] = searchRoots) -> URL? {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("/") || trimmed.hasPrefix("~") {
+            let url = URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath, isDirectory: true)
+            return isModelFolder(url) ? url : nil
+        }
+        for root in roots {
+            let url = root.appendingPathComponent(trimmed, isDirectory: true)
+            if isModelFolder(url) { return url }
+        }
+        return nil
+    }
+
+    /// Every model folder in the search roots, as `org/name` (or `name` when there's no org folder).
+    static func discovered(roots: [URL] = searchRoots) -> [(id: String, url: URL)] {
+        let fm = FileManager.default
+        var found: [(id: String, url: URL)] = []
+        for root in roots {
+            guard let top = try? fm.contentsOfDirectory(atPath: root.path) else { continue }
+            for first in top where !first.hasPrefix(".") {
+                let url = root.appendingPathComponent(first, isDirectory: true)
+                if isModelFolder(url) { found.append((first, url)); continue }
+                guard let inner = try? fm.contentsOfDirectory(atPath: url.path) else { continue }
+                for second in inner where !second.hasPrefix(".") {
+                    let model = url.appendingPathComponent(second, isDirectory: true)
+                    if isModelFolder(model) { found.append(("\(first)/\(second)", model)) }
+                }
+            }
+        }
+        return found.sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
     }
 }
 

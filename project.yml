@@ -28,7 +28,10 @@ settings:
     # Exact SHA-1 of the "Apple Development: your-apple-id" keychain cert. Using the hash
     # (not the "Apple Development" name) avoids xcodebuild resolving it to a "Mac Development"
     # profile, which fails since no Apple ID is added to Xcode. macOS dev signing needs no profile.
-    CODE_SIGN_IDENTITY: "610C5228B8987C393A78C76D0F4F82E7E73062E8"
+    # Development certs get replaced (and the old one revoked) when Xcode issues a new one; macOS then
+    # treats every app signed with the revoked cert as malware (issue lasso-app#2, Oct 2026: 610C… was
+    # revoked). Run Tools/check-signature.sh on every release build before publishing.
+    CODE_SIGN_IDENTITY: "AA75ED40D8B1E57DDFB7544829E741370B98036C"
     PROVISIONING_PROFILE_SPECIFIER: ""
     ENABLE_HARDENED_RUNTIME: YES
     # Xcode "recommended settings" — set here (not via the .xcodeproj, which XcodeGen regenerates).
@@ -36,8 +39,8 @@ settings:
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
     STRING_CATALOG_GENERATE_SYMBOLS: YES
-    MARKETING_VERSION: "0.13.1"
-    CURRENT_PROJECT_VERSION: "35"
+    MARKETING_VERSION: "0.14.0"
+    CURRENT_PROJECT_VERSION: "36"
 
 packages:
   KeyboardShortcuts:

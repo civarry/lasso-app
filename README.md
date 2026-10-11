@@ -40,6 +40,11 @@ A persistent chat panel lives in the top-right corner (**⌃⇧A** to toggle). I
 drop an image straight into it, and you can send a capture into it to keep asking questions. When you
 turn on web connectors, it grounds its answers with real sources.
 
+**Talk instead of typing.** Click the mic next to the message box and speak English; words appear
+as you talk, and it stops by itself when you pause. The text lands in the box for you to check, and
+nothing is sent until you press send. It uses the Mac's built-in speech recognition, so it works
+without any model or connection and nothing leaves your Mac.
+
 Answers are formatted to be read rather than decorated: prose by default, with tables reserved for
 things that actually compare, and code in labelled blocks you can copy. Formulas are converted to
 real symbols (`√`, `Σ`, `σ`, superscripts) instead of showing raw LaTeX, whichever model wrote them.

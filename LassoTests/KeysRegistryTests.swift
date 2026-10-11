@@ -82,6 +82,44 @@ struct KeysRegistryTests {
         #expect(await asked.names == ["On"])
     }
 
+    // MARK: - Models that can't chat
+
+    /// Every non-embedding model used to count as a chat model, so Groq's Whisper showed up in the
+    /// Language picker; picked, every message failed with "does not support chat completions".
+    @Test func speechImageAndGuardModelsAreNotChatModels() {
+        for id in ["whisper-large-v3", "whisper-large-v3-turbo", "whisper-1", "gpt-4o-transcribe",
+                   "canopylabs/orpheus-v1-english", "canopylabs/orpheus-arabic-saudi", "tts-1-hd",
+                   "models/gemini-2.5-flash-preview-tts", "models/gemini-3.8-flash-tts",
+                   "models/gemini-2.5-flash-native-audio-latest", "models/gemini-3.5-transcribe",
+                   "meta-llama/llama-prompt-guard-2-86m", "text-moderation-latest",
+                   "models/gemini-3.1-flash-image", "gpt-image-1", "dall-e-3", "black-forest-labs/flux.2-pro",
+                   "models/imagen-4.0-generate-001", "models/veo-3.0-generate-001", "models/lyria-2"] {
+            #expect(!KeysRegistry.inferCapabilities(forModelID: id).contains(.language), "\(id) offered for chat")
+        }
+        for id in ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "models/gemini-3.1-pro-preview",
+                   "qwen/qwen3.8-27b", "allam-2-7b", "openai/gpt-oss-safeguard-20b", "gpt-4o-audio-preview",
+                   "models/gemini-flash-latest"] {
+            #expect(KeysRegistry.inferCapabilities(forModelID: id).contains(.language), "\(id) lost chat")
+        }
+    }
+
+    /// A list saved before the rule (Whisper tagged as a chat model) is corrected when it's read, so the
+    /// pickers, the chat switcher and the free-model fallback stop offering it without waiting for the
+    /// daily refresh.
+    @Test func aSavedListIsCorrectedWhenRead() {
+        withScratchDefaults { defaults in
+            var whisper = RegistryModel(name: "whisper-large-v3-turbo")
+            whisper.capabilities = [.language]                     // what the old rule saved
+            KeysRegistry(entries: [
+                RegisteredKey(name: "Groq", baseURL: "https://api.groq.com/openai/v1", keyNotRequired: false,
+                              models: [whisper, RegistryModel(name: "openai/gpt-oss-120b")]),
+            ]).save(to: defaults)
+
+            let names = KeysRegistry.load(from: defaults).groups(for: .language).flatMap(\.models).map(\.name)
+            #expect(names == ["openai/gpt-oss-120b"])
+        }
+    }
+
     // MARK: - Aggregation
 
     /// The model list is the union of every connection's models, one group each — the property the

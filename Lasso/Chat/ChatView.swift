@@ -10,6 +10,7 @@ struct ChatView: View {
     @State private var isDropTarget = false
     @State private var slashSelection = 0
     @Environment(\.openSettings) private var openSettings
+    private var voice = VoiceInputController.shared
 
     var body: some View {
         // The card is exactly the window's size. Content that won't shrink is clipped inside the
@@ -224,8 +225,9 @@ struct ChatView: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(maxWidth: 170)
+        // Its natural width, so it sits against the close button. (A maxWidth frame here made the
+        // pop-up take the whole 170pt and float the chip left of the ✕.)
+        .fixedSize()
         .help("Switch model")
     }
 
@@ -237,8 +239,12 @@ struct ChatView: View {
 
     /// Friendly provider name for the header chip: "Groq · openai/gpt-oss-20b" → "Groq";
     /// "Apple Intelligence" stays as-is. The full model id is shown in the dropdown instead.
-    private static func friendlyModel(_ label: String) -> String {
-        label.components(separatedBy: " · ").first ?? label
+    /// The provider part of the engine label ("Groq", "Local", "Apple Intelligence"), capped so a long
+    /// custom connection name can't widen the header. Capped as text because the chip is a native
+    /// pop-up button, which sizes itself from its label's natural width and ignores SwiftUI frames.
+    static func friendlyModel(_ label: String) -> String {
+        let provider = label.components(separatedBy: " · ").first ?? label
+        return provider.count > 22 ? String(provider.prefix(21)) + "…" : provider
     }
 
     // MARK: - Conversation
@@ -381,17 +387,20 @@ struct ChatView: View {
                              ? "Web grounding ON — answers use your connectors (Wikipedia, search, reverse-image)"
                              : "Web grounding OFF — tap to ground answers with your connectors"))
 
-                TextField("Message…", text: Binding(
+                micButton
+
+                TextField(voice.isActive ? "Listening…" : "Message…", text: Binding(
                     get: { chat.active.input }, set: { chat.active.input = $0 }))
                     .textFieldStyle(.plain)
                     .lineLimit(1)
                     .focused($inputFocused)
-                    .onSubmit { chat.send() }
+                    .onSubmit { Task { await voice.sendEndingDictation() } }
                     .onChange(of: chat.active.input) { _, _ in
                         if slashSelection >= slashMatches.count { slashSelection = 0 }
                     }
                     // Drive the slash palette from the keyboard; pass everything else through.
                     .onKeyPress { press in
+                        if press.key == .escape, voice.isActive { voice.cancel(); return .handled }
                         guard !slashMatches.isEmpty else { return .ignored }
                         switch press.key {
                         case .downArrow:
@@ -420,7 +429,7 @@ struct ChatView: View {
                     Button { chat.cancelStreaming() } label: { Image(systemName: "stop.fill") }
                         .buttonStyle(IconButtonStyle()).help("Stop")
                 } else {
-                    Button { chat.send() } label: {
+                    Button { Task { await voice.sendEndingDictation() } } label: {
                         Image(systemName: "arrow.up")
                             .font(.system(size: 13, weight: .bold))
                             .foregroundStyle(canSend ? Color.white : Color.secondary)
@@ -434,8 +443,42 @@ struct ChatView: View {
                     .animation(.easeInOut(duration: 0.15), value: canSend)
                 }
             }
+            if case .failed(let message) = voice.state {
+                Label(message, systemImage: "mic.slash")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .transition(.opacity)
+            }
         }
         .padding(12)
+    }
+
+    /// Dictate instead of typing. Tap to start, tap to stop; the text lands in the box for editing.
+    @ViewBuilder
+    private var micButton: some View {
+        Button { voice.toggle() } label: {
+            switch voice.state {
+            case .starting, .finishing:
+                ProgressView().controlSize(.small).frame(width: 16, height: 16)
+            case .listening:
+                Image(systemName: "mic.fill")
+                    .foregroundStyle(.red)
+                    .symbolEffect(.pulse, options: .repeating)
+            case .idle, .failed:
+                Image(systemName: "mic")
+            }
+        }
+        .buttonStyle(IconButtonStyle())
+        .disabled(voice.state == .starting || voice.state == .finishing)
+        .help(micHelp)
+    }
+
+    private var micHelp: String {
+        switch voice.state {
+        case .listening: return "Listening. Stops when you pause; click to stop now, Esc to cancel."
+        case .finishing: return "Finishing…"
+        default: return "Speak instead of typing (English, on this Mac)"
+        }
     }
 
     // MARK: - Slash commands

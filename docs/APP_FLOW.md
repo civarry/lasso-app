@@ -114,7 +114,10 @@ model** — each a `Protocol` picker + per-protocol config), staged in a `Draft`
 - **Language / Text** (`ProviderKind`): `apple` on-device Foundation Models (default, text-only), `ollama`
   (local server), `mlx` (local Apple-Silicon), `openAICompatible` (cloud/local endpoint, e.g. Groq/LM
   Studio), `anthropic`. Streams deltas via `respond(prompt:context:)` / `respond(messages:)`; tool-capable
-  providers also expose `respond(messages:tools:execute:)`.
+  providers also expose `respond(messages:tools:execute:)`. An `mlx` model is found in the Hugging Face
+  cache or, via `MLXLocalModels`, in a plain folder on the Mac (`~/models/<org>/<name>` from
+  `huggingface-cli --local-dir`, LM Studio's `~/.lmstudio/models`, or a folder picked in Settings, whose
+  path is the model id); a folder loads with `ModelConfiguration(directory:)`, so nothing is fetched.
 - **Image / Vision** (`VisionEngine`): `matchText` (route through the text provider if it's multimodal),
   `ollama`, `mlx`, `openAICompatible`, `anthropic`. **Apple on-device is text-only** → returns nil for
   vision (no silent fallback). Used to *describe* an image (Identify, Ask-AI-on-image, Chat attachments).
@@ -134,7 +137,8 @@ model** — each a `Protocol` picker + per-protocol config), staged in a `Draft`
   routing, the free-model fallback, the daily model refresh and "Test connections" skip it; its key
   and settings stay. A selection that used one of its models heals like a removal. Capabilities are inferred
   from the model id (`inferCapabilities`), which is what filters the one list into the Language / Image
-  / Embedding pickers. Editing a connection keeps its id, so renames and rotated keys don't break
+  / Embedding pickers. Speech, image-generation and guard models (`isChatModel`: Whisper, TTS, Orpheus,
+  `-image`, FLUX…) are never chat models; saved lists are corrected when loaded. Editing a connection keeps its id, so renames and rotated keys don't break
   selections.
 
       Protocol → many Connections → aggregated Models → the user selects a Model
@@ -466,7 +470,13 @@ flowchart LR
 
 ## 7. Chat (`Chat/`)
 
-Persistent top-right panel (⌥⌘A), independent of the capture overlay. Resizable down to 340×360
+Persistent top-right panel (⌥⌘A), independent of the capture overlay. The system prompt carries the
+device date/time as background ("use it only when the question needs it"); calling it authoritative made
+a local Qwen3.5 answer greetings with the date (`ChatDatePromptLiveTests`). **Voice input** (`Chat/Voice/`):
+English speech-to-text on this Mac with Apple's `SpeechTranscriber`, no model or connection involved.
+The mic in the composer streams into the message box as you talk, stops itself ~2 s after you pause
+(`SpeechActivity`), and never sends; Send finishes the dictation first, and a session number keeps late
+recognizer updates out of the box. Needs the `com.apple.security.device.audio-input` entitlement. Resizable down to 340×360
 (set in the SwiftUI root and passed to the window via `sizingOptions = [.minSize]`; a plain
 `panel.minSize` is wiped by AppKit's first layout pass). Opening it, a result card, Lens or a capture
 goes through `AppActivation.bringForward`: the window becomes key *and main* before the app activates,

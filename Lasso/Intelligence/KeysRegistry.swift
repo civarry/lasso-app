@@ -129,7 +129,15 @@ struct RegisteredKey: Codable, Equatable, Sendable, Identifiable {
         baseURL = try container.decode(String.self, forKey: .baseURL)
         keyNotRequired = try container.decode(Bool.self, forKey: .keyNotRequired)
         enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
-        models = try container.decodeIfPresent([RegistryModel].self, forKey: .models) ?? []
+        // Lists saved before `isChatModel` tagged speech and image models as chat models; correct them
+        // here, where every reader loads them, instead of waiting for the next model refresh.
+        models = (try container.decodeIfPresent([RegistryModel].self, forKey: .models) ?? []).map { model in
+            guard !KeysRegistry.isChatModel(model.name) else { return model }
+            var corrected = model
+            corrected.capabilities.remove(.language)
+            corrected.capabilities.remove(.vision)
+            return corrected
+        }
         kind = try container.decodeIfPresent(ConnectionKind.self, forKey: .kind) ?? .openAICompatible
         freeTier = try container.decodeIfPresent(Bool.self, forKey: .freeTier) ?? false
         modelsCheckedAt = try container.decodeIfPresent(Date.self, forKey: .modelsCheckedAt)
@@ -372,12 +380,26 @@ struct KeysRegistry: Codable, Equatable, Sendable {
             caps.insert(.vision)
         }
 
-        // A pure embedding model isn't a chat model; everything else can serve language.
-        if !(caps.contains(.embedding) && caps.count == 1) {
+        // A pure embedding model isn't a chat model, and neither is one that transcribes, speaks,
+        // draws or classifies; everything else can serve language.
+        if !(caps.contains(.embedding) && caps.count == 1), isChatModel(id) {
             caps.insert(.language)
         }
-        if caps.isEmpty { caps.insert(.language) }
+        if caps.isEmpty, isChatModel(id) { caps.insert(.language) }
+        if !isChatModel(id) { caps.remove(.vision) }
         return caps
+    }
+
+    /// False for models `/chat/completions` rejects: speech-to-text (Whisper, `-transcribe`), speech
+    /// (`-tts`, Orpheus, Gemini native audio), image and video generators, and guard/moderation
+    /// classifiers. Groq's Whisper sat in the Language picker; picked, every message failed with "does
+    /// not support chat completions". Groq and Gemini report no modalities, so the id decides.
+    static func isChatModel(_ id: String) -> Bool {
+        let lower = id.lowercased()
+        let nonChat = ["whisper", "transcribe", "-tts", "tts-", "orpheus", "native-audio", "prompt-guard",
+                       "moderation", "-image", "gpt-image", "dall-e", "flux", "imagen", "stable-diffusion",
+                       "sdxl", "recraft", "seedream", "veo-", "lyria"]
+        return !nonChat.contains { lower.contains($0) }
     }
 
     /// Delete every pre-registry key (UserDefaults + Keychain) from the old per-service scheme. Called

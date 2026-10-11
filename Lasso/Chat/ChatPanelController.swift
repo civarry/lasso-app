@@ -86,6 +86,7 @@ final class ChatPanelController: NSObject, NSWindowDelegate {
     }
 
     func close() {
+        VoiceInputController.shared.cancel()   // never keep the microphone on behind a closed panel
         if let panel { saveSize(panel.frame.size); saveOrigin(panel.frame.origin) }
         removePasteMonitor()
         panel?.delegate = nil
@@ -102,6 +103,7 @@ final class ChatPanelController: NSObject, NSWindowDelegate {
 
     // NSWindowDelegate: clear our reference if the panel closes itself (Esc).
     func windowWillClose(_ notification: Notification) {
+        VoiceInputController.shared.cancel()
         if let panel { saveSize(panel.frame.size); saveOrigin(panel.frame.origin) }
         removePasteMonitor()
         panel = nil

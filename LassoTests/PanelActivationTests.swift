@@ -26,7 +26,9 @@ struct PanelActivationTests {
     }
 
     @Test func resultCardBecomesTheMainWindow() async throws {
-        FloatingPanelController.shared.present(AnyView(Text("result")), anchor: nil)
+        // Card-sized content, like a real result. A bare one-word Text sized the card to 19×32pt, and
+        // AppKit threw "more Update Constraints passes than views" (with either activation order).
+        FloatingPanelController.shared.present(AnyView(Text("result").frame(width: 320, height: 120)), anchor: nil)
         defer { FloatingPanelController.shared.close() }
         try await Task.sleep(for: .milliseconds(200))
         let main = NSApp.mainWindow

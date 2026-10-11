@@ -38,4 +38,14 @@ struct ChatPanelSizeTests {
         let needed = hosting.sizeThatFits(in: CGSize(width: width, height: ChatPanelController.minimumSize.height))
         #expect(needed.width <= width, "chat content needs \(needed.width)pt at \(width)pt")
     }
+
+    /// The model chip shows only the provider, capped at 22 characters, so it keeps its natural width
+    /// beside the close button instead of stretching (a 170pt maxWidth left a gap before the ✕).
+    @Test func modelChipShowsAShortProviderName() {
+        #expect(ChatView.friendlyModel("Local · Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-MLX-mxfp4") == "Local")
+        #expect(ChatView.friendlyModel("Groq · openai/gpt-oss-120b") == "Groq")
+        #expect(ChatView.friendlyModel("Apple Intelligence") == "Apple Intelligence")
+        let long = ChatView.friendlyModel("My Company's Internal AI Gateway (EU) · some-model")
+        #expect(long.count == 22 && long.hasSuffix("…"))
+    }
 }

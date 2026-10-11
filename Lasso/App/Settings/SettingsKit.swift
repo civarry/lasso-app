@@ -149,6 +149,17 @@ extension View {
     /// field would collapse to nothing. Pop-up buttons, menus, switches and buttons take no width
     /// modifier at all: they hug, and the row parks them on the trailing edge.
     func settingsFieldWidth() -> some View { frame(width: SettingsMetrics.fieldWidth) }
+
+    /// A pop-up whose label can be long (a model id): hugs its content up to the field width, then
+    /// truncates, parked on the trailing edge. A plain `.fixedSize()` let a 58-character MLX model id
+    /// make the form 561pt wide in a 520pt window, pushing it past the left edge.
+    func settingsCappedMenu() -> some View {
+        ViewThatFits(in: .horizontal) {
+            fixedSize()
+            frame(width: SettingsMetrics.fieldWidth)
+        }
+        .frame(maxWidth: SettingsMetrics.fieldWidth, alignment: .trailing)
+    }
 }
 
 /// The panel's one switch control: an optional trailing caption next to the switch, sized to its

@@ -120,6 +120,8 @@ struct SettingsView: View {
     @State private var ollamaStatus: OllamaEndpoint.Status?
     @State private var mlxDownload: MLXDownloadState = .idle
     @State private var mlxInstalled: [MLXCache.Entry] = []
+    /// MLX models in folders on this Mac outside the HF cache (~/models, LM Studio).
+    @State private var mlxLocalFolders: [(id: String, url: URL)] = []
     @State private var mlxRemoteSize: Int64?
     @State private var mlxSizeLoading = false
     @State private var mlxSizeTask: Task<Void, Never>?
@@ -1014,7 +1016,7 @@ struct SettingsView: View {
                     ForEach(embedModels, id: \.self) { Text($0).tag($0) }
                 }
                 .labelsHidden()
-                .fixedSize()
+                .settingsCappedMenu()
             }
             refreshModelsButton
         }
@@ -1130,14 +1132,26 @@ struct SettingsView: View {
             ForEach(mlxDownloadedSuggestions, id: \.id) { mlxMenuItem($0) }
             if !mlxDownloadedSuggestions.isEmpty, !mlxAvailableSuggestions.isEmpty { Divider() }
             ForEach(mlxAvailableSuggestions, id: \.id) { mlxMenuItem($0) }
+            let local = mlxLocalFolders.filter { folder in !Self.mlxSuggestionIDs.contains(folder.id) }
+            if !local.isEmpty {
+                Divider()
+                Section("On this Mac") {
+                    ForEach(local, id: \.id) { folder in
+                        Button { draft.mlxModel = folder.id } label: {
+                            Label(folder.id, systemImage: "internaldrive")
+                        }
+                    }
+                }
+            }
             Divider()
+            Button("Choose folder…") { chooseMLXFolder() }
             Button("Custom…") {
                 if Self.mlxSuggestionIDs.contains(draft.mlxModel) { draft.mlxModel = "" }
             }
         } label: {
             Text(mlxMenuLabel)
         }
-        .fixedSize()
+        .settingsCappedMenu()
         .onAppear { refreshMLXInstalled(); refreshMLXRemoteSize() }
         .onChange(of: draft.mlxModel) { mlxDownload = .idle; refreshMLXRemoteSize() }
     }
@@ -1227,7 +1241,7 @@ struct SettingsView: View {
                     ForEach(models, id: \.self) { Text($0).tag($0) }
                 }
                 .labelsHidden()
-                .fixedSize()
+                .settingsCappedMenu()
             }
             reloadButton(reload, isLocal: isLocal)
         }
@@ -1766,6 +1780,13 @@ struct SettingsView: View {
                 Button { downloadMLXModel() } label: { Label("Retry", systemImage: "arrow.clockwise") }
                     .buttonStyle(.bordered)
             }
+        } else if let folder = MLXLocalModels.folder(for: draft.mlxModel) {
+            // Already in a folder on this Mac (downloaded outside Lasso, or picked with Choose folder).
+            SettingsRow("On this Mac",
+                        caption: "Loads from \((folder.path as NSString).abbreviatingWithTildeInPath). Nothing to download.") {
+                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([folder]) }
+                    .buttonStyle(.bordered)
+            }
         } else if !MLXProvider.isDownloaded(draft.mlxModel) {
             SettingsRow("Download",
                         caption: draft.localOnly ? "Local-only mode blocks downloads." : nil) {
@@ -1867,6 +1888,24 @@ struct SettingsView: View {
 
     private func refreshMLXInstalled() {
         mlxInstalled = MLXCache.installed()
+        mlxLocalFolders = MLXLocalModels.discovered()
+    }
+
+    /// Use an MLX model from any folder: its path becomes the model id.
+    private func chooseMLXFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Use Model"
+        panel.message = "Choose a folder with an MLX model (config.json and .safetensors files)."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard MLXLocalModels.isModelFolder(url) else {
+            mlxDownload = .failed("That folder has no MLX model in it (it needs config.json and .safetensors files).")
+            return
+        }
+        draft.mlxModel = (url.path as NSString).abbreviatingWithTildeInPath
+        mlxDownload = .idle
     }
 
     /// Look up the model's download size from Hugging Face (debounced; skipped in Local-only mode or
@@ -1932,6 +1971,10 @@ struct SettingsView: View {
     private var mlxMenuLabel: String {
         if let suggestion = Self.mlxTextSuggestions.first(where: { $0.id == draft.mlxModel }) {
             return suggestion.name
+        }
+        if draft.mlxModel.hasPrefix("/") || draft.mlxModel.hasPrefix("~") {
+            let parts = draft.mlxModel.split(separator: "/").suffix(2)
+            return parts.joined(separator: "/")
         }
         return draft.mlxModel.isEmpty ? "Custom…" : draft.mlxModel
     }
@@ -2089,7 +2132,7 @@ struct SettingsView: View {
                     ForEach(availableModels, id: \.self) { Text($0).tag($0) }
                 }
                 .labelsHidden()
-                .fixedSize()
+                .settingsCappedMenu()
             }
             refreshModelsButton
         }
