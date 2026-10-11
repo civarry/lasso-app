@@ -1,0 +1,15 @@
+// Code signing. The default is "Sign to Run Locally" (ad-hoc), so a fresh clone builds and runs with no
+// Apple account. To sign with your own certificate, create Config/Signing.local.xcconfig (not
+// committed) and set your identity there, e.g.:
+//
+//   CODE_SIGN_IDENTITY = Apple Development
+//   DEVELOPMENT_TEAM = ABCDE12345
+//
+// A real certificate also keeps macOS permissions (Screen Recording) across rebuilds; ad-hoc builds
+// are asked again after each rebuild. See BUILDING.md.
+CODE_SIGN_STYLE = Manual
+CODE_SIGN_IDENTITY = -
+DEVELOPMENT_TEAM =
+PROVISIONING_PROFILE_SPECIFIER =
+
+#include? "Signing.local.xcconfig"

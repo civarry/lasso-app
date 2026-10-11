@@ -1,0 +1,27 @@
+import SwiftUI
+
+/// "Identify": run a vision model + (opt-in) web search (Wikipedia / DuckDuckGo / Reddit over
+/// URLSession) in parallel, then synthesize a summary with the user's text provider. Results show
+/// in a floating card.
+struct IdentifyAction: CaptureAction {
+    let intelligence: IntelligenceCoordinator
+
+    let id = "identify"
+    let title = "Identify"
+    let systemImage = "sparkle.magnifyingglass"
+    let relevancePriority = 12
+
+    func isRelevant(to ctx: CaptureContext) -> Bool { true }
+    func disabledReason(for ctx: CaptureContext, visionAvailable: Bool) -> String? {
+        visionAvailable ? nil
+            : "Identify needs a vision model — install Ollama or add a cloud image model in Settings ▸ Intelligence ▸ Image model."
+    }
+
+    func perform(_ ctx: CaptureContext) async throws -> ActionResult {
+        let anchor = CaptureCoordinator.shared.activeSelectionScreenRect()
+        FloatingPanelController.shared.present(
+            AnyView(IdentifyView(image: ctx.image, ocrText: ctx.ocrText, intelligence: intelligence)),
+            anchor: anchor)
+        return .none   // CaptureCoordinator.run drops the freeze on .none
+    }
+}

@@ -1,0 +1,111 @@
+name: Lasso
+
+options:
+  bundleIdPrefix: com.cjcarito
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  generateEmptyDirectories: true
+
+# Marks the project as up to date for Xcode 26.6 so the "Update to recommended settings" banner
+# stops appearing. The recommended build settings themselves are encoded under `settings.base`
+# below — never via the .xcodeproj, which XcodeGen regenerates (clicking "Perform Changes" in Xcode
+# would be wiped on the next `xcodegen generate`).
+attributes:
+  LastUpgradeCheck: "2660"
+
+configFiles:
+  Debug: Config/Signing.xcconfig
+  Release: Config/Signing.xcconfig
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    # Signing lives in Config/Signing.xcconfig (ad-hoc by default, so anyone can build) plus an
+    # optional, uncommitted Config/Signing.local.xcconfig for a real certificate. It is not set here:
+    # project.yml settings would override the xcconfig.
+    ENABLE_HARDENED_RUNTIME: YES
+    # Xcode "recommended settings" — set here (not via the .xcodeproj, which XcodeGen regenerates).
+    DEAD_CODE_STRIPPING: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+    STRING_CATALOG_GENERATE_SYMBOLS: YES
+    MARKETING_VERSION: "0.14.0"
+    CURRENT_PROJECT_VERSION: "36"
+
+packages:
+  KeyboardShortcuts:
+    url: https://github.com/sindresorhus/KeyboardShortcuts
+    from: 2.2.0
+  MLXSwiftLM:
+    url: https://github.com/ml-explore/mlx-swift-lm
+    from: 3.31.3
+  SwiftHuggingFace:
+    url: https://github.com/huggingface/swift-huggingface
+    from: 0.9.0
+  SwiftTransformers:
+    url: https://github.com/huggingface/swift-transformers
+    from: 1.3.0
+
+targets:
+  Lasso:
+    type: application
+    platform: macOS
+    sources:
+      - path: Lasso
+    dependencies:
+      - package: KeyboardShortcuts
+      - package: MLXSwiftLM
+        product: MLXLLM
+      - package: MLXSwiftLM
+        product: MLXVLM
+      - package: MLXSwiftLM
+        product: MLXLMCommon
+      - package: MLXSwiftLM
+        product: MLXEmbedders
+      - package: MLXSwiftLM
+        product: MLXHuggingFace
+      - package: SwiftHuggingFace
+        product: HuggingFace
+      - package: SwiftTransformers
+        product: Tokenizers
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cjcarito.Lasso
+        PRODUCT_NAME: Lasso
+        INFOPLIST_FILE: Lasso/App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Lasso/App/Lasso.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: lasso
+        ENABLE_PREVIEWS: YES
+        COMBINE_HIDPI_IMAGES: YES
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/../Frameworks"
+
+  LassoTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: LassoTests
+    dependencies:
+      - target: Lasso
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cjcarito.LassoTests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  Lasso:
+    build:
+      targets:
+        Lasso: all
+        LassoTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - LassoTests

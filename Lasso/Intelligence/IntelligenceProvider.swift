@@ -1,0 +1,1281 @@
+import Foundation
+import FoundationModels
+import Observation
+import SwiftUI
+
+/// Pluggable text-intelligence backend. On-device is the default; a local Ollama server is the
+/// opt-in "bigger model" path. Both run on this machine — nothing leaves the Mac (Spec §8).
+protocol IntelligenceProvider: Sendable {
+    var name: String { get }
+    /// True for Apple's on-device Foundation Models. Ollama is `false` (separate process) but is
+    /// still fully local — see `isLocal`.
+    var isAppleOnDevice: Bool { get }
+    /// True when nothing leaves the Mac (Apple, Ollama, a localhost server). Cloud providers are
+    /// `false` — drives the privacy badge.
+    var isLocal: Bool { get }
+    /// Whether the provider can serve a request right now.
+    func checkAvailability() async -> Bool
+    /// Stream a response as **incremental deltas** (append to accumulate).
+    func respond(prompt: String, context: String?) -> AsyncThrowingStream<String, Error>
+    /// Stream a response to a **multi-turn** conversation (for the Chat panel). Deltas, same as above.
+    func respond(messages: [ChatTurn]) -> AsyncThrowingStream<String, Error>
+
+    /// Whether this backend supports native tool/function calling. Drives whether the Chat panel
+    /// offers the model a `web_search` tool (industry-standard, model-decides grounding) or falls
+    /// back to the rule-based heuristic. Default: false.
+    var supportsTools: Bool { get }
+
+    /// Stream a response with tools the model may call. The provider runs the call loop — when the
+    /// model requests a tool, `execute` is awaited and its result fed back — then streams the final
+    /// answer as deltas. Default impl ignores tools (so non-tool backends transparently fall back).
+    func respond(messages: [ChatTurn], tools: [ChatTool],
+                 execute: @escaping ToolExecutor) -> AsyncThrowingStream<String, Error>
+
+    /// One-shot **structured** completion: ask for a JSON object conforming to `schemaJSON` using the
+    /// backend's own JSON-schema mode (Ollama `format`, OpenAI `response_format`, Anthropic forced
+    /// tool use). Returns the raw JSON text, or nil when this backend has no native mode — the caller
+    /// then drops a rung to the line format (`StructuredRunner`). Non-streaming: these replies are
+    /// tiny and nobody watches them arrive.
+    ///
+    /// The schema crosses as a *string* so it stays Sendable under strict concurrency; each provider
+    /// decodes it where its wire format needs it.
+    func respondJSON(prompt: String, schemaName: String, schemaJSON: String,
+                     maxTokens: Int) async throws -> String?
+}
+
+/// One message in a chat conversation, sent to a provider. A user turn may carry an image — encoded
+/// base64 JPEG — for providers whose model is natively multimodal; text-only models get the image
+/// folded into the text upstream (see `ChatController`).
+struct ChatTurn: Sendable {
+    enum Role: String, Sendable { case system, user, assistant }
+    var role: Role
+    var text: String
+    /// Base64 JPEGs for a multimodal user turn (may be several — "compare these"). Empty for text-only.
+    var imageBase64s: [String]
+
+    init(role: Role, text: String, imageBase64s: [String] = []) {
+        self.role = role
+        self.text = text
+        self.imageBase64s = imageBase64s
+    }
+}
+
+extension IntelligenceProvider {
+    /// Most backends don't (yet) do native tool calling — the Chat panel handles those via the
+    /// heuristic grounding path instead.
+    var supportsTools: Bool { false }
+
+    /// Default: no native JSON-schema mode. The structured runner falls to the line-format rung.
+    func respondJSON(prompt: String, schemaName: String, schemaJSON: String,
+                     maxTokens: Int) async throws -> String? { nil }
+
+    /// Default: ignore tools and answer normally. Providers that set `supportsTools = true` override.
+    func respond(messages: [ChatTurn], tools: [ChatTool],
+                 execute: @escaping ToolExecutor) -> AsyncThrowingStream<String, Error> {
+        respond(messages: messages)
+    }
+
+    /// Default multi-turn bridge for providers without a native implementation: flatten the history
+    /// into a single prompt + context so the single-turn `respond` still carries the conversation.
+    func respond(messages: [ChatTurn]) -> AsyncThrowingStream<String, Error> {
+        let convo = messages.filter { $0.role != .system }
+        let last = convo.last?.text ?? ""
+        let priorLines = convo.dropLast().map { turn -> String in
+            let speaker = turn.role == .user ? "User" : "Assistant"
+            return "\(speaker): \(turn.text)"
+        }
+        let context = priorLines.isEmpty ? nil : priorLines.joined(separator: "\n\n")
+        return respond(prompt: last, context: context)
+    }
+}
+
+/// Which backend to use. Persisted in Settings.
+enum ProviderKind: String, CaseIterable, Identifiable, Sendable {
+    case onDevice
+    case ollama
+    case mlx
+    case openAICompatible
+    case anthropic
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .onDevice: "Apple Intelligence"
+        case .ollama: "Ollama (local)"
+        case .mlx: "MLX (local)"
+        case .openAICompatible: "Custom"
+        case .anthropic: "Anthropic"
+        }
+    }
+
+    /// True for backends that keep everything on the Mac (a localhost OpenAI-compatible URL is
+    /// still cloud-kind here; the provider itself reports the precise `isLocal`).
+    var isLocalKind: Bool { self == .onDevice || self == .ollama || self == .mlx }
+}
+
+/// Independent provider for image understanding (Identify / Ask-AI-on-image), chosen separately from
+/// the text engine so any mix is possible (cloud text + local image, a different cloud for images,
+/// etc.). Apple on-device is intentionally excluded — its model is text-only.
+enum VisionEngine: String, CaseIterable, Identifiable, Sendable {
+    case matchText          // use the Text engine's model (only works if it's multimodal)
+    case ollama             // a local Ollama vision model
+    case mlx                // a local MLX vision-language model (Apple Silicon)
+    case openAICompatible
+    case anthropic
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .matchText: "Same as language model"
+        case .ollama: "Ollama (local)"
+        case .mlx: "MLX (local)"
+        case .openAICompatible: "Custom"
+        case .anthropic: "Anthropic"
+        }
+    }
+}
+
+/// Backend for the Chat semantic-memory embeddings (recall of relevant earlier messages). Peer to the
+/// Language/Image model choices. `automatic` is the zero-setup default (Apple on-device, upgrading to a
+/// local Ollama embed model if present); cloud reuses the Language model's OpenAI-compatible endpoint.
+enum EmbeddingProviderKind: String, CaseIterable, Identifiable, Sendable {
+    case automatic          // Ollama nomic-embed-text if installed, else Apple on-device, else none
+    case apple              // force Apple NLEmbedding (built into macOS, zero download)
+    case ollama             // a local Ollama embedding model
+    case mlx                // a local MLX embedding model (bge / e5 / nomic …), downloaded in-app
+    case openAICompatible   // cloud embeddings (reuses the Language model's endpoint + key)
+
+    var id: String { rawValue }
+    /// Labels follow the Language/Image picker convention: no editorial suffix on branded providers,
+    /// `(local)` only on local runtimes. (Apple here is NaturalLanguage embeddings, not the Apple
+    /// Intelligence LLM — so just "Apple".)
+    var label: String {
+        switch self {
+        case .automatic: "Automatic"
+        case .apple: "Apple"
+        case .ollama: "Ollama (local)"
+        case .mlx: "MLX (local)"
+        case .openAICompatible: "Custom"
+        }
+    }
+    /// Local kinds never leave the Mac — cloud is forced back to `automatic` in local-only mode.
+    var isLocalKind: Bool { self != .openAICompatible }
+}
+
+/// Chooses and drives the active provider. The single entry point actions use for AI.
+@MainActor
+@Observable
+final class IntelligenceCoordinator {
+    static let shared = IntelligenceCoordinator()
+
+    /// User preference (mirrored from `@AppStorage("provider")` by the app).
+    var preferred: ProviderKind {
+        didSet { UserDefaults.standard.set(preferred.rawValue, forKey: Self.defaultsKey) }
+    }
+
+    /// Ollama text model. Empty string means "Auto" — resolve to the best installed model at use
+    /// time, so we never depend on a specific model being pulled.
+    var ollamaModel: String {
+        didSet { UserDefaults.standard.set(ollamaModel, forKey: Self.modelKey) }
+    }
+
+    /// Ollama vision model for Identify. Empty string means "Auto" (best installed vision model).
+    var visionModel: String {
+        didSet { UserDefaults.standard.set(visionModel, forKey: Self.visionModelKey) }
+    }
+
+    /// Local MLX vision (VLM) model id for the Image role.
+    var visionMLXModel: String {
+        didSet { UserDefaults.standard.set(visionMLXModel, forKey: "intelligence.vision.mlxModel") }
+    }
+
+    /// Image (vision) provider, independent of the text engine. Its cloud config + keys are separate
+    /// from the text ones, so e.g. text=Groq + image=OpenAI GPT-4o is possible.
+    var visionEngine: VisionEngine {
+        didSet { UserDefaults.standard.set(visionEngine.rawValue, forKey: "intelligence.vision.engine") }
+    }
+    var visionOpenAIBaseURL: String {
+        didSet { UserDefaults.standard.set(visionOpenAIBaseURL, forKey: "intelligence.vision.openai.baseURL") }
+    }
+    var visionOpenAIModel: String {
+        didSet { UserDefaults.standard.set(visionOpenAIModel, forKey: "intelligence.vision.openai.model") }
+    }
+    var visionAnthropicBaseURL: String {
+        didSet { UserDefaults.standard.set(visionAnthropicBaseURL, forKey: "intelligence.vision.anthropic.baseURL") }
+    }
+    var visionAnthropicModel: String {
+        didSet { UserDefaults.standard.set(visionAnthropicModel, forKey: "intelligence.vision.anthropic.model") }
+    }
+
+    /// Cloud / custom provider config (non-secret; API keys live in the Keychain).
+    var openAIBaseURL: String {
+        didSet { UserDefaults.standard.set(openAIBaseURL, forKey: "intelligence.openai.baseURL") }
+    }
+    /// Which protocol the connection behind the selected model speaks. Travels with the flattened
+    /// effective config (URL + model + key) because that config alone can't say whether to build an
+    /// OpenAI-compatible request or a native Gemini one — Google serves both from the same host.
+    var openAIConnectionKind: ConnectionKind {
+        didSet { UserDefaults.standard.set(openAIConnectionKind.rawValue, forKey: Self.langKindKey) }
+    }
+    var visionOpenAIConnectionKind: ConnectionKind {
+        didSet { UserDefaults.standard.set(visionOpenAIConnectionKind.rawValue, forKey: Self.visionKindKey) }
+    }
+    var embeddingOpenAIConnectionKind: ConnectionKind {
+        didSet { UserDefaults.standard.set(embeddingOpenAIConnectionKind.rawValue, forKey: Self.embeddingKindKey) }
+    }
+
+    static let langKindKey = "intelligence.openai.connectionKind"
+    static let visionKindKey = "intelligence.vision.openai.connectionKind"
+    static let embeddingKindKey = "intelligence.embedding.openai.connectionKind"
+
+    private static func storedKind(_ key: String) -> ConnectionKind {
+        ConnectionKind(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .openAICompatible
+    }
+    var openAIModel: String {
+        didSet { UserDefaults.standard.set(openAIModel, forKey: "intelligence.openai.model") }
+    }
+    var anthropicBaseURL: String {
+        didSet { UserDefaults.standard.set(anthropicBaseURL, forKey: "intelligence.anthropic.baseURL") }
+    }
+    var anthropicModel: String {
+        didSet { UserDefaults.standard.set(anthropicModel, forKey: "intelligence.anthropic.model") }
+    }
+
+    /// MLX model identifier or registry key. Empty means "Auto" for the experimental native path.
+    var mlxModel: String {
+        didSet { UserDefaults.standard.set(mlxModel, forKey: "intelligence.mlx.model") }
+    }
+
+    // MARK: - Embedding (Chat semantic memory) config
+    /// Chosen embedding backend for chat retrieval. Default `automatic` (Apple on-device, upgrading to
+    /// Ollama if present) — zero setup for a fresh install.
+    var embeddingProvider: EmbeddingProviderKind {
+        didSet { UserDefaults.standard.set(embeddingProvider.rawValue, forKey: "intelligence.embedding.provider") }
+    }
+    /// Local Ollama embedding model name (when `embeddingProvider == .ollama`).
+    var embeddingOllamaModel: String {
+        didSet { UserDefaults.standard.set(embeddingOllamaModel, forKey: "intelligence.embedding.ollamaModel") }
+    }
+    /// Local MLX embedding model id (when `embeddingProvider == .mlx`).
+    var embeddingMLXModel: String {
+        didSet { UserDefaults.standard.set(embeddingMLXModel, forKey: "intelligence.embedding.mlxModel") }
+    }
+    /// Cloud embedding model name (when `embeddingProvider == .openAICompatible`). Embedding has its own
+    /// independent OpenAI-compatible service/endpoint (like the Image model), so it can point at a
+    /// provider that serves `/embeddings` even when the Language model uses one that doesn't.
+    var embeddingOpenAIModel: String {
+        didSet { UserDefaults.standard.set(embeddingOpenAIModel, forKey: "intelligence.embedding.openAIModel") }
+    }
+    /// The embedding provider's OpenAI-compatible base URL (its own, not the Language model's).
+    var embeddingOpenAIBaseURL: String {
+        didSet { UserDefaults.standard.set(embeddingOpenAIBaseURL, forKey: "intelligence.embedding.openai.baseURL") }
+    }
+
+    /// True once any cloud/off-machine call is made this session — surfaced by the privacy badge.
+    private(set) var usedOffDeviceThisSession = false
+
+    /// Name of the provider that served the most recent request (reflects fallback). Shown as
+    /// attribution under AI results.
+    private(set) var lastProviderName = ""
+    private(set) var lastProviderIsAppleOnDevice = true
+    private(set) var lastProviderIsLocal = true
+
+    /// Internal (not private) so the harness's `utilityModel()` can prefer it for its own
+    /// thinking without going through `activeProvider()`.
+    let onDevice = OnDeviceProvider()
+
+    static let defaultsKey = "intelligence.provider"
+    static let modelKey = "intelligence.ollamaModel"
+    static let visionModelKey = "intelligence.visionModel"
+
+    init() {
+        let defaults = UserDefaults.standard
+        let raw = defaults.string(forKey: Self.defaultsKey)
+        self.preferred = raw.flatMap(ProviderKind.init(rawValue:)) ?? .onDevice
+        // Default to "Auto" (empty) — resolved to an installed model at use time, never hardcoded.
+        self.ollamaModel = defaults.string(forKey: Self.modelKey) ?? ""
+        self.visionModel = defaults.string(forKey: Self.visionModelKey) ?? ""
+        self.visionMLXModel = defaults.string(forKey: "intelligence.vision.mlxModel") ?? MLXVisionProvider.defaultModelID
+        self.openAIBaseURL = defaults.string(forKey: "intelligence.openai.baseURL") ?? "https://api.openai.com/v1"
+        self.openAIModel = defaults.string(forKey: "intelligence.openai.model") ?? "gpt-4o-mini"
+        self.anthropicBaseURL = defaults.string(forKey: "intelligence.anthropic.baseURL") ?? "https://api.anthropic.com"
+        self.anthropicModel = defaults.string(forKey: "intelligence.anthropic.model") ?? "claude-3-5-haiku-latest"
+        self.mlxModel = defaults.string(forKey: "intelligence.mlx.model") ?? MLXProvider.defaultModelID
+        self.embeddingProvider = defaults.string(forKey: "intelligence.embedding.provider")
+            .flatMap(EmbeddingProviderKind.init(rawValue:)) ?? .automatic
+        self.embeddingOllamaModel = defaults.string(forKey: "intelligence.embedding.ollamaModel") ?? ""
+        self.embeddingMLXModel = defaults.string(forKey: "intelligence.embedding.mlxModel") ?? MLXEmbeddings.defaultModelID
+        // "" = use the text-embedding-3-small default; an empty field shows a placeholder (so it reads
+        // as an editable text input, like the Language model's Model row) instead of a fixed label.
+        self.embeddingOpenAIModel = defaults.string(forKey: "intelligence.embedding.openAIModel") ?? ""
+        self.embeddingOpenAIBaseURL = defaults.string(forKey: "intelligence.embedding.openai.baseURL") ?? "https://api.openai.com/v1"
+        self.visionOpenAIBaseURL = defaults.string(forKey: "intelligence.vision.openai.baseURL") ?? "https://api.openai.com/v1"
+        self.visionOpenAIModel = defaults.string(forKey: "intelligence.vision.openai.model") ?? "gpt-4o"
+        self.openAIConnectionKind = Self.storedKind(Self.langKindKey)
+        self.visionOpenAIConnectionKind = Self.storedKind(Self.visionKindKey)
+        self.embeddingOpenAIConnectionKind = Self.storedKind(Self.embeddingKindKey)
+        self.visionAnthropicBaseURL = defaults.string(forKey: "intelligence.vision.anthropic.baseURL") ?? "https://api.anthropic.com"
+        self.visionAnthropicModel = defaults.string(forKey: "intelligence.vision.anthropic.model") ?? "claude-3-5-sonnet-latest"
+        self.autoFallbackEnabled = defaults.bool(forKey: Self.autoFallbackKey)
+        self.fallbackRaceAfterSeconds = defaults.object(forKey: Self.raceAfterKey) as? Int ?? 15
+        // Vision engine: stored choice, else migrate from the legacy "Image model" override (a set
+        // visionModel meant "use this local Ollama model"; empty meant "use the main/text model").
+        if let raw = defaults.string(forKey: "intelligence.vision.engine"), let v = VisionEngine(rawValue: raw) {
+            self.visionEngine = v
+        } else {
+            self.visionEngine = (defaults.string(forKey: Self.visionModelKey)?.isEmpty == false) ? .ollama : .matchText
+        }
+    }
+
+    /// Display name for the OpenAI-compatible provider, inferred from its base URL.
+    func openAIDisplayName() -> String {
+        if openAIConnectionKind == .gemini { return "Google Gemini" }
+        let host = (URL(string: openAIBaseURL)?.host ?? "").lowercased()
+        if host.contains("googleapis") { return "Google" }
+        if host.contains("groq") { return "Groq" }
+        if host.contains("openrouter") { return "OpenRouter" }
+        if host.contains("openai") { return "OpenAI" }
+        if host == "localhost" || host == "127.0.0.1" { return "Local" }
+        return "Custom"
+    }
+
+    // MARK: - OpenAI-compatible connections (the omni-router, shared with Settings)
+
+    /// Where the Language section's model choice is persisted, in `SettingsView.encodeSelection`'s
+    /// compact form. The chat switcher writes the same string, so the panel and the chat header can
+    /// never disagree about which model is active.
+    static let languageSelectionKey = "intelligence.keys.selection.language"
+
+    /// Every model the configured connections serve, grouped by connection — the same aggregated list
+    /// Settings' Model picker shows, because it is the same registry. Empty in local-only mode, where
+    /// no cloud endpoint may be offered at all.
+    func registryGroups(for capability: ModelCapability = .language) -> [RegistryModelGroup] {
+        PrivacyMode.localOnly ? [] : KeysRegistry.load().groups(for: capability)
+    }
+
+    /// Switch the active language model to one served by a specific connection. Writes exactly what
+    /// Settings ▸ Save & Apply writes — effective endpoint, model, key, and the stored selection — so
+    /// switching from the chat header is indistinguishable from switching in Settings.
+    ///
+    /// `keyID` is "" for a hand-typed model in the "Manually added" group; its endpoint is then
+    /// resolved by name, the same fallback the settings panel uses.
+    func selectRegistryModel(keyID: String, model: String) {
+        // A new choice is a fresh start: whatever the old one kept doing is no longer this model's story.
+        primaryCircuit.reset()
+        routedAround = nil
+        let registry = KeysRegistry.load()
+        let entry = keyID.isEmpty ? registry.enabledKey(exposingModel: model)
+                                  : registry.key(withID: keyID)
+        if let entry {
+            openAIBaseURL = entry.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            openAIConnectionKind = entry.kind
+            Keychain.set(Keychain.get(entry.keychainAccount) ?? "", for: "openai.apiKey")
+        }
+        openAIModel = model
+        UserDefaults.standard.set(keyID.isEmpty ? "manual:\(model)" : "model:\(keyID)\t\(model)",
+                                  forKey: Self.languageSelectionKey)
+        preferred = .openAICompatible
+    }
+
+    /// Whether this connection's model is the active one — drives the switcher's checkmarks.
+    func isCurrentRegistryModel(keyID: String, model: String) -> Bool {
+        guard effectivePreferred == .openAICompatible else { return false }
+        let stored = UserDefaults.standard.string(forKey: Self.languageSelectionKey)
+        return stored == (keyID.isEmpty ? "manual:\(model)" : "model:\(keyID)\t\(model)")
+    }
+
+    /// Resolve the text model to use: the user's choice if installed, else the best installed chat
+    /// model (Auto). Returns "" only when no suitable model is installed.
+    func resolvedTextModel() async -> String {
+        let installed = await OllamaModels.installed()
+        if !ollamaModel.isEmpty, installed.contains(ollamaModel) { return ollamaModel }
+        return OllamaModels.bestTextModel(installed) ?? ollamaModel
+    }
+
+    /// Resolve the vision model for local Ollama. Priority:
+    ///   1. The explicit "Image model" override, if the user picked one and it's installed.
+    ///   2. The main text model when it's already multimodal — a vision-capable model serves both,
+    ///      so no separate model is needed (the unification the user asked for).
+    ///   3. Otherwise the best installed dedicated vision model.
+    func resolvedVisionModel() async -> String {
+        let installed = await OllamaModels.installed()
+        if !visionModel.isEmpty, installed.contains(visionModel) { return visionModel }
+        let mainText = ollamaModel.isEmpty
+            ? (OllamaModels.bestTextModel(installed) ?? "") : ollamaModel
+        if !mainText.isEmpty, installed.contains(mainText), OllamaModels.isVision(mainText) {
+            return mainText
+        }
+        return OllamaModels.bestVisionModel(installed) ?? visionModel
+    }
+
+    /// Resolve the embedding model used for relevance ranking (best installed; nil → "" disables it).
+    func resolvedEmbeddingModel() async -> String {
+        OllamaModels.bestEmbeddingModel(await OllamaModels.installed()) ?? ""
+    }
+
+    // MARK: - Chat embedding backend (semantic memory)
+
+    /// Effective embedding backend — local-only forces a cloud choice back to the local ladder, so no
+    /// conversation text ever leaves the Mac (mirrors `effectivePreferred` / `effectiveVisionEngine`).
+    var effectiveEmbeddingProvider: EmbeddingProviderKind {
+        (PrivacyMode.localOnly && !embeddingProvider.isLocalKind) ? .automatic : embeddingProvider
+    }
+
+    /// Human label for the resolved embedding backend (Settings caption + logs).
+    var embeddingEngineLabel: String {
+        switch effectiveEmbeddingProvider {
+        case .automatic: return "Automatic (Apple / Ollama)"
+        case .apple: return "Apple (on-device)"
+        case .ollama: return "Ollama · \(embeddingOllamaModel.isEmpty ? "auto" : embeddingOllamaModel)"
+        case .mlx: return "MLX · \((embeddingMLXModel.isEmpty ? MLXEmbeddings.defaultModelID : embeddingMLXModel).components(separatedBy: "/").last ?? "auto")"
+        case .openAICompatible:
+            let host = (URL(string: embeddingOpenAIBaseURL)?.host ?? "").lowercased()
+            let name = host.contains("groq") ? "Groq" : host.contains("openrouter") ? "OpenRouter"
+                : host.contains("openai") ? "OpenAI" : (host == "localhost" || host == "127.0.0.1") ? "Local" : "Custom"
+            return "\(name) · \(embeddingOpenAIModel.isEmpty ? "text-embedding-3-small" : embeddingOpenAIModel)"
+        }
+    }
+
+    /// Build the Chat retrieval embedder for the current **effective** config. Vectors from different
+    /// backends aren't comparable, so `ChatMemoryIndex` fully resets when this changes. Falls back to
+    /// Apple on-device (never breaks retrieval); returns nil only when even Apple is unavailable.
+    /// Cloud is only ever reached when NOT local-only (see `effectiveEmbeddingProvider`), so it can't leak.
+    func makeEmbedder() async -> ChatEmbedder? {
+        func apple() -> ChatEmbedder? { let a = AppleSentenceEmbedder(); return a.isAvailable ? a : nil }
+        func probe(_ e: ChatEmbedder) async -> Bool { (await e.embed(["probe"]))?.first?.isEmpty == false }
+
+        switch effectiveEmbeddingProvider {
+        case .apple:
+            return apple()
+
+        case .automatic:
+            if await OllamaEndpoint.isReachable(OllamaEndpoint.baseURL, maxAge: 30) {
+                let o = OllamaChatEmbedder(model: "nomic-embed-text")
+                if await probe(o) { Log.chat.notice("embedder: Ollama nomic-embed-text (auto)"); return o }
+            }
+            if let a = apple() { Log.chat.notice("embedder: Apple NLEmbedding (auto)"); return a }
+            Log.chat.notice("embedder: none available (auto) — retrieval off"); return nil
+
+        case .ollama:
+            // Empty = "Auto" → best installed embedding model (avoids a hardcoded tag-less name that
+            // mismatches Ollama's ":latest"). Falls back to nomic-embed-text as a last resort.
+            let chosen = embeddingOllamaModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            let model = chosen.isEmpty ? (await resolvedEmbeddingModel().isEmpty ? "nomic-embed-text"
+                                          : await resolvedEmbeddingModel()) : chosen
+            if await OllamaEndpoint.isReachable(OllamaEndpoint.baseURL, maxAge: 30) {
+                let o = OllamaChatEmbedder(model: model)
+                if await probe(o) { Log.chat.notice("embedder: Ollama \(model, privacy: .public)"); return o }
+            }
+            Log.chat.notice("embedder: Ollama \(model, privacy: .public) unavailable → Apple"); return apple()
+
+        case .mlx:
+            let mlxModel = embeddingMLXModel.isEmpty ? MLXEmbeddings.defaultModelID : embeddingMLXModel
+            // Don't block the first reply on a fresh download — fall back to Apple until it's installed
+            // (Settings shows the download button). Once present, load + probe.
+            guard MLXEmbeddings.isDownloaded(mlxModel) else {
+                Log.chat.notice("embedder: MLX \(mlxModel, privacy: .public) not downloaded → Apple"); return apple()
+            }
+            let m = MLXChatEmbedder(model: mlxModel)
+            if await probe(m) { Log.chat.notice("embedder: MLX \(mlxModel, privacy: .public)"); return m }
+            Log.chat.notice("embedder: MLX \(mlxModel, privacy: .public) failed → Apple"); return apple()
+
+        case .openAICompatible:
+            // Embedding's own endpoint + key (independent of the Language model).
+            let key = Keychain.get("embedding.openai.apiKey") ?? ""
+            let isGemini = embeddingOpenAIConnectionKind == .gemini
+            let fallbackModel = isGemini ? "text-embedding-004" : "text-embedding-3-small"
+            let model = embeddingOpenAIModel.isEmpty ? fallbackModel : embeddingOpenAIModel
+            guard !key.isEmpty, let url = URL(string: embeddingOpenAIBaseURL) else {
+                Log.chat.notice("embedder: cloud embedding not configured → Apple"); return apple()
+            }
+            let e: ChatEmbedder = isGemini
+                ? GeminiEmbedder(apiKey: key, model: model)
+                : OpenAIEmbedder(baseURL: url, apiKey: key, model: model)
+            if await probe(e) {
+                usedOffDeviceThisSession = true   // conversation text is being sent off-device
+                Log.chat.notice("embedder: cloud \(model, privacy: .public)"); return e
+            }
+            Log.chat.notice("embedder: cloud \(model, privacy: .public) failed → Apple"); return apple()
+        }
+    }
+
+    var privacyNote: String {
+        usedOffDeviceThisSession
+            ? "Cloud was used this session."
+            : "All processing stayed on this Mac."
+    }
+
+    /// Human label for the configured **text** engine (e.g. "Groq · openai/gpt-oss-20b").
+    var textEngineLabel: String {
+        switch effectivePreferred {
+        case .onDevice: return "Apple Intelligence"
+        case .ollama: return ollamaModel.isEmpty ? "Ollama (auto)" : "Ollama · \(ollamaModel)"
+        case .mlx: return mlxModel.isEmpty ? "MLX (auto)" : "MLX · \(mlxModel)"
+        case .openAICompatible: return "\(openAIDisplayName()) · \(openAIModel)"
+        case .anthropic: return "Anthropic · \(anthropicModel)"
+        }
+    }
+
+    /// Human label for the configured **image** (vision) backend (e.g. "OpenAI · gpt-4o").
+    var imageEngineLabel: String {
+        func cloudName(_ urlString: String) -> String {
+            let host = (URL(string: urlString)?.host ?? "").lowercased()
+            if host.contains("groq") { return "Groq" }
+            if host.contains("openrouter") { return "OpenRouter" }
+            if host.contains("openai") { return "OpenAI" }
+            if host == "localhost" || host == "127.0.0.1" { return "Local" }
+            return "Cloud"
+        }
+        switch effectiveVisionEngine {
+        case .matchText: return textEngineLabel   // images go through the text model
+        case .ollama: return visionModel.isEmpty ? "Ollama vision (auto)" : "Ollama · \(visionModel)"
+        case .mlx: return "MLX · \(visionMLXModel)"
+        case .openAICompatible: return "\(cloudName(visionOpenAIBaseURL)) · \(visionOpenAIModel)"
+        case .anthropic: return "Anthropic · \(visionAnthropicModel)"
+        }
+    }
+
+    /// SF Symbol + short location note for the last provider, for result attribution.
+    var lastProviderIcon: String {
+        lastProviderIsAppleOnDevice ? "cpu" : (lastProviderIsLocal ? "server.rack" : "cloud")
+    }
+    var lastProviderLocationNote: String {
+        lastProviderIsLocal ? "on this Mac" : "cloud · leaves your Mac"
+    }
+
+    /// The provider to actually use: in local-only mode a cloud engine is forced back to on-device,
+    /// so nothing ever leaves the Mac regardless of what's stored.
+    var effectivePreferred: ProviderKind {
+        (PrivacyMode.localOnly && !preferred.isLocalKind) ? .onDevice : preferred
+    }
+
+    /// Can a text request even be *formed* right now? Read by `DirectActionGate` so an AI hotkey says
+    /// "pick a language model" instead of starting a capture that ends in a provider error.
+    ///
+    /// Local engines always can: Apple on-device needs no setup, and Ollama/MLX resolve a model at use
+    /// time. A cloud engine cannot without a model name, because there is no `model` field to send.
+    /// An empty *key* is deliberately not a failure here: a connection can legitimately be key-less (a
+    /// localhost OpenAI-compatible server), and a wrong key already fails loudly with a 401 the moment
+    /// it is used, so checking it would only add false refusals.
+    var textModelConfigured: Bool {
+        switch effectivePreferred {
+        case .onDevice, .ollama, .mlx:
+            return true
+        case .openAICompatible:
+            return !openAIModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .anthropic:
+            return !anthropicModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    /// Context length (tokens) detected at runtime for the active provider, when we could read it:
+    /// Ollama's `/api/show` and OpenAI-compatible `/v1/models` (Groq/OpenRouter expose it). Refreshed by
+    /// `refreshContextWindow()`; nil until then or when the API doesn't expose it.
+    private(set) var ollamaContextTokens: Int?
+    private(set) var ollamaParamsBillions: Double?
+    private(set) var cloudContextTokens: Int?
+
+    /// Approximate context-window length (in tokens) of the active text model, so the chat budget scales
+    /// to it. MLX reads the model's real `max_position_embeddings`; Ollama/cloud use the runtime-detected
+    /// value when available, else a conservative per-family default.
+    var effectiveContextTokens: Int {
+        switch effectivePreferred {
+        case .mlx:      return MLXProvider.maxSequenceLength(mlxModel)
+        case .onDevice: return 4_096                               // Apple on-device FM — small window
+        case .ollama:   return ollamaContextTokens ?? 8_192
+        case .openAICompatible:
+            // 4-tier: manual override → detected (/v1/models) → inferred from model name → conservative.
+            if openAIContextOverride > 0 { return openAIContextOverride }
+            return cloudContextTokens ?? Self.inferContextFromModelName(openAIModel) ?? 32_000
+        case .anthropic:
+            return cloudContextTokens ?? Self.inferContextFromModelName(anthropicModel) ?? 200_000
+        }
+    }
+
+    /// Manual context-window override (tokens) for the selected OpenAI-compatible model; 0 = Auto. Set
+    /// in Settings for a gateway (e.g. Claude 200K/1M) whose `/v1/models` doesn't advertise the window.
+    var openAIContextOverride: Int {
+        UserDefaults.standard.integer(forKey: "intelligence.keys.language.context")
+    }
+
+    /// Best-effort context window from a model id when the endpoint doesn't report one — covers the
+    /// common families so a custom gateway serving Claude/GPT/Llama isn't wrongly clamped to the default.
+    nonisolated static func inferContextFromModelName(_ model: String) -> Int? {
+        let m = model.lowercased()
+        if m.contains("1m") { return 1_000_000 }
+        if m.contains("gemini") { return 1_000_000 }
+        if m.contains("claude") { return 200_000 }
+        if m.contains("llama-3.1") || m.contains("llama-3.3") || m.contains("llama3.1") { return 131_072 }
+        if m.contains("gpt-4o") || m.contains("gpt-4.1") || m.contains("gpt-4-turbo")
+            || m.hasPrefix("o1") || m.hasPrefix("o3") || m.contains("gpt-4-1106") { return 128_000 }
+        if m.contains("mixtral") || m.contains("mistral") { return 32_000 }
+        return nil
+    }
+
+    /// Active model's parameter count (billions), when known — Ollama from `/api/show`, MLX from the
+    /// model id, Apple's on-device FM ~3B. Sizes the local budget by model tier (a 0.6B model shouldn't
+    /// get a huge context even on a big window).
+    var activeParamsBillions: Double? {
+        switch effectivePreferred {
+        case .mlx:      return Self.paramsFromModelName(mlxModel)
+        case .ollama:   return ollamaParamsBillions
+        case .onDevice: return 3.0
+        default:        return nil
+        }
+    }
+
+    /// Parse a parameter count in billions out of a model id ("Qwen2.5-7B" → 7, "Qwen3-0.6B" → 0.6).
+    static func paramsFromModelName(_ name: String) -> Double? {
+        let lower = name.lowercased()
+        guard let re = try? NSRegularExpression(pattern: #"(\d+(?:\.\d+)?)\s*b\b"#) else { return nil }
+        let ns = lower as NSString
+        guard let m = re.firstMatch(in: lower, range: NSRange(location: 0, length: ns.length)),
+              let r = Range(m.range(at: 1), in: lower), let n = Double(lower[r]), n > 0 else { return nil }
+        return n
+    }
+
+    /// The chat context budget for the active model — local uses a param-sized, RAM-safe sweet spot
+    /// (capped by the real window), cloud a large slice of its window. Single source of truth, shared by
+    /// the builder and the Ollama `num_ctx`.
+    var contextBudget: ChatContextBuilder.Budget {
+        .forContextTokens(effectiveContextTokens, isLocal: effectivePreferred.isLocalKind,
+                          localSweetSpot: ChatContextBuilder.Budget.localSweetSpot(paramsBillions: activeParamsBillions))
+    }
+
+    /// `num_ctx` to request from Ollama = the input budget (tokens) + a little output headroom, never
+    /// above the model's real window. This is what actually lifts Ollama off its ~4096 default — kept
+    /// modest so the KV cache doesn't eat device RAM.
+    var ollamaNumCtx: Int {
+        min(effectiveContextTokens, contextBudget.total / 4 + ChatContextBuilder.Budget.outputReserveTokens)
+    }
+
+    /// Detect the active model's real context window (Ollama `/api/show`, cloud `/v1/models`) and cache
+    /// it. Best-effort: any failure leaves the conservative default in place. Never runs off-device work
+    /// in local-only mode beyond the local Ollama server.
+    func refreshContextWindow() async {
+        switch effectivePreferred {
+        case .ollama:
+            guard await OllamaEndpoint.isReachable(OllamaEndpoint.baseURL, maxAge: 30) else { return }
+            let info = await OllamaEndpoint.modelInfo(await resolvedTextModel())
+            if let c = info.context { ollamaContextTokens = c }
+            if let p = info.paramsBillions { ollamaParamsBillions = p }
+        case .openAICompatible:
+            guard !PrivacyMode.localOnly else { return }
+            if let c = await fetchOpenAIContextLength() { cloudContextTokens = c }
+        default:
+            break
+        }
+    }
+
+    /// GET `{baseURL}/models` and read the active model's context length where the provider exposes it
+    /// (Groq `context_window`, OpenRouter `context_length` / `top_provider.context_length`).
+    private func fetchOpenAIContextLength() async -> Int? {
+        guard let base = URL(string: openAIBaseURL) else { return nil }
+        let key = Keychain.getMigrating("openai.apiKey", legacyDefaultsKey: "openai.apiKey") ?? ""
+        var request = URLRequest(url: base.appendingPathComponent("models"))
+        if !key.isEmpty { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
+        request.timeoutInterval = 5
+        guard let (data, resp) = try? await URLSession.shared.data(for: request),
+              (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return Self.parseOpenAIContextLength(data, model: openAIModel)
+    }
+
+    /// Pull a context length out of an OpenAI-compatible `/v1/models` response for `model`. Internal for tests.
+    static func parseOpenAIContextLength(_ data: Data, model: String) -> Int? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let list = json["data"] as? [[String: Any]] else { return nil }
+        guard let entry = list.first(where: { ($0["id"] as? String) == model }) ?? list.first else { return nil }
+        for key in ["context_window", "context_length", "max_context_length", "max_input_tokens"] {
+            if let n = entry[key] as? Int, n > 0 { return n }
+        }
+        if let tp = entry["top_provider"] as? [String: Any], let n = tp["context_length"] as? Int, n > 0 {
+            return n
+        }
+        return nil
+    }
+
+    /// True when the current config actually uses a local Ollama model (for text or image) — so we
+    /// only probe / auto-start Ollama when it's relevant (no noise for cloud-only setups).
+    var usesOllama: Bool {
+        effectivePreferred == .ollama || effectiveVisionEngine == .ollama
+            || effectiveEmbeddingProvider == .ollama
+    }
+
+    /// The image provider to actually use: in local-only mode any cloud choice is forced to local
+    /// Ollama (and "Same as text" stays local only if the effective text engine is local).
+    var effectiveVisionEngine: VisionEngine {
+        guard PrivacyMode.localOnly else { return visionEngine }
+        switch visionEngine {
+        case .ollama: return .ollama
+        case .mlx: return .mlx   // local — fine in local-only mode
+        case .matchText: return effectivePreferred.isLocalKind ? .matchText : .ollama
+        case .openAICompatible, .anthropic: return .ollama
+        }
+    }
+
+    /// Build the provider for the current preference (cloud reads its key from the Keychain; Ollama
+    /// uses the resolved installed model).
+    private func buildProvider() async -> IntelligenceProvider {
+        switch effectivePreferred {
+        case .onDevice:
+            return onDevice
+        case .ollama:
+            return OllamaProvider(model: await resolvedTextModel(), numCtx: ollamaNumCtx)
+        case .mlx:
+            return MLXProvider(modelID: mlxModel.isEmpty ? MLXProvider.defaultModelID : mlxModel)
+        case .openAICompatible:
+            let key = Keychain.getMigrating("openai.apiKey", legacyDefaultsKey: "openai.apiKey") ?? ""
+            // Same registry, two wire formats: the selected model's connection decides which.
+            if openAIConnectionKind == .gemini {
+                return GeminiProvider(apiKey: key, model: openAIModel,
+                                      displayName: openAIDisplayName())
+            }
+            let url = URL(string: openAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
+            return OpenAICompatibleProvider(
+                baseURL: url, apiKey: key, model: openAIModel, displayName: openAIDisplayName())
+        case .anthropic:
+            let url = URL(string: anthropicBaseURL) ?? URL(string: "https://api.anthropic.com")!
+            return AnthropicProvider(
+                baseURL: url,
+                apiKey: Keychain.getMigrating("anthropic.apiKey", legacyDefaultsKey: "anthropic.apiKey") ?? "",
+                model: anthropicModel)
+        }
+    }
+
+    /// Resolve the active provider, falling back to on-device when the chosen one is unavailable.
+    func activeProvider() async -> IntelligenceProvider {
+        let primary = await buildProvider()
+        if await primary.checkAvailability() { return primary }
+        if await onDevice.checkAvailability() {
+            Log.intelligence.notice("Primary provider unavailable; falling back to on-device")
+            return onDevice
+        }
+        return primary // let the call surface a clear error
+    }
+
+    /// Resolve the active vision backend from the independent `visionEngine` choice. Returns nil when
+    /// the chosen backend isn't usable (no key, server down, no installed model) — the caller surfaces
+    /// a clear hint.
+    func activeVisionProvider() async -> VisionProvider? {
+        switch effectiveVisionEngine {
+        case .matchText:
+            return await visionFromTextEngine()
+        case .ollama:
+            return await localOllamaVision()
+        case .mlx:
+            let provider = MLXVisionProvider(modelID: visionMLXModel)
+            return await provider.isAvailable() ? provider : nil
+        case .openAICompatible:
+            let key = Keychain.get("vision.openai.apiKey") ?? ""
+            let cloud: VisionProvider = visionOpenAIConnectionKind == .gemini
+                ? GeminiVisionProvider(apiKey: key, model: visionOpenAIModel)
+                : OpenAICompatibleVisionProvider(
+                    baseURL: URL(string: visionOpenAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!,
+                    apiKey: key, model: visionOpenAIModel)
+            if await cloud.isAvailable() { usedOffDeviceThisSession = true; return cloud }
+            return nil
+        case .anthropic:
+            let url = URL(string: visionAnthropicBaseURL) ?? URL(string: "https://api.anthropic.com")!
+            let cloud = AnthropicVisionProvider(
+                baseURL: url, apiKey: Keychain.get("vision.anthropic.apiKey") ?? "", model: visionAnthropicModel)
+            if await cloud.isAvailable() { usedOffDeviceThisSession = true; return cloud }
+            return nil
+        }
+    }
+
+    /// "Same as text engine": route images through the configured Text provider (cloud models serve
+    /// vision directly; Apple is text-only, so it falls back to local Ollama vision).
+    private func visionFromTextEngine() async -> VisionProvider? {
+        switch effectivePreferred {
+        case .openAICompatible:
+            let url = URL(string: openAIBaseURL) ?? URL(string: "https://api.openai.com/v1")!
+            let cloud = OpenAICompatibleVisionProvider(
+                baseURL: url,
+                apiKey: Keychain.getMigrating("openai.apiKey", legacyDefaultsKey: "openai.apiKey") ?? "",
+                model: openAIModel)
+            if await cloud.isAvailable() { usedOffDeviceThisSession = true; return cloud }
+            return nil
+        case .anthropic:
+            let url = URL(string: anthropicBaseURL) ?? URL(string: "https://api.anthropic.com")!
+            let cloud = AnthropicVisionProvider(
+                baseURL: url,
+                apiKey: Keychain.getMigrating("anthropic.apiKey", legacyDefaultsKey: "anthropic.apiKey") ?? "",
+                model: anthropicModel)
+            if await cloud.isAvailable() { usedOffDeviceThisSession = true; return cloud }
+            return nil
+        case .mlx:
+            // A VLM text model serves images too — reuse it (one model for both roles).
+            guard MLXProvider.isVision(mlxModel) else { return nil }
+            let provider = MLXVisionProvider(modelID: mlxModel)
+            return await provider.isAvailable() ? provider : nil
+        case .ollama:
+            return await localOllamaVision()
+        case .onDevice:
+            return nil   // Apple is text-only; no silent Ollama fallback — the user picks an image provider
+        }
+    }
+
+    /// Local Ollama vision (resolved model: explicit override, main-if-multimodal, else best installed).
+    private func localOllamaVision() async -> VisionProvider? {
+        let provider = OllamaVisionProvider(model: await resolvedVisionModel())
+        return await provider.isAvailable() ? provider : nil
+    }
+
+    private var lastVisionPrewarm = Date.distantPast
+
+    /// Speculatively load the local vision model so Identify is warm by the time it's clicked. Only
+    /// ever warms a *local* Ollama model — never fires a speculative cloud request — and debounces so
+    /// rapid re-selections don't spam the server. Fire-and-forget; safe to call on every capture.
+    func prewarmVision() {
+        guard Date().timeIntervalSince(lastVisionPrewarm) > 20 else { return }
+        lastVisionPrewarm = Date()
+        Task {
+            guard let ollama = await activeVisionProvider() as? OllamaVisionProvider else { return }
+            await ollama.preload()
+        }
+    }
+
+    /// Cached: is a vision backend available (a local Ollama vision model, or a configured cloud
+    /// image model)? Drives greying of vision features. Refreshed at launch, after Save, and on
+    /// capture. Side-effect-free — unlike `activeVisionProvider`, it never flips the privacy flag.
+    private(set) var visionAvailable = false
+
+    func refreshVisionAvailability() async {
+        visionAvailable = await computeVisionAvailability()
+    }
+
+    private func computeVisionAvailability() async -> Bool {
+        func cloudReady(_ keyAccount: String, _ model: String) -> Bool {
+            !(Keychain.get(keyAccount) ?? "").isEmpty && !model.isEmpty
+        }
+        switch effectiveVisionEngine {
+        // Explicit image provider: the user deliberately picked it for images — trust the config.
+        case .openAICompatible: return cloudReady("vision.openai.apiKey", visionOpenAIModel)
+        case .anthropic:        return cloudReady("vision.anthropic.apiKey", visionAnthropicModel)
+        case .ollama:           return await hasInstalledVisionModel()
+        case .mlx:              return MLXProvider.isDownloaded(visionMLXModel)
+        // "Same as text": only counts as vision if the *text* model can actually see (a text-only
+        // cloud model like Groq gpt-oss must not masquerade as a vision backend).
+        case .matchText:
+            switch effectivePreferred {
+            case .openAICompatible: return cloudReady("openai.apiKey", openAIModel) && Self.looksMultimodal(openAIModel)
+            case .anthropic:        return cloudReady("anthropic.apiKey", anthropicModel) && Self.looksMultimodal(anthropicModel)
+            case .ollama:           return await hasInstalledVisionModel()
+            case .mlx:              return MLXProvider.isVision(mlxModel) && MLXProvider.isDownloaded(mlxModel)
+            case .onDevice:         return false   // Apple can't see images; no fallback
+            }
+        }
+    }
+
+    private func hasInstalledVisionModel() async -> Bool {
+        let installed = await OllamaModels.installed()
+        if installed.contains(where: OllamaModels.isVision) { return true }
+        return !ollamaModel.isEmpty && OllamaModels.isVision(ollamaModel)
+    }
+
+    /// Heuristic: does the prompt ask for tabular/structured output? Kept conservative.
+    static func looksLikeTableRequest(_ prompt: String) -> Bool {
+        let lower = prompt.lowercased()
+        let keywords = ["table", "csv", "spreadsheet", "tabulate", "columns", "rows", "grid", "in a table"]
+        return keywords.contains { lower.contains($0) }
+    }
+
+    /// Safeguard for the on-device model (weak at hand-writing Markdown tables): produce a reliable
+    /// table via guided generation, returned as Markdown. Sets attribution for the result footer.
+    func onDeviceTableMarkdown(prompt: String, context: String?) async throws -> String {
+        lastProviderName = onDevice.name
+        lastProviderIsAppleOnDevice = true
+        lastProviderIsLocal = true
+        return try await onDevice.generateTableMarkdown(instruction: prompt, context: context)
+    }
+
+    // MARK: - Streaming with transient-error failover
+
+    /// Flag that something left the device outside the normal `respond` path (the harness's utility
+    /// model, when it has to borrow a cloud provider). Lives here because `usedOffDeviceThisSession`
+    /// has a file-private setter.
+    func noteOffDeviceUse() { usedOffDeviceThisSession = true }
+
+    /// Record which provider actually served a request (drives the result-footer attribution and the
+    /// privacy badge). Called at the answering provider's first token, so the UI names the model that
+    /// truly answered and never a fallback candidate that failed.
+    private func setLastProvider(_ provider: IntelligenceProvider) {
+        lastProviderName = provider.name
+        lastProviderIsAppleOnDevice = provider.isAppleOnDevice
+        lastProviderIsLocal = provider.isLocal
+        if !provider.isLocal { usedOffDeviceThisSession = true }
+    }
+
+    /// The one safe failover target: the on-device Apple model. It's always **local** — so a cloud→local
+    /// fallback can never leak, and local-only mode never reaches for the network — and it doesn't
+    /// rate-limit. Returns nil when the primary already *is* on-device, or on-device isn't available on
+    /// this Mac (nothing better to do → surface the original error).
+    private func failoverProvider(from primary: IntelligenceProvider) async -> IntelligenceProvider? {
+        guard !primary.isAppleOnDevice, await onDevice.checkAvailability() else { return nil }
+        return onDevice
+    }
+
+    /// Whether an error is worth retrying on the on-device fallback: transient outages (rate limits,
+    /// timeouts, 5xx, network blips), NOT bad keys, oversized prompts, or cancellation (retrying those
+    /// just fails again, or is the user's own doing).
+    ///
+    /// One classifier for both fallbacks (`ModelFailure.classify`), reading the HTTP status first. The
+    /// old substring test here treated any message mentioning "api key" as a bad key, and every
+    /// OpenAI-compatible 5xx ("… Check the API key, base URL, and model.") and every Anthropic error
+    /// ("… Check the API key and model.") mentions it, so a 503 or 429 never failed over at all.
+    static func isTransient(_ error: Error) -> Bool {
+        [.rateLimited, .unavailable, .connectionDown].contains(ModelFailure.classify(error))
+    }
+
+    // MARK: - Free-model fallback
+
+    static let autoFallbackKey = "intelligence.fallback.freeModels"
+
+    /// Opt-in: retry a failed cloud request on a free model from the configured connections before the
+    /// on-device model. Off by default because it sends the conversation to a different provider.
+    var autoFallbackEnabled: Bool {
+        didSet { UserDefaults.standard.set(autoFallbackEnabled, forKey: Self.autoFallbackKey) }
+    }
+
+    static let raceAfterKey = "intelligence.fallback.raceAfterSeconds"
+    /// The choices Settings offers for racing a slow model; 0 = never.
+    static let raceAfterChoices = [0, 8, 15, 30, 60]
+
+    /// Seconds the selected cloud model may go without starting its answer before the best free model
+    /// races it (first to answer wins). 0 = never race. Only acts where the free pool is allowed.
+    var fallbackRaceAfterSeconds: Int {
+        didSet { UserDefaults.standard.set(fallbackRaceAfterSeconds, forKey: Self.raceAfterKey) }
+    }
+
+    let modelHealth = ModelHealth()
+
+    @ObservationIgnored
+    private(set) lazy var freeModelRefresher = FreeModelRefresher(
+        onRefreshed: { [weak self] in self?.modelHealth.clearRefreshMarks() })
+
+    @ObservationIgnored
+    private lazy var fallbackDriver = FallbackDriver(
+        health: modelHealth,
+        poolAllowed: { [weak self] primary in
+            guard let self else { return false }
+            // Read live on every attempt: local-only or the switch can change mid-request.
+            return FallbackPolicy.poolAllowed(
+                enabled: self.autoFallbackEnabled, localOnly: PrivacyMode.localOnly,
+                primaryIsLocal: FallbackPolicy.primaryIsLocal(providerIsLocal: primary.isLocal,
+                                                              preferred: self.effectivePreferred,
+                                                              baseURL: self.openAIBaseURL))
+        },
+        candidates: { [weak self] needs, tried in
+            guard let self else { return [] }
+            // Normal operation reads the cached registry; a stale one is re-checked for next time.
+            if self.freeModelRefresher.isStale { self.refreshFreeModelsInBackground() }
+            let registry = KeysRegistry.load()
+            return FreeModelPool.candidates(
+                in: registry, needs: needs, excluding: tried,
+                billed: FreeModelPool.billedConnections(in: registry, primary: self.activeModelRef),
+                isBenched: { self.modelHealth.isBenched($0) })
+        },
+        refreshInBackground: { [weak self] in self?.refreshFreeModelsInBackground() },
+        makeProvider: { candidate in Self.provider(for: candidate) },
+        lastResort: { [weak self] primary, needs in
+            guard let self else { return nil }
+            guard FallbackPolicy.onDeviceCanHold(needs) else {
+                Log.intelligence.notice("on-device skipped: ~\(needs.estimatedTokens, privacy: .public) tokens is past its window")
+                return nil
+            }
+            return await self.failoverProvider(from: primary).map {
+                // Only the on-device model comes back from here, and it needs to know why it is here.
+                ($0 as? OnDeviceProvider).map { device in
+                    var standIn = device
+                    standIn.standingInFor = primary.name
+                    return standIn as IntelligenceProvider
+                } ?? $0
+            }
+        },
+        raceAfter: { [weak self] in
+            guard let self, self.fallbackRaceAfterSeconds > 0 else { return nil }   // "Never" means never
+            // A model that has been losing on time lately is raced from the first moment, so the user
+            // stops paying the wait on every message while still getting their own model when it is
+            // ready in time.
+            if self.primaryCircuit.racesImmediately(primaryKey: self.activePrimaryKey) { return 0 }
+            return TimeInterval(self.fallbackRaceAfterSeconds)
+        })
+
+    /// An automatic re-check, rate-limited by the refresher. Never in local-only mode.
+    func refreshFreeModelsInBackground() {
+        guard !PrivacyMode.localOnly else { return }
+        Task { await freeModelRefresher.refreshIfDue() }
+    }
+
+    /// At launch: bring a day-old list up to date before the first request needs it. Only when the
+    /// feature is on, since it calls every connection's model list.
+    func refreshFreeModelsIfStale() {
+        guard autoFallbackEnabled, freeModelRefresher.isStale else { return }
+        refreshFreeModelsInBackground()
+    }
+
+    /// The model id the user selected, when it's a cloud model the pool could stand in for.
+    private var activePrimaryModelID: String? {
+        switch effectivePreferred {
+        case .openAICompatible: openAIModel
+        case .anthropic: anthropicModel
+        default: nil
+        }
+    }
+
+    /// Build the provider a pool candidate routes to, with its own connection's key, the shorter
+    /// candidate timeout, and no tool loop when its model list says it can't call tools.
+    static func provider(for candidate: FallbackCandidate,
+                         keyValue: (String) -> String = { Keychain.get($0) ?? "" }) -> IntelligenceProvider {
+        let key = keyValue(candidate.keychainAccount)
+        switch candidate.kind {
+        case .gemini:
+            return GeminiProvider(apiKey: key, model: candidate.model.name, displayName: candidate.connectionName,
+                                  requestTimeout: FallbackDriver.candidateTimeout)
+        case .openAICompatible:
+            let url = URL(string: candidate.baseURL) ?? URL(string: "https://api.openai.com/v1")!
+            return OpenAICompatibleProvider(baseURL: url, apiKey: key, model: candidate.model.name,
+                                            displayName: candidate.connectionName,
+                                            requestTimeout: FallbackDriver.candidateTimeout,
+                                            supportsToolCalls: candidate.toolSupport != false)
+        }
+    }
+
+    let primaryCircuit = PrimaryCircuit()
+
+    /// Set while the selected model is being routed around after repeated misses; drives the Chat
+    /// header's notice. Its buttons call `switchToSubstitute` / `retrySelectedModelNow`.
+    private(set) var routedAround: RoutedAround?
+
+    /// Identifies the selected model across requests, so the circuit resets by itself when the user
+    /// picks something else. Not the display name: that changes with a connection's rename.
+    var activePrimaryKey: String {
+        let model = activeModelRef.map { "\($0.keyID)\t\($0.model)" } ?? (activePrimaryModelID ?? "")
+        return "\(effectivePreferred.rawValue)|\(model)"
+    }
+
+    /// Make the stand-in the user's own choice. Only for a registry model (a pool candidate always is).
+    func switchToSubstitute() {
+        guard let routed = routedAround, let ref = routed.substitute?.ref else { return }
+        selectRegistryModel(keyID: ref.keyID, model: ref.model)
+        primaryCircuit.reset()
+        routedAround = nil
+    }
+
+    /// "Try again" / "Stop racing": the next request goes to the selected model on its own terms. The
+    /// bar goes away now rather than after that request, so the button visibly does something; if the
+    /// model misses again, the next outcome brings it back.
+    func retrySelectedModelNow() {
+        primaryCircuit.retryNow()
+        routedAround = nil
+    }
+
+    /// The stand-in to use right now, if the circuit is open and it is still usable for **this** request.
+    /// Skipping the model the user chose must not also skip the checks that protect the answer: a
+    /// stand-in still has to be free, opted in, healthy, and able to serve this particular request
+    /// (images, tools, context, size). When nothing qualifies, nil sends the request down the normal
+    /// path, where the selected model is tried and the pool's own filters apply.
+    private func usableSubstitute(_ routed: RoutedAround, needs: FallbackNeeds) async -> (provider: IntelligenceProvider, ref: ModelRef?)? {
+        guard let candidate = routed.substitute else {
+            guard FallbackPolicy.onDeviceCanStandIn(needs), await onDevice.checkAvailability() else { return nil }
+            var standIn = onDevice
+            standIn.standingInFor = routed.primaryName
+            return (standIn, nil)
+        }
+        let registry = KeysRegistry.load()
+        guard let fresh = FreeModelPool.substitute(
+            candidate.ref, in: registry, needs: needs,
+            billed: FreeModelPool.billedConnections(in: registry, primary: activeModelRef),
+            isBenched: { self.modelHealth.isBenched($0) }) else { return nil }
+        return (Self.provider(for: fresh), fresh.ref)
+    }
+
+    /// The registry model behind the active language selection, when there is one.
+    var activeModelRef: ModelRef? {
+        guard effectivePreferred == .openAICompatible,
+              let stored = UserDefaults.standard.string(forKey: Self.languageSelectionKey),
+              let rest = stored.dropPrefixIfPresent("model:") else { return nil }
+        let parts = rest.components(separatedBy: "\t")
+        return parts.count == 2 ? ModelRef(keyID: parts[0], model: parts[1]) : nil
+    }
+
+    /// Shared streaming core with **pre-first-token** failover (see `FallbackDriver`): a request that
+    /// fails before its first token moves to a free model (when enabled and allowed), then on-device.
+    /// Once tokens have streamed we never swap mid-answer (that would splice two models).
+    ///
+    /// Attribution (`lastProvider…`) names the selected model as soon as it is tried, so the footer never
+    /// shows a previous request's model, and is replaced at the answering model's first token if a
+    /// fallback answers. A candidate (or the on-device last resort) is named only at its first token:
+    /// one that fails must never appear as the one that answered. The privacy flag is set as soon as a
+    /// request leaves for a cloud provider, answered or not.
+    private func streamWithFailover(
+        label: String, needs: FallbackNeeds, scope: FallbackScope,
+        onFallback: (@MainActor (FallbackNotice) -> Void)?,
+        _ open: @escaping @Sendable (IntelligenceProvider) -> AsyncThrowingStream<String, Error>
+    ) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task { [weak self] in
+                guard let self else { continuation.finish(); return }
+                let t0 = Date()
+                let provider = await self.activeProvider()
+                Log.intelligence.notice("\(label, privacy: .public) · provider=\(provider.name, privacy: .public) local=\(provider.isLocal, privacy: .public) (+\(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public)ms)")
+
+                // Apple's model writes languages it doesn't support anyway, badly. Whether it's the
+                // chosen model or `activeProvider` fell back to it, refuse rather than answer.
+                if provider.isAppleOnDevice, !OnDeviceProvider.supports(languages: needs.languages) {
+                    let names = OnDeviceProvider.unsupportedNames(needs.languages)
+                    Log.intelligence.notice("\(label, privacy: .public) · on-device refused: doesn't support \(names, privacy: .public)")
+                    continuation.finish(throwing: IntelligenceError.unavailable(
+                        "Apple Intelligence doesn't support \(names). Choose a cloud or Ollama model in Settings ▸ Intelligence."))
+                    return
+                }
+
+                // A selected model that keeps missing is skipped for a while: the request goes straight
+                // to what last answered, instead of waiting out the race on every message. Only where
+                // the pool is allowed, and only while the stand-in is still usable.
+                let primaryKey = self.activePrimaryKey
+                let primaryName = provider.name
+                let counts = scope == .full && self.fallbackDriver.poolAllowed(provider)
+                var selected = provider
+                var selectedRef = self.activeModelRef
+                var routedFrom: String?
+                if counts, let routed = self.primaryCircuit.route(primaryKey: primaryKey),
+                   let substitute = await self.usableSubstitute(routed, needs: needs) {
+                    selected = substitute.provider
+                    selectedRef = substitute.ref
+                    routedFrom = provider.name
+                    Log.intelligence.notice("\(label, privacy: .public) · routing around \(provider.name, privacy: .public); using \(substitute.provider.name, privacy: .public)")
+                }
+                let wasRouted = routedFrom != nil
+                let stream = self.fallbackDriver.stream(
+                    primary: selected, primaryRef: selectedRef, needs: needs, label: label,
+                    scope: scope,
+                    routedFrom: routedFrom,
+                    exclude: wasRouted ? Set([self.activeModelRef].compactMap { $0 }) : [],
+                    onOutcome: { [weak self] outcome, answeredBy in
+                        guard let self, counts else { return }
+                        self.primaryCircuit.record(primaryKey: primaryKey, primaryName: primaryName,
+                                                   outcome: outcome, answeredBy: answeredBy, routed: wasRouted)
+                        self.routedAround = self.primaryCircuit.routed
+                    },
+                    onAttempt: { [weak self] provider, isSelected in
+                        guard let self else { return }
+                        if !provider.isLocal { self.usedOffDeviceThisSession = true }
+                        if isSelected { self.setLastProvider(provider) }
+                    },
+                    onServe: { [weak self] in self?.setLastProvider($0) },
+                    onFallback: { notice in
+                        Log.intelligence.notice("\(label, privacy: .public) · \(notice.text, privacy: .public)")
+                        onFallback?(notice)
+                    },
+                    open: open)
+                do {
+                    for try await delta in stream { continuation.yield(delta) }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Stream a response from the active provider. The stream is only ever the answering model's output;
+    /// if a fallback answered, `onFallback` says so (the result footer's provider name reflects it too).
+    ///
+    /// `scope` limits the fallback: `.none` for background work the user doesn't see (the summarizer),
+    /// which mustn't send their conversation to a provider they didn't pick.
+    func respond(prompt: String, context: String?, scope: FallbackScope = .full,
+                 onFallback: (@MainActor (FallbackNotice) -> Void)? = nil) -> AsyncThrowingStream<String, Error> {
+        streamWithFailover(label: "respond(prompt)",
+                           needs: FallbackNeeds(prompt: prompt, context: context, primaryModel: activePrimaryModelID),
+                           scope: scope, onFallback: onFallback) {
+            $0.respond(prompt: prompt, context: context)
+        }
+    }
+
+    /// Whether the active **text** provider supports native tool calling — so the Chat panel knows to
+    /// offer the model a `web_search` tool (model-decides grounding) instead of the rule-based
+    /// heuristic. Resolves the Ollama model (which gates on family); cloud always supports it; Apple
+    /// on-device supports it when available; MLX does not.
+    func activeTextProviderSupportsTools() async -> Bool {
+        switch effectivePreferred {
+        case .openAICompatible, .anthropic:
+            return true
+        case .ollama:
+            return OllamaModels.supportsTools(await resolvedTextModel())
+        case .onDevice, .mlx:
+            // Apple's on-device model is too small to tool-call reliably — attaching tools overflows
+            // its context and throws GenerationError even on trivial prompts (verified). MLX has no
+            // tool-calling path. Both use the heuristic grounding route instead.
+            return false
+        }
+    }
+
+    /// Stream a multi-turn response with tools the model may call (the Chat panel's grounded path).
+    /// The resolved provider runs the tool loop; if it turns out not to support tools, it transparently
+    /// answers without them.
+    ///
+    /// `toolNeed` tells the free-model fallback whether a model without a tool loop may stand in:
+    /// `.required` when the turn depends on the tool (the user asked for a search), `.preferred` when
+    /// the model merely may use it.
+    func respond(messages: [ChatTurn], tools: [ChatTool], toolNeed: ToolNeed = .preferred,
+                 scope: FallbackScope = .full,
+                 onFallback: (@MainActor (FallbackNotice) -> Void)? = nil,
+                 execute: @escaping ToolExecutor) -> AsyncThrowingStream<String, Error> {
+        // `supportsTools` is re-checked per provider: the on-device last resort (reached only when the
+        // tool is optional) and a candidate known unable to call tools answer without them.
+        streamWithFailover(label: "respond(tools)",
+                           needs: FallbackNeeds(messages: messages, tools: toolNeed,
+                                                primaryModel: activePrimaryModelID),
+                           scope: scope, onFallback: onFallback) { provider in
+            provider.supportsTools
+                ? provider.respond(messages: messages, tools: tools, execute: execute)
+                : provider.respond(messages: messages)
+        }
+    }
+
+    /// Stream a response to a multi-turn conversation from the active provider (the Chat panel).
+    func respond(messages: [ChatTurn], scope: FallbackScope = .full, languages: Set<String> = [],
+                 onFallback: (@MainActor (FallbackNotice) -> Void)? = nil) -> AsyncThrowingStream<String, Error> {
+        var needs = FallbackNeeds(messages: messages, tools: .none, primaryModel: activePrimaryModelID)
+        needs.languages = languages
+        return streamWithFailover(label: "respond(messages)",
+                           needs: needs,
+                           scope: scope, onFallback: onFallback) {
+            $0.respond(messages: messages)
+        }
+    }
+
+    /// Whether the active **text** model can natively accept an image in a chat message. Drives the
+    /// Chat panel's "send the image natively vs. describe it via the vision provider" routing. Apple
+    /// on-device is text-only; Ollama is checked by model name; cloud uses a conservative name
+    /// heuristic (a native send that still fails falls back to a vision description upstream).
+    func textModelSupportsVision() async -> Bool {
+        switch effectivePreferred {
+        case .onDevice:
+            return false
+        case .ollama:
+            return OllamaModels.isVision(await resolvedTextModel())
+        case .mlx:
+            return MLXProvider.isVision(mlxModel)   // a VLM text model can take images natively
+        case .openAICompatible:
+            return Self.looksMultimodal(openAIModel)
+        case .anthropic:
+            return Self.looksMultimodal(anthropicModel)
+        }
+    }
+
+    /// Conservative "is this cloud model multimodal" check by name. Errs toward false so we fall back
+    /// to the dedicated vision provider rather than firing an image at a text-only model.
+    static func looksMultimodal(_ model: String) -> Bool {
+        let m = model.lowercased()
+        // Anthropic: Claude 3+ are all vision-capable.
+        if m.contains("claude-3") || m.contains("claude-4") || m.contains("claude-sonnet")
+            || m.contains("claude-opus") || m.contains("claude-haiku") { return true }
+        let hints = ["4o", "4.1", "gpt-5", "o3", "o4", "gemini", "-vl", "vl-", "llava", "vision",
+                     "pixtral", "qwen-vl", "qwen2-vl", "qwen2.5-vl", "qwen3-vl", "llama-3.2-11b",
+                     "llama-3.2-90b", "internvl", "minicpm-v"]
+        return hints.contains { m.contains($0) }
+    }
+}
