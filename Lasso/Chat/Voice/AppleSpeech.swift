@@ -13,10 +13,23 @@ enum AppleSpeech {
     /// before asking for the download: without it the request fails with "<app> is not subscribed to
     /// transcription.<lang>", which is what a fresh Mac (CI) hit on the first tap of the mic.
     static func installIfNeeded(_ transcriber: SpeechTranscriber, locale: Locale) async throws {
-        if await AssetInventory.status(forModules: [transcriber]) == .installed { return }
-        _ = try await AssetInventory.reserve(locale: locale)
-        if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-            try await request.downloadAndInstall()
+        let status = await AssetInventory.status(forModules: [transcriber])
+        if status == .installed { return }
+        // Each step names itself in the error, so a failure says where it happened (the API's own
+        // messages don't), e.g. "reserve en_US (status supported): …".
+        var reserved = false
+        do {
+            reserved = try await AssetInventory.reserve(locale: locale)
+        } catch {
+            throw VoiceInputError("Couldn't reserve \(locale.identifier) speech (status \(status)): \(error.localizedDescription)")
+        }
+        do {
+            if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+                try await request.downloadAndInstall()
+            }
+        } catch {
+            throw VoiceInputError("Couldn't download \(locale.identifier) speech (status \(status), reserved \(reserved)): "
+                                  + error.localizedDescription)
         }
     }
 
