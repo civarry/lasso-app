@@ -20,7 +20,9 @@ struct PanelActivationTests {
         ChatPanelController.shared.present()
         defer { ChatPanelController.shared.close() }
         let panel = try #require(ChatPanelController.shared.panel)
-        try await Task.sleep(for: .milliseconds(200))
+        // Main-ness settles once macOS completes the activation Lasso requested, which it does on its
+        // own schedule (often well past 200 ms in a test run). Wait for it rather than checking once.
+        for _ in 0..<30 where !panel.isMainWindow { try await Task.sleep(for: .milliseconds(100)) }
         #expect(panel.isMainWindow, "Settings stays main and is dragged forward with the chat")
         #expect(!settings.isMainWindow)
     }
