@@ -8,6 +8,9 @@
   <img src="https://img.shields.io/badge/macOS-26%2B-lightgrey" alt="Requires macOS 26 or later">
 </p>
 
+> [!NOTE]
+> **Lasso is now open source.** The full source code lives right here under the [Apache 2.0 license](LICENSE). Download the app from [Releases](../../releases) as before, or [build it yourself](BUILDING.md) on your own Mac, no Apple developer account needed.
+
 Lasso is a little menu-bar app for Apple Silicon Macs. Hit a hotkey, the screen
 freezes, you drag a box around anything on it, and a small toolbar pops up with
 things you can do — copy the text, translate it, ask an AI about it, figure out
