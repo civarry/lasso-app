@@ -75,9 +75,10 @@ supported too, but strictly opt-in; API keys live in the macOS Keychain.
 
 1. Download the **`.dmg`** from the [Releases](../../releases) page.
 2. Open it and drag **Lasso** to Applications.
-3. First launch: **right-click the app → Open**. macOS warns it can't verify the
-   developer — that's expected, the build isn't notarized. After opening once, it
-   just works.
+3. First launch: open Lasso. macOS says it can't verify the developer, which is
+   expected because the build isn't notarized. Click **Done**, then go to System
+   Settings → Privacy & Security, click **Open Anyway** next to Lasso, and confirm.
+   You only do this once.
 4. Grant **Screen Recording** in System Settings → Privacy & Security, then
    relaunch. The capture shortcut defaults to **⌃⇧C** (changeable in Settings).
 
