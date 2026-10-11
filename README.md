@@ -178,8 +178,9 @@ declarative catalog you can extend with one entry. There's a fuller writeup in
 
 ## Good to know
 
-- It's **not notarized**, so first-launch needs the right-click-Open dance. A notarized build would
-  need a paid Apple Developer account.
+- The download is **not notarized**, so on first launch macOS says it can't verify the developer:
+  click Done, then System Settings → Privacy & Security → **Open Anyway**. A notarized build would need
+  a paid Apple Developer account. Building it yourself skips this entirely (below).
 - **Reverse-image search** in Identify is opt-in and brings your own key (Google Cloud Vision). The
   **Google Lens** action is a separate, keyless way to get real visual matches — also opt-in, since it
   uploads to Google. (Google Lens shows results in whatever language it infers from your region.)
@@ -187,3 +188,13 @@ declarative catalog you can extend with one entry. There's a fuller writeup in
   fall back to a local model (if one's set up) while OCR, translate, and the rest keep working.
 - DRM/protected windows (Netflix, some banking apps) capture as blank by design — Lasso doesn't try
   to get around that.
+
+## Build it yourself
+
+Lasso is open source. Building your own copy needs an Apple Silicon Mac on macOS 26+, Xcode 26+ and
+XcodeGen, but no Apple developer account; see [BUILDING.md](BUILDING.md) for the steps.
+
+## License
+
+[Apache License 2.0](LICENSE). Copyright 2026 civarry. If you redistribute Lasso or a modified
+version, keep the [NOTICE](NOTICE) file, which credits the original author, and note what you changed.

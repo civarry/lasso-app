@@ -157,7 +157,7 @@ to select. Two parts you can check:
 **D2. The race itself, as an automated run against your real OpenRouter connection.** In Terminal:
 
 ```sh
-cd lasso-app
+cd path/to/lasso-app
 TEST_RUNNER_LASSO_LIVE=1 xcodebuild -scheme Lasso -configuration Debug -destination 'platform=macOS' \
   test "-only-testing:LassoTests/FreeModelLiveTests/scenarioG_aHungModelIsRacedAndARealFreeModelAnswers()" \
   2>&1 | grep -E "LIVE G|Test run"

@@ -15,24 +15,18 @@ options:
 attributes:
   LastUpgradeCheck: "2660"
 
+configFiles:
+  Debug: Config/Signing.xcconfig
+  Release: Config/Signing.xcconfig
+
 settings:
   base:
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     MACOSX_DEPLOYMENT_TARGET: "26.0"
-    # Sign with the Apple Development cert (not ad-hoc) so TCC grants — Screen Recording in
-    # particular — persist across rebuilds. Ad-hoc signatures change every build and re-trigger
-    # the permission prompt each time.
-    DEVELOPMENT_TEAM: "5R6K9FYBSV"
-    CODE_SIGN_STYLE: Manual
-    # Exact SHA-1 of the "Apple Development: your-apple-id" keychain cert. Using the hash
-    # (not the "Apple Development" name) avoids xcodebuild resolving it to a "Mac Development"
-    # profile, which fails since no Apple ID is added to Xcode. macOS dev signing needs no profile.
-    # Development certs get replaced (and the old one revoked) when Xcode issues a new one; macOS then
-    # treats every app signed with the revoked cert as malware (issue lasso-app#2, Oct 2026: 610C… was
-    # revoked). Run Tools/check-signature.sh on every release build before publishing.
-    CODE_SIGN_IDENTITY: "AA75ED40D8B1E57DDFB7544829E741370B98036C"
-    PROVISIONING_PROFILE_SPECIFIER: ""
+    # Signing lives in Config/Signing.xcconfig (ad-hoc by default, so anyone can build) plus an
+    # optional, uncommitted Config/Signing.local.xcconfig for a real certificate. It is not set here:
+    # project.yml settings would override the xcconfig.
     ENABLE_HARDENED_RUNTIME: YES
     # Xcode "recommended settings" — set here (not via the .xcodeproj, which XcodeGen regenerates).
     DEAD_CODE_STRIPPING: YES
