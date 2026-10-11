@@ -99,63 +99,17 @@ with no setup.
 
 ## AI providers
 
-Settings → Intelligence lets you pick where the thinking happens:
+Pick where the thinking happens in **Settings → Intelligence**:
 
-- **Apple Intelligence** — on-device, no setup. The default.
-- **Ollama** — a local model server. `ollama pull qwen3:4b` (or whatever you like) and Lasso
-  auto-detects it. Still 100% on your Mac.
-- **MLX** — on-device models that run on Apple Silicon directly. Browse, download, and manage them
-  inside Settings; nothing leaves your Mac.
-- **OpenAI-compatible** — OpenAI, Groq, OpenRouter, Google, LM Studio, or any custom base URL. Add as
-  many connections as you like (name + base URL + key); they're all live at once, and Lasso fetches
-  what each one serves. The Model dropdown is the union of every connection's models, grouped by
-  connection, so picking a model is what decides where the request goes. Connections are managed in
-  one place, under "Manage connections".
-- **Google Gemini** — Google's native Gemini API. Add it as a connection with just a name and an API
-  key; the endpoint is built in. Its models join the same dropdown as everything else. (You can still
-  reach Gemini through the OpenAI-compatible route instead, using Google's compatibility layer at
-  `https://generativelanguage.googleapis.com/v1beta/openai/` — both work, side by side.)
-- **Anthropic** — Claude, via your API key.
+- **Apple Intelligence**: on your Mac, no setup. The default.
+- **Ollama** or **MLX**: local models, still entirely on your Mac. MLX models can be downloaded in
+  Settings, or used straight from a folder you already have (`~/models`, LM Studio).
+- **Cloud**: any OpenAI-compatible service (OpenAI, Groq, OpenRouter, a custom URL), Google Gemini, or
+  Anthropic. Add as many connections as you like; their models all appear in one picker.
 
-**Free-model fallback** (off by default). Turn on *Fallback ▸ Free models* under a cloud language
-model, and a request that fails before it starts answering (rate limited, provider down, model not
-found) is retried on up to three free models, then on Apple's on-device model. A model that is only
-slow gets company instead: if it hasn't started answering after the time you pick under *Slow model*
-(15 seconds by default, or never), the best free model starts too and whichever answers first wins.
-Your model isn't cut off, so if it was about to answer, you still get it. If it fails twice in a row,
-Lasso stops waiting on it: the next messages go straight to the model that answered, and Chat shows
-"Using X · Y isn't responding" with **Switch** (make it your model) and **Try again**. If it was only
-slow rather than broken, it keeps every message and the free model simply starts alongside it, with
-**Stop racing** to go back to waiting. Your selection
-doesn't change, and Lasso gives your model another go after a few minutes, so it comes back on its own.
-A model that is slow rather than broken keeps its place: the free model simply starts at the same time as
-it, rather than after the wait. Apple's on-device model is the last resort, and only for conversations
-small enough for it to hold and turns that do not need a search; when it answers, it is told which model
-it is standing in for so it continues the chat instead of starting over. Racing means two requests, so a
-slow turn spends one free-model request even when your own model wins, and a model cut off after it had
-started generating may still bill for what it produced. Only connections you
-set to **Use as fallback** in Manage connections are used, a server on your Mac included. Lasso tries
-your own model on another connection first, then the free model closest to it that can handle the
-request: it must read your images, fit the conversation, call web search when you asked for one, and
-not be far smaller than the model you chose. A turn where you asked for a search is never handed to the
-on-device model, which can't search. Chat's Activity, Ask AI, and Proofread (its result card and its
-in-place popup) say which model answered, and your selected model doesn't change. Free means: models OpenRouter prices at
-zero, a server on your Mac, and, once you turn on **Free tier** for a Groq or Google connection, the
-models that provider documents as included in its free plan (unless your selected model on that key is
-a paid-only one, which means the key is billed). Lasso never guesses that a model is free, and free plans
-may use your requests to improve their models. A fallback sends the request to a different provider
-than the one you picked, so it never starts from a model on your Mac or your own network (a private
-address, a one-word host name like `mac-studio`, or a `.local`, `.lan`, `.home.arpa`, `.internal`, or
-Tailscale `.ts.net` name), never runs for Chat's background memory summary, and is off entirely in
-local-only mode. Identify only ever retries on-device. Free models carry a *free* tag (*free tier* for
-plan-based ones, dropped when your selected model on that key is paid-only) in the Settings model picker
-and the chat switcher. It doesn't cover the image model yet.
-
-Image and Embedding are their own sections with the same layout as Language. Image starts out
-**linked** to your language model (useful when that model is multimodal); turn the link off to give
-images their own provider, key, and model.
-
-Everything in Settings is staged and applied with one **Save & Apply** button.
+**Free-model fallback** (off by default): if your cloud model is rate limited or down, Lasso retries on
+a free model from the connections you allow, then on Apple's on-device model. It never runs in
+local-only mode. The full rules are in [docs/APP_FLOW.md](docs/APP_FLOW.md).
 
 ## Build it yourself
 
