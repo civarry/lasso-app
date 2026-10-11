@@ -6,6 +6,7 @@
   <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/civarry/lasso-app?label=latest&color=blue" alt="Latest release"></a>
   <a href="../../releases"><img src="https://img.shields.io/github/downloads/civarry/lasso-app/total?label=downloads&color=brightgreen" alt="Total downloads"></a>
   <img src="https://img.shields.io/badge/macOS-26%2B-lightgrey" alt="Requires macOS 26 or later">
+  <a href="../../actions/workflows/ci.yml"><img src="https://github.com/civarry/lasso-app/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 </p>
 
 > [!NOTE]
