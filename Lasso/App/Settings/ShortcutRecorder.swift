@@ -27,7 +27,9 @@ struct ShortcutRecorder: View {
     let clearOther: (KeyboardShortcuts.Name) -> Void
     var width: CGFloat = 128
 
-    private var session = ShortcutRecording.shared
+    // Computed, not stored: a private *stored* property makes the memberwise init private under Swift
+    // 6.3 (Xcode 26), so SettingsView couldn't build this view there (CI caught it; Swift 6.4 allows it).
+    private var session: ShortcutRecording { .shared }
 
     private var isRecording: Bool { session.recordingName == name }
 
