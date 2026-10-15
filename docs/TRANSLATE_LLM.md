@@ -222,7 +222,7 @@ This is where the LLM pass pays off, so it deserves more than a joined string.
 ┌─────────────────────────────────────────────┐
 │  Reading view            [⇄ Side-by-side] ⌄ │   ← view toggle + text size
 ├─────────────────────────────────────────────┤
-│  被 git rebase 卡住了 😭                     │   ← block, target language
+│  被 git rebase 卡住了 😭                      │   ← block, target language
 │                                             │
 │  tldr 正在開發一個個人遊戲專案，但目前還沒有審核  │
 │  結果，所以請保留一點懷疑。不過 5.5 版在中等難度 │

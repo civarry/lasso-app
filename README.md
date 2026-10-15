@@ -17,7 +17,7 @@ freezes, you drag a box around anything on it, and a small toolbar pops up with
 things you can do — copy the text, translate it, ask an AI about it, figure out
 what an object is, scan a QR code, grab a color.
 
-Think screen search, but native to the Mac and **local by default** —
+Native to the Mac and **local by default**:
 nothing leaves your machine unless you decide it should.
 
 <p align="center"><img src="screenshots/hero.png" alt="Drag a box around anything on screen and translate it in place"></p>

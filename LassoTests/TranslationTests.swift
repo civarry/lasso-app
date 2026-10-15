@@ -61,7 +61,7 @@ struct TranslationTests {
                                        "This version fixes the overlay and adds a second translation pass."])
     }
 
-    /// A billing email's bullets sit close together, so the gap rule alone joined them into one
+    /// The billing email's bullets sit close together, so the gap rule alone joined them into one
     /// plate ("• 納付期限: … • 金額: …"). A line that starts a list item starts a new block; a wrapped
     /// bullet's continuation line still joins it.
     @Test func eachListItemIsItsOwnBlock() {

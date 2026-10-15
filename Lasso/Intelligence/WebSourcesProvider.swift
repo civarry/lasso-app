@@ -1,7 +1,7 @@
 import Foundation
 import CoreGraphics
 
-/// Single switch for "nothing but the chosen model endpoint may be contacted" — the enterprise /
+/// Single switch for "nothing but the chosen model endpoint may be contacted" — the
 /// locked-down posture. Read everywhere auxiliary network would otherwise happen (web search,
 /// favicons, page-title enrichment) so Lasso can run with zero incidental egress.
 enum PrivacyMode {
@@ -11,7 +11,7 @@ enum PrivacyMode {
 /// Free text-query web sources for the Identify pipeline: Wikipedia + DuckDuckGo (clean abstracts
 /// and links) and Reddit's public search.json (community discussion), plus keyed Tavily/SerpApi.
 /// Everything here is a plain in-process URLSession HTTP call — no WKWebView, no helper processes —
-/// so it behaves like any other network request regardless of setup. These leave the Mac, so
+/// so it behaves like any other network request. These leave the Mac, so
 /// they're gated by the "Web search" setting and suppressed entirely in local-only mode.
 struct WebSourcesProvider {
     struct Hit: Identifiable, Codable {

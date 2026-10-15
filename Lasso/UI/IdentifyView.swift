@@ -834,7 +834,7 @@ private struct OCRCleanedView: View {
 }
 
 /// A source result rendered as a clean card row: favicon + title (2 lines) + domain/source ·
-/// match%, with a hover highlight — a familiar search-result layout.
+/// match%, with a hover highlight.
 private struct SourceRow: View {
     let domain: String
     let title: String

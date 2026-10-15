@@ -39,8 +39,8 @@ against context sized for it, inside a loop the app holds.
   the agent gets better without the model changing.
 
 **Pluggable harnesses.** Model adapter, tool registry, and **the agent loop itself** can all be
-swappable, and a minimal two-tool preset is a common way to benchmark a model. The tell: when you want a model's true capability to show, you *shrink* the tool
-surface. More tools is not more capable.
+swappable, and a minimal two-tool preset is a common way to benchmark a model. The tell: when you
+want a model's true capability to show, you *shrink* the tool surface. More tools is not more capable.
 
 **[Inside the Scaffold](https://arxiv.org/pdf/2604.03515) (source-code taxonomy of coding agents).**
 Across real harnesses, the two scaffold choices that matter most **for lower-capability models** are

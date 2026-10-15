@@ -572,8 +572,7 @@ final class ChatController {
 
     /// Cheap, zero-latency pre-filter. **Phase 1 — explicit instruction wins** (highest priority): a
     /// spoken "search the web / look this up / google it" forces a search even for a trivial question,
-    /// and "don't search / from your own knowledge" forces a skip even for a fresh one — like an explicit
-    /// search prefix. (This overrides *judgment* only; the globe master
+    /// and "don't search / from your own knowledge" forces a skip even for a fresh one. (This overrides *judgment* only; the globe master
     /// toggle and local-only mode are enforced by the caller and are never bypassed here.) Otherwise:
     /// confident SKIPs (greetings/small talk, write/translate/summarize, wall-clock or today's date,
     /// questions about this assistant or our conversation) and confident SEARCHes (strong recency —

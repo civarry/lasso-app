@@ -548,8 +548,8 @@ struct ChatView: View {
         return cmds
     }
 
-    /// `/help` output — a compact, CLI-style aligned reference (man-page style,
-    /// minus its categories, which aren't needed at this handful of commands).
+    /// `/help` output — a compact, CLI-style aligned reference, without categories,
+    /// which aren't needed at this handful of commands.
     private var slashHelpText: String {
         let cmds = slashCommands
         let width = (cmds.map(\.name.count).max() ?? 6) + 3
