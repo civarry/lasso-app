@@ -50,10 +50,8 @@ struct LensResultView: View {
 }
 
 /// Shown in place of the web view when Google serves the "unusual traffic" interstitial instead of
-/// results. The challenge is easier to complete in a real browser than in this small panel, and since
-/// the Lens session now persists (see `LensSession`), the session carries back here
-/// rather than being discarded — so offering to open the same page there is a genuine fix, not a
-/// dead end.
+/// results. That page is easier to use in a real browser than in this small panel, so the view offers
+/// to open the same page there.
 private struct LensBlockedView: View {
     let url: URL
 
