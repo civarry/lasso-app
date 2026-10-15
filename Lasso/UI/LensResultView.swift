@@ -37,7 +37,7 @@ struct LensResultView: View {
             .animation(.easeOut(duration: 0.25), value: loaded)
             .animation(.easeOut(duration: 0.25), value: blockedURL)
             // Safety net: reveal anyway if the page never signals ready (e.g. an unexpected
-            // layout). Long enough to outlast a cold-jar warm-up (see `LensSession.needsWarmUp`),
+            // layout). Long enough to outlast a first-visit page load (see `LensSession.needsWarmUp`),
             // and it never reveals a blocked page: `blockedURL` is checked first above, and it is set
             // from the navigation delegate rather than from page JS, so detection does not depend on
             // an injected script running.
@@ -150,10 +150,9 @@ enum LensSession {
 
     /// The Safari version token to append to WebKit's own user agent.
     ///
-    /// Read from the Safari actually installed on this Mac, because any literal is wrong the moment
-    /// Safari updates: the string this replaced still claimed `Version/17.0` on a machine running
-    /// 26.6.2. Lasso is not sandboxed (`Lasso/App/Lasso.entitlements`), so the read is permitted; the
-    /// constant is only a floor for the case where it fails.
+    /// Read from the Safari installed on this Mac so it matches the real browser version. Lasso is not
+    /// sandboxed (`Lasso/App/Lasso.entitlements`), so the read is permitted; the constant is only a
+    /// fallback for the case where it fails.
     static let userAgentToken: String = {
         let fallback = "Version/18.6 Safari/605.1.15"
         guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Safari"),
@@ -176,8 +175,8 @@ enum LensSession {
 
     /// Hold the caller until it is polite to issue another request, then claim the next slot.
     ///
-    /// Keeps requests to Google at a modest rate: nothing else stops ten
-    /// searches in ten seconds. Every upload path goes through here.
+    /// Keeps requests to Google at a modest rate: at most one upload every two seconds, so a burst of
+    /// captures never turns into a burst of requests. Every upload path goes through here.
     ///
     /// Callers are chained rather than each sleeping against a shared deadline. The obvious version
     /// (read the deadline, sleep, write the deadline) reads and writes either side of a suspension
@@ -243,12 +242,11 @@ enum LensSession {
         Log.lens.notice("blocked by /sorry, holding the next search for \(Int(blockedBackoff))s")
     }
 
-    /// True when the jar holds no live `NID`, i.e. Google has never seen this client.
+    /// True when the jar holds no live `NID` cookie, i.e. this is the first visit.
     ///
-    /// On a first visit the page is opened once before uploading, as a
-    /// person would in a browser. A plain GET of lens.google.com first
-    /// picks up Google's normal session cookies so the upload arrives inside a browsing
-    /// session. Cheap, because it only happens on a cold jar.
+    /// On a first visit the page is opened once before uploading, the same as a person opening
+    /// lens.google.com in a browser, so Google's normal session cookies are in place. Cheap, because
+    /// it only happens on a cold jar.
     static func needsWarmUp() async -> Bool {
         let cookies = await withCheckedContinuation { (c: CheckedContinuation<[HTTPCookie], Never>) in
             dataStore.httpCookieStore.getAllCookies { c.resume(returning: $0) }
@@ -277,16 +275,13 @@ private struct LensWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         // Persistent, app-scoped: Google's consent cookie survives between searches and across
-        // launches, as it would in a browser. Scoped to its own
-        // identifier rather than `.default()` so these cookies stay isolated from anything else the
-        // app loads in a web view. Nothing here signs the user in; wipe it with `LensSession.clear()`.
+        // launches, as it would in a browser. Scoped to its own identifier rather than `.default()`
+        // so these cookies stay isolated from anything else the app loads in a web view. Nothing here
+        // signs the user in; wipe it with `LensSession.clear()`.
         config.websiteDataStore = LensSession.dataStore
-        // Append a real Safari version token. WKWebView's default user agent stops dead at
-        // "(KHTML, like Gecko)" with no browser version at all, which no real browser ever sends and
-        // which is not a real browser string. `applicationNameForUserAgent` appends only the
-        // Version/Safari tokens and leaves WebKit's genuine build number in place, so this cannot
-        // drift the way the hardcoded `customUserAgent` it replaced did.
-        //
+        // Append the installed Safari's version token. WKWebView's default user agent ends at
+        // "(KHTML, like Gecko)" with no browser version. `applicationNameForUserAgent` appends only
+        // the Version/Safari tokens and leaves WebKit's own build number in place.
         config.applicationNameForUserAgent = LensSession.userAgentToken
         // A user script runs *inside* the results page (so there's no navigation-delegate timing to
         // miss). It nudges the scroll to the matches, best-effort switches to English, and posts
@@ -386,8 +381,8 @@ private struct LensWebView: NSViewRepresentable {
         ///
         /// The in-page script is best effort and can miss (CSP, a layout change, a document that
         /// never reaches `atDocumentEnd`). If it missed, the 10s safety net would lift the overlay
-        /// and show Google's verification page inside a small panel, which is the failure this whole
-        /// path exists to avoid. The URL is not best effort.
+        /// and show Google's verification page inside a small panel, where it is hard to use. The URL
+        /// is not best effort.
         private func checkBlocked(_ web: WKWebView) {
             guard let url = web.url, url.path.hasPrefix("/sorry") else { return }
             isBlocked = true

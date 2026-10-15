@@ -300,7 +300,7 @@ These build on the fact that the user base skews technical and that you have a f
 6. **Capture history** — last N captures held in memory (and optionally a session log), re-actionable. Cleared on quit by default (privacy).
 7. **Pixel ruler / measure** — measure distances/sizes on the frozen frame (handy for UI work).
 8. **Send-to** — save crop as PNG, drop into Notes/Reminders, or copy to clipboard with one pill.
-9. **Mixed-script OCR cleanup** — auto-detect zh-Hant/en mix and let the local LLM normalize spacing/punctuation .
+9. **Mixed-script OCR cleanup** — auto-detect zh-Hant/en mix and let the local LLM normalize spacing/punctuation.
 10. **Privacy indicator** — a persistent badge showing "all local" vs "cloud used this session".
 
 Each is a `CaptureAction` file. Ship 1–3 in MVP, leave the rest as registry additions.
@@ -402,7 +402,7 @@ Rules: lazy-init every engine; never block `@MainActor` on Vision/FM; downscale 
 
 ---
 
-## 16. Decisions to lock before coding
+## 16. Decisions to lock before coding 
 
 1. **Sandbox/distribution:** Developer ID non-sandboxed (recommended) vs App Store?
 2. **Hotkey dependency:** allow the `KeyboardShortcuts` SPM package, or pure Carbon (zero deps)?
