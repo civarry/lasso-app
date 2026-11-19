@@ -298,17 +298,24 @@ private actor MLXModelCache {
         MLX.Memory.cacheLimit = 512 * 1024 * 1024
     }
 
-    func container(for modelID: String,
+    /// `textOnly`: load through the text-model factory even if the checkpoint is a vision model
+    /// (Qwen3.5 is). The Agent's server needs it: the vision Qwen3.5 resets its position state on every
+    /// request, so continuing from a saved prompt state would restart positions at 0.
+    func container(for modelID: String, textOnly: Bool = false,
                    progress: (@Sendable (Progress) -> Void)? = nil) async throws -> ModelContainer {
         startMemoryPressureMonitorIfNeeded()
         scheduleIdleEviction()
-        if let container = containers[modelID] {
+        let key = textOnly ? "text:" + modelID : modelID
+        if textOnly, containers[modelID] != nil {
+            containers[modelID] = nil   // one copy of the weights at a time; in-flight work keeps its own
+        }
+        if let container = containers[key] {
             Log.mlx.notice("reuse \(modelID, privacy: .public) (in memory) · mem=\(MemoryReport.footprintMB(), privacy: .public)MB")
             return container
         }
         // Coalesce: if this model is already loading, wait for that load instead of starting a second
         // (two concurrent loads transiently double memory — e.g. chat answer + background summary).
-        if let inFlight = loading[modelID] {
+        if let inFlight = loading[key] {
             Log.mlx.notice("join in-flight load \(modelID, privacy: .public)")
             return try await inFlight.value
         }
@@ -322,15 +329,19 @@ private actor MLXModelCache {
             Log.mlx.notice("load from folder \(dir.path, privacy: .public)")
         }
         let task = Task<ModelContainer, Error> { [progress] in
+            if textOnly {
+                return try await LLMModelFactory.shared.loadContainer(
+                    from: #hubDownloader(), using: #huggingFaceTokenizerLoader(), configuration: configuration)
+            }
             if let progress {
                 return try await #huggingFaceLoadModelContainer(configuration: configuration, progressHandler: progress)
             }
             return try await #huggingFaceLoadModelContainer(configuration: configuration)
         }
-        loading[modelID] = task
-        defer { loading[modelID] = nil }
+        loading[key] = task
+        defer { loading[key] = nil }
         let container = try await task.value
-        containers[modelID] = container
+        containers[key] = container
         MLXProvider.markDownloaded(modelID)   // a successful load means it's cached on disk
         scheduleIdleEviction()
         let ms = Int(Date().timeIntervalSince(t0) * 1000)
@@ -338,7 +349,11 @@ private actor MLXModelCache {
         return container
     }
 
-    func evict(_ key: String) { containers[key] = nil }
+    func evict(_ key: String) {
+        containers[key] = nil
+        containers["text:" + key] = nil
+        MLXPromptCache.shared.clear()
+    }
 
     /// Drop all cached models and release MLX's GPU buffer cache to free unified memory.
     func evictAll(reason: String) {
@@ -346,6 +361,7 @@ private actor MLXModelCache {
         let count = containers.count
         let before = MemoryReport.footprintMB()
         containers.removeAll()
+        MLXPromptCache.shared.clear()   // a saved prompt state is as big as a long conversation
         MLX.Memory.clearCache()   // release MLX's GPU buffer cache
         Log.mlx.notice("EVICT \(count, privacy: .public) model(s) [\(reason, privacy: .public)] · mem \(before, privacy: .public)→\(MemoryReport.footprintMB(), privacy: .public)MB")
     }
@@ -525,5 +541,117 @@ enum MLXCache {
         guard p.hasSuffix(".safetensors") || p.hasSuffix(".json") || p.hasSuffix(".txt")
             || p.hasSuffix(".model") || p.hasSuffix(".tiktoken") else { return false }
         return !(p.contains("onnx/") || p.contains("openvino/") || p.contains("coreml/"))
+    }
+}
+
+// MARK: - Serving the model to Hermes
+
+/// One piece of a served reply: text as it streams, or a finished tool call.
+enum MLXServeEvent: Sendable {
+    case text(String)
+    case toolCall(name: String, argumentsJSON: String)
+    case usage(prompt: Int, completion: Int, promptSeconds: Double)
+    /// How much of the prompt came from the saved state, and how much had to be read.
+    case prompt(reused: Int, read: Int)
+}
+
+extension MLXProvider {
+    /// Runs the model on a whole conversation in chat-template form (OpenAI-style messages, tool turns
+    /// included) with tool definitions, for `LocalModelServer`. Tool calls come back parsed, in the
+    /// model's own format (Qwen3.5: XML function calls), so the caller sees structured calls.
+    static func serve(modelID: String, messages: [[String: any Sendable]], tools: [ToolSpec]?,
+                      maxTokens: Int, temperature: Float) -> AsyncThrowingStream<MLXServeEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    guard isDownloaded(modelID) else {
+                        throw IntelligenceError.unavailable("This MLX model isn't downloaded yet.")
+                    }
+                    let container = try await MLXModelCache.shared.container(for: modelID, textOnly: true)
+                    // Thinking off: Hermes already sends ~15k tokens of instructions per turn, and a
+                    // local model reasoning on top of that doubles the wait for little gain in tool use.
+                    let extra: [String: any Sendable] = ["enable_thinking": false]
+                    let parameters = GenerateParameters(maxTokens: maxTokens, temperature: temperature)
+                    let started = Date()
+                    let (stream, reused, read) = try await container.perform { context in
+                        let full = try context.tokenizer.applyChatTemplate(
+                            messages: messages, tools: tools, additionalContext: extra)
+                        // Everything before the last message's text: the next request starts with it. The
+                        // last message is swapped for an empty user one (Qwen's template refuses a
+                        // conversation without a user message); if even that fails, nothing is saved.
+                        let head = (try? context.tokenizer.applyChatTemplate(
+                            messages: Array(messages.dropLast()) + [["role": "user", "content": ""]],
+                            tools: tools, additionalContext: extra)) ?? []
+                        let split = max(0, min(MLXPromptCache.commonPrefix(full, head), full.count - 1))
+                        var cache: [any KVCache]
+                        var covered = 0
+                        if let saved = MLXPromptCache.shared.restore(for: container, prompt: full), saved.covered <= split {
+                            (cache, covered) = saved
+                        } else {
+                            cache = context.model.newCache(parameters: parameters)
+                        }
+                        var index = covered
+                        while index < split {
+                            try Task.checkCancellation()
+                            let end = min(index + 512, split)
+                            let chunk = MLXArray(full[index..<end].map(Int32.init))
+                            _ = context.model(LMInput.Text(tokens: chunk)[text: .newAxis], cache: cache, state: nil)
+                            eval(cache)
+                            index = end
+                        }
+                        if split > covered {
+                            MLXPromptCache.shared.save(for: container, tokens: Array(full[..<split]), cache: cache)
+                        }
+                        let rest = LMInput(tokens: MLXArray(full[split...].map(Int32.init)))
+                        let stream = try MLXLMCommon.generate(input: rest, cache: cache, parameters: parameters, context: context)
+                        return (stream, covered, full.count - covered)
+                    }
+                    Log.mlx.notice("serve · reused \(reused, privacy: .public) prompt tokens, read \(read, privacy: .public) in \(String(format: "%.1f", Date().timeIntervalSince(started)), privacy: .public)s before generating")
+                    continuation.yield(.prompt(reused: reused, read: read))
+                    for await event in stream {
+                        try Task.checkCancellation()
+                        switch event {
+                        case .chunk(let text):
+                            continuation.yield(.text(text))
+                        case .toolCall(let call):
+                            let args = call.function.arguments.mapValues { $0.anyValue }
+                            let data = (try? JSONSerialization.data(withJSONObject: args, options: [.sortedKeys])) ?? Data("{}".utf8)
+                            continuation.yield(.toolCall(name: call.function.name,
+                                                         argumentsJSON: String(decoding: data, as: UTF8.self)))
+                        case .info(let info):
+                            continuation.yield(.usage(prompt: info.promptTokenCount,
+                                                      completion: info.generationTokenCount,
+                                                      promptSeconds: info.promptTime))
+                        }
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// The model's real context window (config.json, top level or `text_config`), from its folder or
+    /// the Hugging Face cache; nil if unknown.
+    static func contextWindow(_ id: String) -> Int? {
+        var urls: [URL] = []
+        if let folder = MLXLocalModels.folder(for: id) { urls.append(folder.appendingPathComponent("config.json")) }
+        let snapshots = MLXCache.directory(for: id).appendingPathComponent("snapshots", isDirectory: true)
+        for dir in (try? FileManager.default.contentsOfDirectory(at: snapshots, includingPropertiesForKeys: nil)) ?? [] {
+            urls.append(dir.appendingPathComponent("config.json"))
+        }
+        for url in urls {
+            guard let data = try? Data(contentsOf: url),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            let text = json["text_config"] as? [String: Any]
+            if let n = (json["max_position_embeddings"] as? Int) ?? (text?["max_position_embeddings"] as? Int) {
+                return n
+            }
+        }
+        return nil
     }
 }

@@ -17,9 +17,10 @@ No Apple developer account is needed.
 git clone https://github.com/civarry/lasso-app.git
 cd lasso-app
 
-# The Xcode project is generated from project.yml.
+# The Xcode project is generated from project.yml; the package versions come from
+# Config/Package.resolved, the ones every release is built and tested with.
 brew install xcodegen
-xcodegen generate
+xcodegen generate && Tools/pin-packages.sh
 
 # One-time: the MLX packages compile Metal shaders and need Apple's Metal toolchain (~700 MB).
 xcodebuild -downloadComponent MetalToolchain
@@ -72,7 +73,7 @@ To keep permissions across rebuilds, sign with a free Apple Development certific
    CODE_SIGN_IDENTITY = <the 40-character hash>
    ```
 
-4. Run `xcodegen generate` again and rebuild.
+4. Run `xcodegen generate && Tools/pin-packages.sh` again and rebuild.
 
 ## Tests
 

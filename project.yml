@@ -42,7 +42,9 @@ packages:
     from: 2.2.0
   MLXSwiftLM:
     url: https://github.com/ml-explore/mlx-swift-lm
-    from: 3.31.3
+    # Pinned to 3.31.x: 3.33 changed generation (a separate reasoning stream, newCache throws), which
+    # the chat and the Agent's model server haven't been tested against. Move up deliberately.
+    minorVersion: 3.31.3
   SwiftHuggingFace:
     url: https://github.com/huggingface/swift-huggingface
     from: 0.9.0
