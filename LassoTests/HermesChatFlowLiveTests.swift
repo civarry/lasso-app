@@ -135,12 +135,51 @@ struct HermesChatFlowLiveTests {
             #expect(!reply.steps.contains { $0.text.hasPrefix("Using Hermes's own model") }, "fell back to Hermes's model")
             #expect(reply.steps.contains { $0.text.contains("MLX") }, "the trace should name the MLX model")
             #expect(reply.text.contains(n == 0 ? "lasso-ok" : "lasso-tool-ok"))
+            if n == 1 { #expect(reply.steps.contains { $0.text.hasPrefix("Ran a command") }, "no tool actually ran") }
         }
         // A fresh profile, and Hermes's main model is Lasso's (its side tasks follow it), not a cloud default.
         #expect(HermesRuntime.profileIsFresh)
         let block = config().components(separatedBy: HermesProfileFiles.beginMarker).last ?? ""
         #expect(block.contains("default: \"\(model)\""))
         #expect(block.contains("base_url: \"http://127.0.0.1:"))
+    }
+
+    /// Ollama through the Agent: Ollama's OpenAI endpoint ignores `num_ctx`, so without the Agent variant
+    /// every turn hit the 4,096-token default. Needs TEST_RUNNER_LASSO_TEST_OLLAMA=<model> and Ollama running.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["LASSO_TEST_OLLAMA"] != nil), .timeLimit(.minutes(15)))
+    func agentRunsOnOllamaWithEnoughContext() async throws {
+        let model = try #require(ProcessInfo.processInfo.environment["LASSO_TEST_OLLAMA"])
+        let intelligence = IntelligenceCoordinator.shared
+        let (providerWas, modelWas, agentWas) = (intelligence.preferred, intelligence.ollamaModel, chat.hermesSelected)
+        intelligence.preferred = .ollama
+        intelligence.ollamaModel = model
+        chat.newChat()
+        let conversation = chat.active.id
+        defer {
+            chat.close(conversation)
+            if chat.hermesSelected != agentWas { chat.hermesSelected = agentWas }
+            intelligence.preferred = providerWas
+            intelligence.ollamaModel = modelWas
+            HermesRuntime.shared.stop()
+        }
+        let route = await HermesRoute.current(intelligence)
+        #expect(route?.model == OllamaAgentModel.name(for: model))
+        #expect(await OllamaAgentModel.numCtx(of: OllamaAgentModel.name(for: model), baseURL: OllamaEndpoint.baseURL) ?? 0 >= 64_000)
+        if !chat.hermesSelected { chat.toggleAgent() }
+        for (n, ask) in ["Reply with exactly: lasso-ok. Use no tools.",
+                         "Run the terminal command `echo lasso-tool-ok` and tell me what it printed."].enumerated() {
+            let started = Date()
+            chat.send(text: ask)
+            try await Task.sleep(for: .milliseconds(100))
+            try await waitUntil(600) { !chat.isStreaming || lastReply()?.approval != nil }
+            dump("ollama turn \(n + 1) in \(String(format: "%.1f", Date().timeIntervalSince(started)))s")
+            let reply = try #require(lastReply())
+            #expect(!reply.isError, "\(reply.text.prefix(200))")
+            #expect(reply.text.contains(n == 0 ? "lasso-ok" : "lasso-tool-ok"))
+            // The words alone prove nothing: a model without tool support writes a made-up call and its
+            // "output" as text (seen with an imported Gemma 4 GGUF). The command must actually have run.
+            if n == 1 { #expect(reply.steps.contains { $0.text.hasPrefix("Ran a command") }, "no tool actually ran") }
+        }
     }
 
     /// After Agent is turned off, the regular model must not take the Agent's "I opened Chrome" in the

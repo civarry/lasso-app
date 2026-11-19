@@ -508,8 +508,10 @@ struct HermesRoute: Equatable, Sendable {
             return HermesRoute(provider: "custom", model: intelligence.openAIModel,
                                baseURL: intelligence.openAIBaseURL, apiKey: key.isEmpty ? "none" : key, label: label)
         case .ollama:
-            let model = await intelligence.resolvedTextModel()
-            guard !model.isEmpty else { return nil }
+            let chosen = await intelligence.resolvedTextModel()
+            guard !chosen.isEmpty else { return nil }
+            // The same model with a context window Hermes fits in (see OllamaAgentModel).
+            let model = await OllamaAgentModel.ensure(chosen) ?? chosen
             return HermesRoute(provider: "custom", model: model,
                                baseURL: OllamaEndpoint.baseURL.appending(path: "v1").absoluteString,
                                apiKey: "ollama", label: label)
