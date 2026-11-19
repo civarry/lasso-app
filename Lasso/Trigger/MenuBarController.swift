@@ -22,6 +22,11 @@ struct MenuBarController: View {
         }
         .keyboardShortcut(",", modifiers: .command)
 
+        Button("Check for Updates…") {
+            AppUpdater.shared.checkForUpdates()
+        }
+        .disabled(!AppUpdater.shared.canCheck)
+
         Button("Quit Lasso") {
             NSApp.terminate(nil)
         }

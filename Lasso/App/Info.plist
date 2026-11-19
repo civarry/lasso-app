@@ -22,6 +22,16 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>SUFeedURL</key>
+	<string>https://github.com/civarry/lasso-app/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>CrBvURp1rhkcIr5XW5gZuEMvM3ct/bwH/y1DA7p65o0=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>21600</integer>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>

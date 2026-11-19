@@ -33,6 +33,7 @@ flowchart TD
 
   Chat["Chat panel (Chat/) — ⌥⌘A, parallel surface"] --> Intel
   Settings["Settings (App/Settings)"] -.configures.-> Intel
+  Updater["AppUpdater (App/) · Sparkle<br/>feed check · download · install when idle"] -.replaces.-> AppBundle["Lasso.app"]
 ```
 
 ---
@@ -653,6 +654,37 @@ Files: `Intelligence/Connectors.swift`, `WebSourcesProvider.swift` (`WebSearchSo
 — web connectors pause, the Lens button/action hides, favicons don't load. Local-only = zero
 off-device network. See memory `lasso-localonly-egress-invariant`.
 
+### Updates (`App/AppUpdater.swift`, Sparkle 2.10.1 vendored in `Vendor/`)
+
+Every 6 h (`SUScheduledCheckInterval`) Sparkle reads `appcast.xml` from the latest GitHub release of
+lasso-app, downloads a newer DMG in the background, and verifies it against `SUPublicEDKey` (EdDSA; the
+private key is in the maintainer's Keychain, account `lasso-app`). That key is what an update is trusted
+by, not the Apple code signature. Sparkle would install at quit; a menu bar app rarely quits, so
+`updater(_:willInstallUpdateOnQuit:immediateInstallationBlock:)` hands the install to Lasso, which runs it
+the first moment `AppUpdater.isIdle` (no capture overlay, no chat reply or Agent turn streaming; checked
+every 30 s) and relaunches. Release notes are plain text in the feed (`sparkle:format="plain-text"`), so
+Sparkle never opens a web view. Local-only mode refuses every check in `updater(_:mayPerform:)`, whatever
+starts it. Settings ▸ General ▸ Updates: automatic checks, automatic install, Check Now; the menu bar
+has Check for Updates….
+
+Releases are signed with a self-signed "Lasso Release" certificate (20 years) instead of an Apple
+Development one: a free account's certificates expire or get revoked, and each new one changes the app's
+identity, which drops Screen Recording and microphone grants. `Tools/release.sh <version> <notes.txt>`
+builds from a clean checkout of origin/main, signs, makes the DMG, signs the feed, and publishes.
+
+```mermaid
+flowchart LR
+  T["every 6 h · menu · Settings"] --> G{"local-only?"}
+  G -->|yes| X["refused at the source"]
+  G -->|no| F["appcast.xml (latest release)"]
+  F -->|newer| D["download DMG"]
+  D --> V{"EdDSA signature"}
+  V -->|bad| X2["discarded"]
+  V -->|ok| W{"idle? (30 s timer)"}
+  W -->|capture or reply running| W
+  W -->|yes| I["replace app · relaunch"]
+```
+
 ---
 
 ## 9. Design system (Liquid Glass / Tahoe)
@@ -738,6 +770,11 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Lasso updates itself.** Sparkle, vendored (the Swift package's binary download hung command-line
+  builds whenever Xcode held its lock). Installs when idle rather than at quit, plain-text notes so no web
+  view, off in local-only mode. Releases move to a self-signed certificate so a revoked free-account
+  certificate can't strand installed copies or reset permissions; `Tools/release.sh` does a release in
+  one command.
 - **The agent feels built in.** Agent is a button in the message box, not a model in the menu; Lasso
   sets up its own Hermes profile from the user's Hermes, runs it on demand, stops it on quit, and has it
   think with the model chosen in Lasso. Bundling Hermes was ruled out (~500 MB of Python and Node).

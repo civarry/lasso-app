@@ -75,6 +75,8 @@ struct SettingsView: View {
         var pretranslate = true
         var betterTranslation = LLMTranslation.Mode.ask.rawValue
         var launchAtLogin = false
+        var autoUpdateChecks = true
+        var autoUpdateInstall = true
         // Appearance — staged like everything else so changing them flips "Unsaved changes" and
         // applies on Save & Apply (not instantly), for a consistent Settings experience.
         var actionBarStyle = ActionBarStyle.compact.rawValue
@@ -231,6 +233,16 @@ struct SettingsView: View {
             }
             Section("Startup") {
                 Toggle("Launch at login", isOn: $draft.launchAtLogin)
+            }
+            Section("Updates") {
+                Toggle("Automatically check for updates", isOn: $draft.autoUpdateChecks)
+                    .disabled(draft.localOnly)
+                Toggle("Install updates automatically", isOn: $draft.autoUpdateInstall)
+                    .disabled(draft.localOnly || !draft.autoUpdateChecks)
+                caption("Installs when Lasso isn't busy, then relaunches it.")
+                Button("Check for Updates Now") { AppUpdater.shared.checkForUpdates() }
+                    .disabled(draft.localOnly || !AppUpdater.shared.canCheck)
+                if draft.localOnly { caption("Off in local-only mode.") }
             }
             Section("Appearance") {
                 Picker("Toolbar", selection: $draft.actionBarStyle) {
@@ -2369,6 +2381,8 @@ struct SettingsView: View {
         d.pretranslate = UserDefaults.standard.object(forKey: "translation.pretranslate") as? Bool ?? true
         d.betterTranslation = LLMTranslation.Mode.current.rawValue
         d.launchAtLogin = LoginItem.isEnabled
+        d.autoUpdateChecks = AppUpdater.shared.automaticallyChecks
+        d.autoUpdateInstall = AppUpdater.shared.automaticallyInstalls
         d.actionBarStyle = UserDefaults.standard.string(forKey: Self.actionBarStyleKey)
             ?? ActionBarStyle.compact.rawValue
         d.hideUnavailable = UserDefaults.standard.bool(forKey: Self.hideUnavailableKey)
@@ -2536,6 +2550,8 @@ struct SettingsView: View {
         UserDefaults.standard.set(draft.colorfulActions, forKey: Self.colorfulKey)
         ActionBarPreferences.save(order: draft.actionOrder, hidden: draft.actionHidden)
         if draft.launchAtLogin != saved.launchAtLogin { LoginItem.set(draft.launchAtLogin) }
+        if draft.autoUpdateChecks != saved.autoUpdateChecks { AppUpdater.shared.automaticallyChecks = draft.autoUpdateChecks }
+        if draft.autoUpdateInstall != saved.autoUpdateInstall { AppUpdater.shared.automaticallyInstalls = draft.autoUpdateInstall }
         // Embedding backend — commit, then reset chat indexes if the backend actually changed (vectors
         // from a different embedder are incomparable, so the in-RAM indexes must rebuild).
         let embeddingChanged = draft.embeddingProvider != saved.embeddingProvider

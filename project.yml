@@ -72,6 +72,10 @@ targets:
         product: HuggingFace
       - package: SwiftTransformers
         product: Tokenizers
+      # In-app updates: Sparkle 2.10.1, vendored (see Vendor/README.md).
+      - framework: Vendor/Sparkle.framework
+        embed: true
+        codeSign: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.cjcarito.Lasso
@@ -96,6 +100,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.cjcarito.LassoTests
         GENERATE_INFOPLIST_FILE: YES
+        # Lasso's module imports Sparkle, so the tests must find the vendored framework too.
+        FRAMEWORK_SEARCH_PATHS: $(inherited) $(PROJECT_DIR)/Vendor
 
 schemes:
   Lasso:
