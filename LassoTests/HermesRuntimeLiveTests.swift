@@ -9,7 +9,7 @@ import Foundation
 ///     TEST_RUNNER_LASSO_HERMES_RUNTIME=1 xcodebuild test -scheme Lasso \
 ///         -only-testing:LassoTests/HermesRuntimeLiveTests
 @MainActor
-@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["LASSO_HERMES_RUNTIME"] == "1"))
+@Suite(.serialized, .timeLimit(.minutes(3)), .enabled(if: ProcessInfo.processInfo.environment["LASSO_HERMES_RUNTIME"] == "1"))
 struct HermesRuntimeLiveTests {
     private let runtime = HermesRuntime.shared
     private let profile = HermesRuntime.profileDirectory
@@ -61,7 +61,13 @@ struct HermesRuntimeLiveTests {
 
         runtime.stop()
         #expect(runtime.state == .stopped)
-        await #expect(throws: (any Error).self) { _ = try await routed.check() }
+        // stop() returns at once (no UI freeze); the gateway must be gone within its 3 s grace period.
+        var gone = false
+        for _ in 0..<20 where !gone {
+            gone = (try? await routed.check()) == nil
+            if !gone { try await Task.sleep(for: .milliseconds(200)) }
+        }
+        #expect(gone, "Lasso's gateway still answering 4 s after stop()")
         // The user's own gateways were left alone.
         #expect(Self.otherGatewayPIDs().isSuperset(of: others))
     }
