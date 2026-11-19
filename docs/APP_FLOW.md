@@ -787,6 +787,13 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Updates stop asking for the Keychain password.** With no Team ID (self-signed release
+  certificate) macOS ties a Keychain item to one exact build (`cdhash:` in its partition list), so every
+  update asked once per saved key, about nine times. `Keychain` now saves items whose decrypt permission
+  is open to any app (`SecACLSetContents` with no app list; `SecAccessCreate` with a nil list means the
+  caller only) and re-saves older items on first read. The data-protection Keychain would avoid the
+  trade-off but needs a Team ID (`errSecMissingEntitlement`). Checked across two builds with different
+  identities and hashes; `KeychainTests` fail without the change.
 - **The agent uses Lasso's model, always.** With MLX selected it had silently run on the cloud Claude
   that Lasso's profile inherited by cloning the user's Hermes. Now MLX is served to Hermes on loopback,
   with saved prompt state so only the first reply pays for Hermes's ~14K-token setup; the profile is
