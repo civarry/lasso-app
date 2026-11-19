@@ -788,6 +788,11 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Click any image in the chat to see it full size.** A pending attachment (44 pt), a sent one (40 pt) or
+  a picture in a reply couldn't be enlarged. `ImageViewer` opens it in its own window sized to the image
+  (up to 85% of the screen), with Copy, Open in Preview and, for a file on this Mac, Show in Finder;
+  Esc or ⌘W closes it. Also: inside the unit-test host Keychain dialogs are switched off
+  (`SecKeychainSetUserInteractionAllowed(false)`), after one hung a whole test run.
 - **Settings: a sidebar of six short panes, and changes apply as you make them.** The four tabs had
   become long scrolls (General held eight sections) and one "Unsaved changes" bar covered all of them,
   so a change on one tab was easy to lose. Designed with a separate UI/UX review, two rounds, until we
