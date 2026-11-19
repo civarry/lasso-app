@@ -99,7 +99,9 @@ Mac are the optional web lookup in Identify, the optional Google Lens search
 the latest version a few times a day and sends nothing but Lasso's version.
 There's a **Local-only mode** that forces a local model and blocks every
 incidental network call. Cloud models (OpenAI, Groq, Anthropic, custom) are
-supported too, but strictly opt-in; API keys live in the macOS Keychain.
+supported too, but strictly opt-in. API keys live in your macOS Keychain, encrypted;
+other apps you run can read them without a prompt (that's what lets updates
+install without asking for your Keychain password once per key).
 
 <p align="center"><img src="screenshots/privacy.png" alt="Runs on your Mac — nothing leaves unless you say so"></p>
 
