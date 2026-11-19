@@ -232,6 +232,7 @@ struct ChatView: View {
                   systemImage: intelligence.usedOffDeviceThisSession ? "cloud" : "lock.fill")
             Button("Open Model Settings…") {
                 UserDefaults.standard.set(SettingsView.Pane.models.rawValue, forKey: SettingsView.paneKey)
+                UserDefaults.standard.set(SettingsRoute.languageModel.rawValue, forKey: SettingsView.routeKey)
                 openSettings()
             }
         } label: {
