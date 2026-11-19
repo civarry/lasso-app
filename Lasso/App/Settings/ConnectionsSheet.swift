@@ -8,7 +8,7 @@ import SwiftUI
 /// stops Lasso contacting it) without removing its key and settings.
 ///
 /// Secrets never enter the registry: `keyValues` is the in-memory staging map keyed by connection id,
-/// committed to the Keychain by the panel's Save & Apply like every other edit.
+/// committed to the Keychain when the panel applies its changes, like every other edit.
 struct ConnectionsSheet: View {
     @Binding var registry: KeysRegistry
     @Binding var keyValues: [String: String]

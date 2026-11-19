@@ -788,6 +788,16 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Settings: a sidebar of six short panes, and changes apply as you make them.** The four tabs had
+  become long scrolls (General held eight sections) and one "Unsaved changes" bar covered all of them,
+  so a change on one tab was easy to lose. Designed with a separate UI/UX review, two rounds, until we
+  agreed: General (shortcuts, startup, translation), Toolbar (appearance, actions and their hotkeys),
+  Models (language, image, embedding, Ollama), Agent, Privacy (local-only, web search and Lens, chat
+  history), About (version and Updates, which the owner asked for there). Save & Apply is gone: a change
+  applies 0.4 s after the last edit (so a key isn't written per keystroke), `apply()` writes only what
+  changed (it used to rewrite every Keychain item), and closing the window flushes. Captions cut to one
+  line; the repeated "Off in local-only mode" became a lock in the sidebar. The chat's model menu opens
+  Models directly. Rendered per pane in `SettingsSnapshotTests` (opt-in) and checked by eye.
 - **Attach anything; the type decides what the model gets.** The attach button was greyed out unless
   Lasso's model could see images, and only images were allowed, even in Agent mode where Hermes reads
   files itself. Now any file attaches (button, drag, ⌘V) and nothing is refused for the model:

@@ -230,7 +230,10 @@ struct ChatView: View {
             Divider()
             Label(intelligence.privacyNote,
                   systemImage: intelligence.usedOffDeviceThisSession ? "cloud" : "lock.fill")
-            Button("Open Intelligence Settings…") { openSettings() }
+            Button("Open Model Settings…") {
+                UserDefaults.standard.set(SettingsView.Pane.models.rawValue, forKey: SettingsView.paneKey)
+                openSettings()
+            }
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: agentUsesOwnHermes ? "point.3.connected.trianglepath.dotted" : textIcon)
@@ -252,7 +255,7 @@ struct ChatView: View {
         .help(agentUsesOwnHermes ? "Agent replies come from your Hermes and its model" : "Switch model")
     }
 
-    /// Agent is on and pointed at the user's own Hermes (Settings ▸ Intelligence ▸ Agent).
+    /// Agent is on and pointed at the user's own Hermes (Settings ▸ Agent).
     private var agentUsesOwnHermes: Bool { chat.hermesActive && useOwnHermes }
 
     /// "Groq · openai/gpt-oss-20b" → "gpt-oss-20b" for the compact chip.
@@ -408,7 +411,7 @@ struct ChatView: View {
                     .help(chat.hermesActive
                           ? "The agent searches the web itself while Agent is on"
                           : !chat.webConnectorsAvailable
-                          ? "No web connectors on — enable Web search under Settings ▸ Connectors to ground answers"
+                          ? "No web connectors on — enable Web search under Settings ▸ Privacy ▸ Web to ground answers"
                           : (chat.webSearchOn
                              ? "Web grounding ON — answers use your connectors (Wikipedia, search, reverse-image)"
                              : "Web grounding OFF — tap to ground answers with your connectors"))

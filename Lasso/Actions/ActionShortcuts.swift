@@ -67,7 +67,7 @@ enum ActionShortcuts {
 
 /// Shortcuts as staged edits.
 ///
-/// Settings stages every other control and writes it on Save & Apply; shortcuts used to be the one
+/// Settings stages every control and applies it a moment after it changes; shortcuts used to be the one
 /// exception, writing straight through to storage, so recording one left the panel claiming "All
 /// changes saved" and Revert could not undo it. These two functions are the whole of the staging
 /// rule, kept pure so the clearing case — a name the user emptied, which is a *missing* key rather
@@ -81,7 +81,7 @@ enum ShortcutStaging {
         names.reduce(into: [:]) { staged, name in staged[name.rawValue] = stored(name) }
     }
 
-    /// What Save & Apply must write: every name whose staged value differs from storage, paired with
+    /// What applying must write: every name whose staged value differs from storage, paired with
     /// the value to write. A nil value means "clear this one", which is why the result is a list of
     /// pairs and not just the staged dictionary.
     static func changes(staged: [String: KeyboardShortcuts.Shortcut],

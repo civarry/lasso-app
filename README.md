@@ -85,7 +85,7 @@ Lasso on your Mac (the first reply takes a while as the model reads the agent's
 setup, later ones are quick). Apple Intelligence can't drive the agent, so with
 it selected Agent says so instead of using another model. When
 Hermes flags a risky command, Lasso shows it and waits for you to allow or deny
-it. Settings ▸ Intelligence ▸ Agent has a switch to let Hermes decide those
+it. Settings ▸ Agent has a switch to let Hermes decide those
 itself instead (every reply then says it's on), and an advanced option to use
 a Hermes you run yourself, which Lasso only accepts with `approvals.mode:
 manual`. The agent uses cloud models and the web, so it's unavailable in
@@ -122,7 +122,7 @@ install without asking for your Keychain password once per key).
 From 0.16.0, Lasso updates itself. It checks for a new version every few hours,
 downloads it in the background, and installs it the next moment it's idle (no
 capture on screen, no chat reply coming in), then relaunches. No more
-downloading the DMG for each release. Settings → General → Updates turns either
+downloading the DMG for each release. Settings → About → Updates turns either
 step off, and the menu bar has **Check for Updates…**. Local-only mode stops the
 checks.
 
@@ -141,7 +141,7 @@ with no setup.
 
 ## AI providers
 
-Pick where the thinking happens in **Settings → Intelligence**:
+Pick where the thinking happens in **Settings → Models**:
 
 - **Apple Intelligence**: on your Mac, no setup. The default.
 - **Ollama** or **MLX**: local models, still entirely on your Mac. MLX models can be downloaded in

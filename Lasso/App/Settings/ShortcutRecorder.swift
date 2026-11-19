@@ -18,7 +18,7 @@ import SwiftUI
 struct ShortcutRecorder: View {
     let name: KeyboardShortcuts.Name
     /// The staged value. Like every other control in this window, a shortcut is only written to storage
-    /// by Save & Apply, so Revert undoes it and the unsaved bar appears when it changes.
+    /// when the panel applies its changes, like every other setting.
     @Binding var shortcut: KeyboardShortcuts.Shortcut?
     /// Every other staged shortcut, so a clash is caught against what is on screen rather than what is
     /// saved. Returns nil for a name the user has just cleared.

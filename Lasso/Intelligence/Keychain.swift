@@ -37,6 +37,11 @@ enum Keychain {
         add(value, for: account)
     }
 
+    /// Writes only when the value differs from `current` (Settings applies on every change).
+    static func set(_ value: String, for account: String, ifChangedFrom current: String?) {
+        if value != (current ?? "") { set(value, for: account) }
+    }
+
     static func delete(_ account: String) {
         SecItemDelete(query(account) as CFDictionary)
         UserDefaults.standard.removeObject(forKey: openKey(account))

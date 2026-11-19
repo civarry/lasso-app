@@ -1,7 +1,7 @@
 #!/bin/zsh
 # One-command release: version bump, clean build signed with the "Lasso Release" certificate, DMG,
 # signature check, signed Sparkle update feed, GitHub release. Installed copies of Lasso pick it up
-# on their own (Settings ▸ General ▸ Updates).
+# on their own (Settings ▸ About ▸ Updates).
 #
 #   Tools/release.sh 0.16.0 notes.txt
 #

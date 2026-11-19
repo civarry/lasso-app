@@ -21,9 +21,9 @@ enum DirectActionGate {
     struct Environment: Equatable, Sendable {
         /// Ids the registry currently knows. A saved hotkey can outlive the action it was bound to.
         var knownActionIDs: Set<String>
-        /// Settings ▸ General ▸ Privacy ▸ "Search with Lens".
+        /// Settings ▸ Privacy ▸ "Search with Lens".
         var lensEnabled: Bool
-        /// Settings ▸ General ▸ Privacy ▸ "Local-only mode".
+        /// Settings ▸ Privacy ▸ "Local-only mode".
         var localOnly: Bool
         /// `IntelligenceCoordinator.visionAvailable` — a local or cloud image model is usable.
         var visionAvailable: Bool
@@ -66,7 +66,7 @@ enum DirectActionGate {
         guard env.knownActionIDs.contains(actionID) else {
             return .refuse(title: "Lasso",
                            reason: "That shortcut points at an action this version of Lasso no longer has. "
-                                 + "Pick a different one in Settings ▸ General ▸ Toolbar actions.")
+                                 + "Pick a different one in Settings ▸ Toolbar.")
         }
 
         if actionID == "lens.search" {
@@ -75,12 +75,12 @@ enum DirectActionGate {
             if env.localOnly {
                 return .refuse(title: title,
                                reason: "Lens uploads the selection to Google, so it's paused in local-only mode. "
-                                     + "Turn local-only mode off in Settings ▸ General ▸ Privacy to use it.")
+                                     + "Turn local-only mode off in Settings ▸ Privacy to use it.")
             }
             if !env.lensEnabled {
                 return .refuse(title: title,
                                reason: "Lens is off. It uploads the selection to Google, so you have to turn on "
-                                     + "\"Search with Lens\" in Settings ▸ General ▸ Privacy first.")
+                                     + "\"Search with Lens\" in Settings ▸ Privacy first.")
             }
             return .allow
         }
@@ -88,13 +88,13 @@ enum DirectActionGate {
         if visionActionIDs.contains(actionID), !env.visionAvailable {
             return .refuse(title: title,
                            reason: "\(title) needs an image model. Install Ollama, or pick one in "
-                                 + "Settings ▸ Intelligence ▸ Image model.")
+                                 + "Settings ▸ Models ▸ Image model.")
         }
 
         if textAIActionIDs.contains(actionID), !env.textModelConfigured {
             return .refuse(title: title,
                            reason: "\(title) needs a language model. Pick one in "
-                                 + "Settings ▸ Intelligence ▸ Language model.")
+                                 + "Settings ▸ Models ▸ Language model.")
         }
 
         return .allow

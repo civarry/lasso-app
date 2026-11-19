@@ -631,15 +631,15 @@ struct InlineTranslationView: View {
     private var modelUnavailableReason: String? {
         let intelligence = IntelligenceCoordinator.shared
         if LLMTranslation.Mode.current == .off {
-            return "Turn on Better translation in Settings ▸ General to translate it with your language model."
+            return "Turn on Better translation in Settings ▸ General ▸ Translation to translate it with your language model."
         }
         if !intelligence.textModelConfigured {
-            return "Choose a language model in Settings ▸ Intelligence to translate it."
+            return "Choose a language model in Settings ▸ Models to translate it."
         }
         // Apple's model writes languages it doesn't support anyway, badly: don't offer it.
         if intelligence.effectivePreferred == .onDevice, !OnDeviceProvider.supports(languages: modelLanguages) {
             return "Apple Intelligence doesn't support \(OnDeviceProvider.unsupportedNames(modelLanguages)). "
-                + "Choose a cloud or Ollama model in Settings ▸ Intelligence."
+                + "Choose a cloud or Ollama model in Settings ▸ Models."
         }
         return nil
     }
