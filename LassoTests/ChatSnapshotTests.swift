@@ -57,5 +57,26 @@ struct ChatSnapshotTests {
         ]
         try await render("conversation", width: 420, height: 760)
         try await render("narrow", width: 340, height: 760)
+
+        // The composer: a long message with Agent on, at normal and narrow width. Lasso's own Hermes
+        // (the user's own needs a key this test can't read from the Keychain), web search checked.
+        let agentWas = chat.hermesSelected
+        let ownWas = UserDefaults.standard.bool(forKey: HermesAgent.useOwnHermesKey)
+        UserDefaults.standard.set(false, forKey: HermesAgent.useOwnHermesKey)
+        defer {
+            chat.hermesSelected = agentWas; chat.active.input = ""
+            UserDefaults.standard.set(ownWas, forKey: HermesAgent.useOwnHermesKey)
+        }
+        await chat.refreshCapabilities()
+        print("[chat-snap] agentAvailable=\(chat.agentAvailable) web=\(chat.webConnectorsAvailable)")
+        chat.messages = [ChatMessage(role: .user, text: "hi"), ChatMessage(role: .assistant, text: "Hey. What can I help with?")]
+        chat.hermesSelected = true
+        chat.active.input = "Look through my Downloads folder for installers I haven't opened in a month, "
+            + "list them with their sizes, and suggest which ones are safe to delete. Don't delete anything yet."
+        try await render("composer-agent", width: 420, height: 520)
+        try await render("composer-narrow", width: 340, height: 520)
+        chat.hermesSelected = false
+        chat.active.input = ""
+        try await render("composer-empty", width: 420, height: 520)
     }
 }

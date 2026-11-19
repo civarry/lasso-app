@@ -44,7 +44,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     /// One line under a hub's title.
     var summary: String {
         switch self {
-        case .general: "Shortcuts, translation, updates and startup."
+        case .general: "Shortcuts, translation, dictation, updates and startup."
         case .toolbar: "Choose which actions appear and in what order."
         case .models: "The AI models Lasso uses for text, images and memory."
         case .agent: "Lets chat search the web, read files and run commands."
@@ -58,7 +58,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
 
 /// A page opened from a row (pushed onto the pane's navigation stack).
 enum SettingsRoute: String, Hashable, CaseIterable {
-    case about, softwareUpdate, shortcuts, translation
+    case about, softwareUpdate, shortcuts, translation, dictation
     case languageModel, imageModel, embeddingModel, ollama
     case ownHermes, searchKeys
 
@@ -68,6 +68,7 @@ enum SettingsRoute: String, Hashable, CaseIterable {
         case .softwareUpdate: "Software Update"
         case .shortcuts: "Keyboard Shortcuts"
         case .translation: "Translation"
+        case .dictation: "Dictation"
         case .languageModel: "Language Model"
         case .imageModel: "Image Model"
         case .embeddingModel: "Embedding Model"
@@ -83,6 +84,7 @@ enum SettingsRoute: String, Hashable, CaseIterable {
         case .softwareUpdate: "arrow.down.circle.fill"
         case .shortcuts: "keyboard.fill"
         case .translation: "character.bubble.fill"
+        case .dictation: "mic.fill"
         case .languageModel: "text.bubble.fill"
         case .imageModel: "photo.fill"
         case .embeddingModel: "brain.fill"
@@ -98,6 +100,7 @@ enum SettingsRoute: String, Hashable, CaseIterable {
         case .softwareUpdate: Color(nsColor: .systemGray)
         case .shortcuts: Color(nsColor: .systemGray)
         case .translation: Color(nsColor: .systemBlue)
+        case .dictation: Color(nsColor: .systemRed)
         case .languageModel: Color(nsColor: .systemIndigo)
         case .imageModel: Color(nsColor: .systemTeal)
         case .embeddingModel: Color(nsColor: .systemPurple)
@@ -110,7 +113,7 @@ enum SettingsRoute: String, Hashable, CaseIterable {
     /// The pane the page lives in (search uses it to open the right place).
     var pane: SettingsPane {
         switch self {
-        case .about, .softwareUpdate, .shortcuts, .translation: .general
+        case .about, .softwareUpdate, .shortcuts, .translation, .dictation: .general
         case .languageModel, .imageModel, .embeddingModel, .ollama: .models
         case .ownHermes: .agent
         case .searchKeys: .privacy
@@ -146,6 +149,7 @@ struct SettingsSearchEntry: Identifiable, Hashable {
         .init(label: "Toolbar action shortcuts", pane: .general, route: .shortcuts, keywords: ["hotkey", "keyboard"]),
         .init(label: "Pre-translate selections", pane: .general, route: .translation, keywords: ["translate"]),
         .init(label: "Better translation", pane: .general, route: .translation, keywords: ["translate"]),
+        .init(label: "Clean up dictation", pane: .general, route: .dictation, keywords: ["voice", "speech", "mic", "ums"]),
         .init(label: "Open at login", pane: .general, route: nil, keywords: ["launch", "startup"]),
         .init(label: "Automatically check for updates", pane: .general, route: .softwareUpdate, keywords: ["update", "version"]),
         .init(label: "Install updates automatically", pane: .general, route: .softwareUpdate, keywords: ["update"]),

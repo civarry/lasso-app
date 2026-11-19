@@ -9,7 +9,8 @@ struct ChatView: View {
     @AppStorage("ui.resultTextScale") private var textScale = 1.0
     /// Observed so the header updates the moment "Use my own Hermes" is switched in Settings.
     @AppStorage(HermesAgent.useOwnHermesKey) private var useOwnHermes = false
-    @FocusState private var inputFocused: Bool
+    @State private var inputFocused = false
+    @State private var inputHeight = ComposerTextView.lineHeight
     @State private var isDropTarget = false
     /// The conversation is scrolled to the bottom (so new text is followed).
     @State private var followsLatest = true
@@ -398,6 +399,8 @@ struct ChatView: View {
         VStack(spacing: 8) {
             // Seeded capture context + pending image attachment chips.
             if chat.seededContext != nil || !chat.pendingAttachments.isEmpty || !chat.pendingFiles.isEmpty {
+                // Scrolls sideways: five attachments don't fit a 340 pt panel.
+                ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(chat.pendingAttachments) { att in
                         // Delete button lives *inside* the 44×44 frame (not offset outside), so it's
@@ -426,80 +429,28 @@ struct ChatView: View {
                     if let context = chat.seededContext {
                         contextChip(context)
                     }
-                    Spacer(minLength: 0)
+                }
                 }
             }
 
             // Slash-command palette — appears while typing a "/…" token.
             if inputFocused, !slashMatches.isEmpty { slashPalette }
 
-            HStack(alignment: .bottom, spacing: 8) {
-                Button { attachImage() } label: { Image(systemName: "paperclip") }
-                    .buttonStyle(IconButtonStyle())
-                    .help(chat.imageHandlingNote)
-
-                Button { chat.webSearchOn.toggle() } label: { Image(systemName: "globe") }
-                    .buttonStyle(IconButtonStyle())
-                    .disabled(!chat.webConnectorsAvailable || chat.hermesActive)
-                    .foregroundStyle(!chat.webConnectorsAvailable || chat.hermesActive ? Color.secondary.opacity(0.4)
-                                     : (chat.webSearchOn ? Color.accentColor : Color.secondary))
-                    .help(chat.hermesActive
-                          ? "The agent searches the web itself while Agent is on"
-                          : !chat.webConnectorsAvailable
-                          ? "Web search is off in Settings ▸ Privacy"
-                          : (chat.webSearchOn ? "Web search on" : "Web search off"))
-
-                if chat.agentAvailable {
-                    Button { chat.toggleAgent() } label: {
-                        Image(systemName: "point.3.connected.trianglepath.dotted")
-                    }
-                    .buttonStyle(IconButtonStyle())
-                    .foregroundStyle(!chat.hermesActive ? Color.secondary
-                                     : (HermesAgent.letHermesDecide ? Color.orange : Color.accentColor))
-                    .help(!chat.hermesActive
-                          ? "Agent: let the chat search the web, read files and run commands"
-                          : HermesAgent.letHermesDecide
-                          ? "Agent on, approving risky commands without asking you. Click to turn off."
-                          : "Agent on. It asks before risky commands. Click to turn off.")
-                }
-
-                micButton
-
-                TextField(voice.isActive ? "Listening…" : "Message…", text: Binding(
-                    get: { chat.active.input }, set: { chat.active.input = $0 }))
-                    .textFieldStyle(.plain)
-                    .lineLimit(1)
-                    .focused($inputFocused)
-                    .onSubmit { Task { await voice.sendEndingDictation() } }
+            // The message box gets the full width (it grows to six lines), with the mic and send
+            // inside its trailing edge; the tools sit in a small row under it.
+            HStack(alignment: .bottom, spacing: 6) {
+                ComposerTextView(text: Binding(get: { chat.active.input }, set: { chat.active.input = $0 }),
+                                 isFocused: $inputFocused, height: $inputHeight,
+                                 placeholder: voice.isActive ? "Listening…" : "Message…",
+                                 onKey: composerKey)
+                    .frame(height: inputHeight)
                     .onChange(of: chat.active.input) { _, _ in
                         if slashSelection >= slashMatches.count { slashSelection = 0 }
                     }
-                    // Drive the slash palette from the keyboard; pass everything else through.
-                    .onKeyPress { press in
-                        if press.key == .escape, voice.isActive { voice.cancel(); return .handled }
-                        guard !slashMatches.isEmpty else { return .ignored }
-                        switch press.key {
-                        case .downArrow:
-                            slashSelection = min(slashSelection + 1, slashMatches.count - 1); return .handled
-                        case .upArrow:
-                            slashSelection = max(slashSelection - 1, 0); return .handled
-                        case .return:
-                            runSlash(slashMatches[min(slashSelection, slashMatches.count - 1)]); return .handled
-                        case .tab:
-                            // Complete to the full command name; keep the palette open so Enter runs it.
-                            chat.active.input = slashMatches[min(slashSelection, slashMatches.count - 1)].name
-                            slashSelection = 0
-                            return .handled
-                        case .escape:
-                            chat.active.input = ""; return .handled
-                        default:
-                            return .ignored
-                        }
-                    }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10).padding(.vertical, 8)
-                    .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
-                    .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(.white.opacity(0.1)))
+                    .padding(.vertical, 2)
+
+                micButton
 
                 if chat.isStreaming {
                     Button { chat.cancelStreaming() } label: { Image(systemName: "stop.fill") }
@@ -509,7 +460,7 @@ struct ChatView: View {
                         Image(systemName: "arrow.up")
                             .font(.system(size: 13, weight: .bold))
                             .foregroundStyle(canSend ? Color.white : Color.secondary)
-                            .frame(width: 28, height: 28)
+                            .frame(width: 26, height: 26)
                             .background(canSend ? AnyShapeStyle(Color.accentColor)
                                                 : AnyShapeStyle(.white.opacity(0.10)), in: Circle())
                     }
@@ -519,14 +470,126 @@ struct ChatView: View {
                     .animation(.easeInOut(duration: 0.15), value: canSend)
                 }
             }
+            .padding(.leading, 10).padding(.trailing, 5).padding(.vertical, 5)
+            .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.1)))
+
+            HStack(spacing: 6) {
+                Button { attachImage() } label: { Image(systemName: "paperclip") }
+                    .buttonStyle(IconButtonStyle())
+                    .help(chat.imageHandlingNote)
+                globeButton
+                agentChip
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, 2)
             if case .failed(let message) = voice.state {
                 Label(message, systemImage: "mic.slash")
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .transition(.opacity)
+            } else if voice.isCleaning {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Cleaning up what you said…")
+                }
+                .font(.caption).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let cleanup = voice.undoableCleanup {
+                HStack(spacing: 6) {
+                    Text("Cleaned up what you said.").foregroundStyle(.secondary)
+                    Button("Undo") { voice.undoCleanup() }
+                        .buttonStyle(.link)
+                }
+                .font(.caption)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .help("You said: \(cleanup.raw)")
             }
         }
         .padding(12)
+    }
+
+    /// Keys from the message box: Esc cancels dictation; with the slash palette open, the arrows,
+    /// Return, Tab and Esc drive it; otherwise Return sends.
+    private func composerKey(_ key: ComposerTextView.Key) -> Bool {
+        if key == .escape, voice.isActive { voice.cancel(); return true }
+        if !slashMatches.isEmpty {
+            switch key {
+            case .down:
+                slashSelection = min(slashSelection + 1, slashMatches.count - 1)
+            case .up:
+                slashSelection = max(slashSelection - 1, 0)
+            case .submit:
+                runSlash(slashMatches[min(slashSelection, slashMatches.count - 1)])
+            case .tab:
+                // Complete to the full command name; keep the palette open so Enter runs it.
+                chat.active.input = slashMatches[min(slashSelection, slashMatches.count - 1)].name
+                slashSelection = 0
+            case .escape:
+                chat.active.input = ""
+            }
+            return true
+        }
+        if key == .submit { Task { await voice.sendEndingDictation() }; return true }
+        return false
+    }
+
+    /// Web search for this chat. Hidden when it doesn't apply (the agent searches by itself; no web
+    /// search set up); shown locked when local-only mode pauses it, as Settings does.
+    @ViewBuilder
+    private var globeButton: some View {
+        if PrivacyMode.localOnly {
+            Button {} label: { lockedIcon("globe") }
+                .buttonStyle(IconButtonStyle())
+                .disabled(true)
+                .help("Web search is off in local-only mode")
+        } else if chat.webConnectorsAvailable, !chat.hermesActive {
+            Button { chat.webSearchOn.toggle() } label: { Image(systemName: "globe") }
+                .buttonStyle(IconButtonStyle())
+                .foregroundStyle(chat.webSearchOn ? Color.accentColor : Color.secondary)
+                .help(chat.webSearchOn ? "Web search on" : "Web search off")
+        }
+    }
+
+    /// Agent: an icon while off; a tinted "Agent" chip while on; orange "Agent · unattended" when it
+    /// approves risky commands itself (that state used to be colour alone). Locked in local-only mode.
+    @ViewBuilder
+    private var agentChip: some View {
+        let symbol = "point.3.connected.trianglepath.dotted"
+        if PrivacyMode.localOnly, HermesAgent.isConfigured {
+            Button {} label: { lockedIcon(symbol) }
+                .buttonStyle(IconButtonStyle())
+                .disabled(true)
+                .help("Agent is off in local-only mode")
+        } else if chat.agentAvailable {
+            if chat.hermesActive {
+                let tint = HermesAgent.letHermesDecide ? Color.orange : Color.accentColor
+                Button { chat.toggleAgent() } label: {
+                    Label(HermesAgent.letHermesDecide ? "Agent · unattended" : "Agent", systemImage: symbol)
+                        .font(.caption).fontWeight(.medium)
+                        .foregroundStyle(tint)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(tint.opacity(0.15), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .help(HermesAgent.letHermesDecide
+                      ? "Agent on, approving risky commands without asking you. Click to turn off."
+                      : "Agent on. It asks before risky commands. Click to turn off.")
+            } else {
+                Button { chat.toggleAgent() } label: { Image(systemName: symbol) }
+                    .buttonStyle(IconButtonStyle())
+                    .foregroundStyle(.secondary)
+                    .help("Agent: let the chat search the web, read files and run commands")
+            }
+        }
+    }
+
+    private func lockedIcon(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .foregroundStyle(.tertiary)
+            .overlay(alignment: .bottomTrailing) {
+                Image(systemName: "lock.fill").font(.system(size: 7)).offset(x: 3, y: 2)
+            }
     }
 
     /// Dictate instead of typing. Tap to start, tap to stop; the text lands in the box for editing.

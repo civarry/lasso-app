@@ -58,7 +58,7 @@ enum AppleSpeech {
 }
 
 /// A live Apple transcription fed from the microphone. `onText` gets everything heard so far: the
-/// finalized text plus the still-changing tail, so the message box updates as you speak.
+/// finalized text and, separately, the still-changing tail, so the message box updates as you speak.
 final class AppleLiveTranscription: AudioSink, @unchecked Sendable {
     private let transcriber: SpeechTranscriber
     private let analyzer: SpeechAnalyzer
@@ -85,7 +85,7 @@ final class AppleLiveTranscription: AudioSink, @unchecked Sendable {
                                       format: format)
     }
 
-    func start(onText: @escaping @Sendable (String) -> Void) async throws {
+    func start(onText: @escaping @Sendable (_ finalized: String, _ volatile: String) -> Void) async throws {
         let transcriber = self.transcriber
         results = Task {
             var finalized = ""
@@ -93,9 +93,9 @@ final class AppleLiveTranscription: AudioSink, @unchecked Sendable {
                 let piece = String(result.text.characters)
                 if result.isFinal {
                     finalized += piece
-                    onText(finalized)
+                    onText(finalized, "")
                 } else {
-                    onText(finalized + piece)
+                    onText(finalized, piece)
                 }
             }
             return finalized
