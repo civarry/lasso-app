@@ -45,6 +45,11 @@ jobs:
           key: spm-${{ runner.os }}-${{ hashFiles('project.yml') }}
           restore-keys: spm-${{ runner.os }}-
 
+      # A cache restored from an older project.yml keeps that resolution (versions, enabled traits),
+      # which can contradict the current one; keep the downloads, resolve again.
+      - name: Forget the cached package resolution
+        run: rm -f .dd/SourcePackages/workspace-state.json .dd/SourcePackages/Package.resolved
+
       - name: Generate the Xcode project
         run: xcodegen generate
 
