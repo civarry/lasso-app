@@ -58,7 +58,8 @@ struct HermesAgentTests {
         var turn = HermesTurn()
         for e in events([delta, reasoning]) { turn.apply(e) }
         #expect(turn.text == "(1)")
-        #expect(turn.steps.map(\.text) == ["Answering · Hermes Agent"])
+        // A plain answer leaves no trace: the header says who answers.
+        #expect(turn.steps.isEmpty)
         #expect(turn.outcome == nil)
         for e in events([completed]) { turn.apply(e) }
         #expect(turn.text == "(1) blue (2) hello")
@@ -95,7 +96,7 @@ struct HermesAgentTests {
         turn.apply(.delta("There are 3 files."))
         turn.apply(.completed(output: "There are 3 files.", inputTokens: nil, outputTokens: nil))
         #expect(turn.text == "There are 3 files.")
-        #expect(turn.steps.map(\.text) == ["Answering · Hermes Agent", "Searched files · *.md", "Answering · Hermes Agent"])
+        #expect(turn.steps.map(\.text) == ["Searched files · *.md"])
     }
 
     @Test func failedToolIsMarked() {

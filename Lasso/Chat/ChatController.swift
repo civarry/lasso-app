@@ -1200,22 +1200,16 @@ final class ChatController {
         Log.chat.notice("runTurn · built \(turns.count, privacy: .public) turns, \(totalChars, privacy: .public) chars, toolPath=\(toolPath, privacy: .public) — stream START (+\(ms(), privacy: .public)ms)")
         if Task.isCancelled { Log.chat.notice("runTurn · cancelled before stream"); return }
 
-        // On the tool path the model may search first, so the "Searching…" step is added by the
-        // executor — defer the answer step until the first answer token, so the trace reads
-        // Search → Answer. Otherwise add it up front (with the cold-load hint).
-        var answerStepID: UUID? = toolPath ? nil : addStep(assistantID, icon: "sparkles", text: "Answering · \(textLabel)")
-
-        // If no token arrives within a few seconds, say why: a local model is cold-loading into
-        // memory ("first use can take a while"); a cloud model is just slow/busy on the network.
+        // No "Answering · model" step (the header says who answers; the step put an Activity
+        // disclosure on every reply). Until the first token the reply's live status line explains the
+        // wait: a local model cold-loading ("first use can take a while"), or a slow cloud model.
         let coldLoadHint = intelligence.effectivePreferred.isLocalKind
-            ? "Loading \(textLabel)… (first use can take a while)"
-            : "Waiting for \(textLabel)…"
-        let loadingHint: Task<Void, Never>? = answerStepID.map { stepID in
-            Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
-                if Task.isCancelled { return }
-                self?.setStepText(assistantID, stepID, coldLoadHint)
-            }
+            ? "Loading \(SettingsView.shortModelName(textLabel))… first use can take a while"
+            : "Waiting for \(SettingsView.shortModelName(textLabel))…"
+        let loadingHint: Task<Void, Never>? = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if Task.isCancelled { return }
+            self?.update(assistantID) { $0.statusText = coldLoadHint }
         }
 
         // The web_search tool executor (used only on the tool path): runs the user's connectors for
@@ -1257,16 +1251,11 @@ final class ChatController {
             }
         }
 
-        // A fallback answer is recorded in the Activity trace, never in the reply: the answer step names
-        // the model that actually answered, and a completed step says why it isn't the selected one.
-        let answeringModel = AnsweringModel(label: textLabel)
+        // A fallback answer is recorded in the Activity trace, never in the reply text.
         let onFallback: @MainActor (FallbackNotice) -> Void = { [weak self] notice in
             guard let self else { return }
-            answeringModel.label = notice.onDevice ? "\(notice.answeredBy) (on-device)" : notice.answeredBy
-            // Above the answer step, which was added before the request went out: the trace should
-            // read in the order things happened, not the order the UI learned about them.
-            let step = self.insertStep(assistantID, icon: "arrow.triangle.branch", text: notice.reasonText,
-                                       before: answerStepID)
+            // The one time a reply names its model: another one answered (and why).
+            let step = self.addStep(assistantID, icon: "arrow.triangle.branch", text: notice.text)
             self.completeStep(assistantID, step)
         }
 
@@ -1287,8 +1276,7 @@ final class ChatController {
                 }
                 if firstTokenMs < 0 {
                     firstTokenMs = ms(); loadingHint?.cancel()
-                    if let answerStepID { setStepText(assistantID, answerStepID, "Answering · \(answeringModel.label)") }
-                    else { answerStepID = addStep(assistantID, icon: "sparkles", text: "Answering · \(answeringModel.label)") }
+                    update(assistantID) { $0.statusText = nil }
                     Log.chat.notice("runTurn · first token (+\(firstTokenMs, privacy: .public)ms)")
                 }
                 deltas += 1; chars += delta.count
@@ -1305,7 +1293,6 @@ final class ChatController {
             }
             publish(Date())   // the tail between the last publish and the end of the stream
             loadingHint?.cancel()
-            if let answerStepID { completeStep(assistantID, answerStepID, text: "Answered · \(answeringModel.label)") }
         } catch {
             loadingHint?.cancel()
             Log.chat.error("runTurn · stream ERROR after \(chars, privacy: .public) chars: \(error.localizedDescription, privacy: .public) (+\(ms(), privacy: .public)ms)")
@@ -2670,6 +2657,7 @@ final class ChatController {
             edit(assistantID) {
                 $0.text = mediaIsLocal ? AgentMedia.hidingDirectives(turn.text) : turn.text
                 $0.steps = turn.steps; $0.approval = pending
+                $0.approvalsWaiting = turn.pendingApprovals.filter { !answeredApprovals.contains($0.key) }.count
             }
         }
 
@@ -2840,14 +2828,6 @@ final class ChatController {
             else { return json }
             return text
         }
-    }
-
-    /// The model answering the current turn: the selected one until a fallback takes over. A reference,
-    /// because the fallback callback sets it while the stream loop reads it.
-    @MainActor
-    private final class AnsweringModel {
-        var label: String
-        init(label: String) { self.label = label }
     }
 
     /// Split a model's raw stream into reasoning (inside `<think>…</think>`) and the answer. Handles

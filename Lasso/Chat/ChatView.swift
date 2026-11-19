@@ -11,6 +11,8 @@ struct ChatView: View {
     @AppStorage(HermesAgent.useOwnHermesKey) private var useOwnHermes = false
     @FocusState private var inputFocused: Bool
     @State private var isDropTarget = false
+    /// The conversation is scrolled to the bottom (so new text is followed).
+    @State private var followsLatest = true
     @State private var slashSelection = 0
     @Environment(\.openWindow) private var openWindow
     private var voice = VoiceInputController.shared
@@ -295,7 +297,8 @@ struct ChatView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(chat.messages) { message in
-                            MessageBubble(message: message, fontSize: resultTextBaseSize * textScale)
+                            MessageBubble(message: message, fontSize: resultTextBaseSize * textScale,
+                                          isLatest: message.id == chat.messages.last?.id)
                         }
                         Color.clear.frame(height: 1).id(Self.scrollBottomID)
                     }
@@ -303,12 +306,32 @@ struct ChatView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .scrollIndicators(.visible)
+                // Follow a streaming reply only while the reader is at the bottom: someone who scrolled
+                // up to reread isn't pulled back down on every token.
+                .onScrollGeometryChange(for: Bool.self) { geo in
+                    geo.contentOffset.y + geo.containerSize.height >= geo.contentSize.height - 48
+                } action: { _, atBottom in followsLatest = atBottom }
                 .onAppear { proxy.scrollTo(Self.scrollBottomID, anchor: .bottom) }
                 .onChange(of: chat.messages.count) { _, _ in
+                    // A new message (the user's own, or a new reply) always comes into view.
                     proxy.scrollTo(Self.scrollBottomID, anchor: .bottom)
                 }
                 .onChange(of: chat.messages.last?.text) { _, _ in
-                    proxy.scrollTo(Self.scrollBottomID, anchor: .bottom)
+                    if followsLatest { proxy.scrollTo(Self.scrollBottomID, anchor: .bottom) }
+                }
+                .overlay(alignment: .bottom) {
+                    if !followsLatest {
+                        Button {
+                            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(Self.scrollBottomID, anchor: .bottom) }
+                        } label: {
+                            Label("Latest", systemImage: "arrow.down")
+                                .font(.caption).fontWeight(.medium)
+                                .padding(.horizontal, 10).padding(.vertical, 5)
+                                .background(.regularMaterial, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.bottom, 8)
+                    }
                 }
             }
         }
@@ -320,13 +343,18 @@ struct ChatView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("How can I help?")
                 .font(.title2).fontWeight(.semibold)
-            Text("Chat with \(engineName) — private, on your Mac unless you pick a cloud model.")
-                .font(.callout).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Self.suggestions) { suggestion in
                     Button {
-                        chat.send(text: suggestion.title, extraContext: suggestion.context,
-                                  webSearch: suggestion.webSearch)
+                        switch suggestion.action {
+                        case .ask:
+                            chat.send(text: suggestion.title, extraContext: suggestion.context,
+                                      webSearch: suggestion.webSearch)
+                        case .capture:
+                            CaptureCoordinator.shared.begin()
+                        case .attach:
+                            attachImage()
+                        }
                     } label: {
                         Text(suggestion.title)
                             .font(.callout)
@@ -347,18 +375,21 @@ struct ChatView: View {
     /// A starter chip. `context` is one-shot context folded into that question only — e.g. the
     /// "What can you do?" chip injects Lasso's real feature list so the answer is grounded.
     private struct Suggestion: Identifiable {
+        enum Action { case ask, capture, attach }
         let id = UUID()
         let title: String
+        var action: Action = .ask
         var context: String?
         /// Per-chip web-grounding override (nil = follow the user's globe toggle).
         var webSearch: Bool?
     }
 
+    /// Starters that only Lasso has: what it can do, the screen, an image. (Generic chatbot prompts
+    /// like "write an email" said nothing about this app.)
     private static let suggestions: [Suggestion] = [
-        // Canned starter prompts — grounded by the model alone (web search just adds noise here).
         Suggestion(title: "What can you do?", context: ChatController.lassoCapabilities, webSearch: false),
-        Suggestion(title: "Help me write a short, friendly email", webSearch: false),
-        Suggestion(title: "Explain a tricky concept in simple terms", webSearch: false),
+        Suggestion(title: "Ask about something on screen", action: .capture),
+        Suggestion(title: "Attach a file or image", action: .attach),
     ]
 
     // MARK: - Composer
@@ -415,10 +446,8 @@ struct ChatView: View {
                     .help(chat.hermesActive
                           ? "The agent searches the web itself while Agent is on"
                           : !chat.webConnectorsAvailable
-                          ? "No web connectors on — enable Web search under Settings ▸ Privacy ▸ Web to ground answers"
-                          : (chat.webSearchOn
-                             ? "Web grounding ON — answers use your connectors (Wikipedia, search, reverse-image)"
-                             : "Web grounding OFF — tap to ground answers with your connectors"))
+                          ? "Web search is off in Settings ▸ Privacy"
+                          : (chat.webSearchOn ? "Web search on" : "Web search off"))
 
                 if chat.agentAvailable {
                     Button { chat.toggleAgent() } label: {
@@ -538,8 +567,8 @@ struct ChatView: View {
         return """
     ## What is Lasso?
 
-    Your screen's AI companion, in the menu bar. Capture anything on screen, then act on it — \
-    **private by default**, running on-device unless you pick a cloud model.
+    Your screen's AI companion, in the menu bar. Capture anything on screen, then act on it. \
+    **Private by default**: it runs on-device unless you pick a cloud model.
 
     ### Capture · \(capture)
     Select any region of the screen, then:
@@ -550,8 +579,8 @@ struct ChatView: View {
 
     ### Chat · \(chat)
     - Multi-turn conversations with memory across the thread
-    - Attach images (button, ⌘V, or drag-and-drop) and ask about them
-    - A per-message **⋯** menu — copy, edit, regenerate, delete
+    - Attach images and files (paperclip, ⌘V, or drag-and-drop) and ask about them
+    - Each message's **⋯** menu: edit, resend, regenerate, delete from here
     - Optional **web grounding**; type `/` for commands
 
     ### Models · your choice, on your Mac
@@ -580,7 +609,7 @@ struct ChatView: View {
             SlashCommand(name: "/copy", detail: "Copy the whole conversation", icon: "doc.on.doc") {
                 Pasteboard.copy(chat.transcriptText)
             },
-            SlashCommand(name: "/about", detail: "What Lasso can do", icon: "sparkles") {
+            SlashCommand(name: "/about", detail: "What Lasso can do", icon: "info.circle") {
                 chat.postLocalMessage(aboutText)
             },
         ]
@@ -608,8 +637,8 @@ struct ChatView: View {
         ```
         \(rows)
         ```
-        Every message has a **⋯** menu: copy · edit · regenerate · delete. \
-        Attach an image with the photo button, ⌘V, or by dragging one onto the panel.
+        Each message has Copy, Delete and a **⋯** menu (edit, regenerate). \
+        Attach a file or image with the paperclip, ⌘V, or by dragging it onto the panel.
         """
     }
 
@@ -668,10 +697,6 @@ struct ChatView: View {
             || !chat.pendingFiles.isEmpty
     }
 
-    private var engineName: String {
-        intelligence.lastProviderName.isEmpty ? intelligence.effectivePreferred.label
-            : intelligence.lastProviderName
-    }
     /// Locality icon (cpu = Apple on-device, cloud = remote, server.rack = any local backend).
     private var textIcon: String {
         switch intelligence.effectivePreferred {
@@ -747,6 +772,9 @@ struct FileChip: View {
 struct MessageBubble: View {
     let message: ChatMessage
     let fontSize: CGFloat
+    /// The newest message: its actions stay visible; older ones show theirs on hover.
+    var isLatest = false
+    @State private var hovering = false
 
     private var isUser: Bool { message.role == .user }
 
@@ -844,16 +872,9 @@ struct MessageBubble: View {
         }
     }
 
-    /// Asymmetric bubble with a small "tail": all corners rounded except the one nearest the speaker
-    /// (bottom-right for the user, bottom-left for the assistant).
-    private var bubbleShape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(
-            topLeadingRadius: 13,
-            bottomLeadingRadius: isUser ? 13 : 4,
-            bottomTrailingRadius: isUser ? 4 : 13,
-            topTrailingRadius: 13,
-            style: .continuous)
-    }
+    /// One shape for both sides, no tail: a reply is a light container holding its trace, text, images
+    /// and actions together; the user's message is the tinted one.
+    private var bubbleShape: RoundedRectangle { RoundedRectangle(cornerRadius: 12, style: .continuous) }
 
     /// An image in a reply, at reading size; a click shows it full size.
     private func replyImage(_ att: Attachment) -> some View {
@@ -915,7 +936,7 @@ struct MessageBubble: View {
                     if message.isStreaming && message.text.isEmpty && !hasTrace {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.small)
-                            Text("Thinking…").font(.caption).foregroundStyle(.secondary)
+                            Text(message.statusText ?? "Thinking…").font(.caption).foregroundStyle(.secondary)
                         }
                     } else if !message.text.isEmpty {
                         // Drag-selectable (⌘C copies the highlight); whole-message actions live in the
@@ -936,19 +957,30 @@ struct MessageBubble: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if let approval = message.approval {
-                        ApprovalCard(approval: approval) { chat.respondToApproval(message.id, choice: $0) }
+                        ApprovalCard(approval: approval, waiting: message.approvalsWaiting) {
+                            chat.respondToApproval(message.id, choice: $0)
+                        }
+                    }
+                    if message.isError, !message.isStreaming, !isUser {
+                        Button("Try Again") { chat.regenerate(message.id) }
+                            .controlSize(.small)
+                            .disabled(chat.active.isStreaming)
                     }
                     if !message.isStreaming, !message.text.isEmpty || !message.attachments.isEmpty {
+                        // Always on the newest message, on hover for older ones (a long chat used to show
+                        // a trash can per message). Faded rather than removed, so rows don't jump.
                         actionsRow
+                            .opacity(isLatest || hovering ? 1 : 0)
+                            .allowsHitTesting(isLatest || hovering)
                     }
                 }
             }
             .padding(.horizontal, 11).padding(.vertical, 8)
-            .background(isUser ? AnyShapeStyle(.tint.opacity(0.22)) : AnyShapeStyle(.white.opacity(0.05)),
+            .background(isUser ? AnyShapeStyle(.tint.opacity(0.22)) : AnyShapeStyle(.white.opacity(0.04)),
                         in: bubbleShape)
-            .overlay(bubbleShape.strokeBorder(.white.opacity(isUser ? 0 : 0.06)))
             .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
         }
+        .onHover { hovering = $0 }
     }
 
 }
@@ -959,11 +991,14 @@ struct MessageBubble: View {
 /// after five minutes, so ignoring the card is safe.
 private struct ApprovalCard: View {
     let approval: HermesApproval
+    /// Requests waiting in all (this one first).
+    var waiting = 1
     let answer: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Hermes wants to run a command", systemImage: "hand.raised.fill")
+            Label(waiting > 1 ? "Hermes wants to run a command (1 of \(waiting))" : "Hermes wants to run a command",
+                  systemImage: "hand.raised.fill")
                 .font(.caption).fontWeight(.semibold)
                 .foregroundStyle(.orange)
             if let command = approval.command {
@@ -978,25 +1013,31 @@ private struct ApprovalCard: View {
             if let reason = approval.reason {
                 Text("Flagged: \(reason)").font(.caption2).foregroundStyle(.secondary)
             }
-            HStack(spacing: 8) {
-                ForEach(approval.offered, id: \.self) { choice in
-                    if choice == "deny" {
-                        Button(HermesApproval.label(for: choice), role: .destructive) { answer(choice) }
-                            .buttonStyle(.bordered)
-                    } else if choice == "once" {
-                        Button(HermesApproval.label(for: choice)) { answer(choice) }
-                            .buttonStyle(.borderedProminent)
-                    } else {
-                        Button(HermesApproval.label(for: choice)) { answer(choice) }
-                            .buttonStyle(.bordered)
-                    }
-                }
+            // One row when it fits; stacked in a narrow panel (four buttons don't fit at 340 pt).
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { choiceButtons }
+                VStack(alignment: .leading, spacing: 6) { choiceButtons }
             }
             .controlSize(.small)
         }
         .padding(10)
         .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.orange.opacity(0.35)))
+    }
+
+    @ViewBuilder private var choiceButtons: some View {
+        ForEach(approval.offered, id: \.self) { choice in
+            if choice == "deny" {
+                Button(HermesApproval.label(for: choice), role: .destructive) { answer(choice) }
+                    .buttonStyle(.bordered)
+            } else if choice == "once" {
+                Button(HermesApproval.label(for: choice)) { answer(choice) }
+                    .buttonStyle(.borderedProminent)
+            } else {
+                Button(HermesApproval.label(for: choice)) { answer(choice) }
+                    .buttonStyle(.bordered)
+            }
+        }
     }
 }
 
@@ -1007,16 +1048,24 @@ private struct ApprovalCard: View {
 /// running so progress is visible live, then collapses to a one-line summary.
 private struct TraceView: View {
     let message: ChatMessage
-    @State private var expanded = true
+    /// Collapsed: while running, the label is the one live status line; after, a factual summary.
+    @State private var expanded = false
 
     private var summary: String {
         if message.isStreaming {
             return message.steps.last(where: { !$0.done })?.text
+                ?? message.steps.last?.text
                 ?? (message.reasoning.isEmpty ? "Working…" : "Thinking…")
         }
-        if let secs = message.reasoningSeconds { return "Thought for \(secs)s" }
-        if !message.reasoning.isEmpty { return "Thought process" }
-        return "Activity"
+        var parts: [String] = []
+        if let secs = message.reasoningSeconds { parts.append("Thought for \(secs)s") }
+        else if !message.reasoning.isEmpty { parts.append("Thought process") }
+        switch message.steps.count {
+        case 0: break
+        case 1: parts.append(message.steps[0].text)
+        default: parts.append("\(message.steps.count) steps")
+        }
+        return parts.joined(separator: " · ")
     }
 
     var body: some View {
@@ -1049,22 +1098,18 @@ private struct TraceView: View {
         } label: {
             HStack(spacing: 6) {
                 if message.isStreaming { ProgressView().controlSize(.small) }
-                else { Image(systemName: "sparkles").font(.caption2) }
-                Text(summary).font(.caption).fontWeight(.medium)
+                Text(summary).font(.caption).fontWeight(.medium).lineLimit(1).truncationMode(.tail)
             }
             .foregroundStyle(.secondary)
         }
         .disclosureGroupStyle(.automatic)
-        .onChange(of: message.isStreaming) { _, streaming in
-            if !streaming { withAnimation(.easeOut(duration: 0.2)) { expanded = false } }
-        }
     }
 
     @ViewBuilder
     private func timelineItem<Content: View>(done: Bool, @ViewBuilder _ content: () -> Content) -> some View {
         HStack(alignment: .top, spacing: 9) {
             Circle()
-                .fill(done ? Color.green.opacity(0.8) : Color.secondary.opacity(0.6))
+                .fill(Color.secondary.opacity(done ? 0.6 : 0.35))
                 .frame(width: 5, height: 5)
                 .padding(.top, 5)   // align the dot with the first text line
             content()
