@@ -820,9 +820,9 @@ struct SettingsView: View {
         case .notInstalled: "Install with: brew install hermes-agent"
         case .notSetUp: "Hermes Agent is installed"
         case .settingUp: "Setting up…"
-        case .stopped: "Ready. Turn on Agent in the chat to use it."
+        case .stopped: "Ready"
         case .starting: "Starting…"
-        case .running: "Running."
+        case .running: "Running"
         case .failed(let message): message
         }
     }
