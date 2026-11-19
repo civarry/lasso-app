@@ -62,6 +62,10 @@ struct ChatMessage: Identifiable, @unchecked Sendable {
     var reasoning: String = ""
     /// Seconds the model spent reasoning (set when the `<think>` block closes).
     var reasoningSeconds: Int?
+    /// A command Hermes Agent is waiting on the user to allow or deny (shown as a card in the bubble).
+    var approval: HermesApproval?
+    /// A standing warning shown in the bubble (Hermes approving risky commands itself).
+    var notice: String?
 }
 
 /// One step in an assistant turn's background activity trace.

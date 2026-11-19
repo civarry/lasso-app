@@ -57,6 +57,39 @@ final class ChatController {
     }
     private static let webSearchKey = "chat.webSearchOn"
 
+    /// The user picked Hermes Agent in the model menu: turns go to it instead of the language model.
+    var hermesSelected: Bool = UserDefaults.standard.bool(forKey: HermesAgent.enabledKey) {
+        didSet { UserDefaults.standard.set(hermesSelected, forKey: HermesAgent.enabledKey) }
+    }
+    /// Hermes is picked and can run (configured, and not in local-only mode).
+    var hermesActive: Bool { hermesSelected && HermesAgent.isAvailable }
+    /// Whether to offer the Agent button at all: Hermes installed (or the user's own configured), and
+    /// local-only off.
+    var agentAvailable: Bool { HermesAgent.isAvailable }
+
+    /// The Agent button. On: start Lasso's Hermes in the background so the first turn doesn't wait for
+    /// it (it sets itself up on first use). Off: stop it and give back its memory.
+    func toggleAgent() {
+        // Turning it off mid-turn: end that turn cleanly before its gateway goes away.
+        if hermesSelected, isStreaming { cancelStreaming() }
+        hermesSelected.toggle()
+        guard !HermesAgent.usesOwnHermes else { return }
+        if hermesSelected {
+            Task {
+                let route = await HermesRoute.current(intelligence)
+                do { _ = try await HermesRuntime.shared.ready(route: route) }
+                catch { Log.chat.notice("hermes · warm-up failed: \(error.localizedDescription, privacy: .public)") }
+            }
+        } else {
+            HermesRuntime.shared.stop()
+        }
+    }
+    /// Approval requests the user already answered, so a late repaint can't bring the card back.
+    private var answeredApprovals: Set<String> = []
+    /// The connection each running Hermes run uses (Lasso's own Hermes or the user's), by run id, so an
+    /// approval is answered on the server that asked.
+    private var hermesRunClients: [String: HermesClient] = [:]
+
     /// The budgeted assembler — char-based, provider-agnostic. Shared (stateless) across sessions.
     private var contextBuilder = ChatContextBuilder()
 
@@ -452,6 +485,7 @@ final class ChatController {
         isStreaming = false
         if let last = messages.indices.last, messages[last].role == .assistant {
             messages[last].isStreaming = false
+            messages[last].approval = nil
             if messages[last].text.isEmpty { messages[last].text = "(Stopped.)" }
         }
     }
@@ -874,6 +908,7 @@ final class ChatController {
         pendingAttachments = []
         seededContext = nil
         isStreaming = true
+        active.turnToken = UUID()
 
         // Whether grounding is *allowed* this turn: the user's globe toggle (a chip can force it off,
         // e.g. "What can you do?") and at least one active connector. Whether to *actually* search is
@@ -883,9 +918,15 @@ final class ChatController {
 
         Log.chat.notice("send: typedChars=\(typed.count, privacy: .public) images=\(attachments.count, privacy: .public) allowGround=\(allowGround, privacy: .public) history=\(self.messages.count, privacy: .public)")
         streamTask?.cancel()
+        let viaHermes = hermesActive
         streamTask = Task { [weak self] in
-            await self?.runTurn(typed: typed, attachments: attachments, context: context, appContext: extraContext,
-                                allowGround: allowGround, userID: userID, assistantID: assistantID)
+            if viaHermes {
+                await self?.runHermesTurn(typed: typed, attachments: attachments, context: context,
+                                          appContext: extraContext, userID: userID, assistantID: assistantID)
+            } else {
+                await self?.runTurn(typed: typed, attachments: attachments, context: context, appContext: extraContext,
+                                    allowGround: allowGround, userID: userID, assistantID: assistantID)
+            }
         }
     }
 
@@ -2395,6 +2436,211 @@ final class ChatController {
 
     private static func stripThoughtBlocks(from text: String) -> String {
         ModelText.stripThoughtBlocks(from: text)
+    }
+
+    // MARK: - Hermes Agent
+
+    /// One turn through Hermes Agent (`HermesAgent`): the agent plans, uses its own tools, and answers;
+    /// Lasso shows its tool calls as Activity steps and asks the user about any command Hermes flags.
+    /// Lasso's own grounding, memory retrieval and image description are skipped: the agent has its own.
+    /// History is sent from this conversation every turn, so Edit / Regenerate / Delete behave as with
+    /// any model. The turn is bound to the conversation it started in: an approval can keep it going
+    /// for minutes, and switching chats meanwhile must not write into the other one.
+    private func runHermesTurn(typed: String, attachments: [Attachment], context: String?, appContext: String?,
+                               userID: UUID, assistantID: UUID) async {
+        let session = active
+        let token = session.turnToken
+        func edit(_ id: UUID, _ mutate: (inout ChatMessage) -> Void) {
+            if let i = session.messages.firstIndex(where: { $0.id == id }) { mutate(&session.messages[i]) }
+        }
+        func end(error: String? = nil, stopped: Bool = false) {
+            edit(assistantID) { m in
+                m.isStreaming = false
+                m.approval = nil
+                if let error { m.text = error; m.isError = true }
+                else if m.text.isEmpty { m.text = stopped ? "(Stopped.)" : "(No response.)" }
+            }
+            // Stopped, and the user already sent the next message: that turn owns the flag now.
+            guard session.turnToken == token else { return }
+            session.isStreaming = false
+            if session === active { scheduleIndex() }
+            persist(session)
+        }
+        func wasStopped(_ error: Error) -> Bool {
+            Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
+        }
+
+        guard !PrivacyMode.localOnly else { end(error: HermesError.localOnly.localizedDescription); return }
+        let t0 = Date()
+        // Lasso's own Hermes, thinking with the model chosen in Lasso when Hermes can reach it; or, in
+        // Settings' advanced mode, a Hermes the user runs.
+        var route: HermesRoute?
+        var leadSteps: [ActivityStep] = []
+        let client: HermesClient
+        if HermesAgent.usesOwnHermes {
+            guard let own = HermesAgent.client() else {
+                end(error: "Add your Hermes's address and API key in Settings ▸ Intelligence ▸ Agent.")
+                return
+            }
+            client = own
+        } else {
+            route = await HermesRoute.current(intelligence)
+            if route == nil {
+                leadSteps.append(ActivityStep(
+                    icon: "cpu", text: "Using Hermes's own model: \(intelligence.textEngineLabel) runs only inside Lasso",
+                    done: true))
+            }
+            let runtime = HermesRuntime.shared
+            if runtime.state != .running || runtime.activeRoute != route {
+                edit(assistantID) { $0.steps = leadSteps + [ActivityStep(icon: "bolt", text: "Starting the agent…")] }
+            }
+            do {
+                client = try await runtime.ready(route: route)
+            } catch {
+                if wasStopped(error) { end(stopped: true) } else { end(error: error.localizedDescription) }
+                return
+            }
+            edit(assistantID) { $0.steps = leadSteps }
+        }
+        var userText = typed.isEmpty ? (attachments.count > 1 ? "What are these?" : "What is this?") : typed
+        if let context, !context.isEmpty {
+            userText = "Context — text I selected on screen:\n\(context)\n\n"
+                + (typed.isEmpty ? "What does this say / mean?" : typed)
+        }
+        if let appContext, !appContext.isEmpty { userText = "\(appContext)\n\n\(userText)" }
+        let images = attachments.compactMap { ImageEncoder.jpegBase64($0.image) }
+        // Same record as a native-vision turn, so a later turn on a regular model keeps the context.
+        edit(userID) { $0.promptText = userText; $0.imageBase64s = images }
+
+        let earlier = session.messages.firstIndex(where: { $0.id == userID }).map { session.messages[..<$0] } ?? []
+        let turnRequest = HermesClient.Turn(
+            model: route == nil ? nil : "lasso",
+            text: userText, imageJPEGBase64s: images, history: Self.hermesHistory(from: earlier),
+            sessionID: HermesAgent.sessionID(conversation: session.id,
+                                             firstMessage: session.messages.first?.id ?? userID),
+            instructions: HermesAgent.instructions)
+
+        // Reachable, and set to ask before risky commands; nothing is sent otherwise.
+        do {
+            let profile = try await client.check()
+            let mode = HermesAgent.approvalMode(profile: profile, baseURL: client.baseURL)
+            let local = HermesAgent.isLoopback(client.baseURL)
+            switch HermesAgent.gate(mode, local: local, confirmed: HermesAgent.approvalsConfirmed(for: client.baseURL),
+                                    letHermesDecide: HermesAgent.letHermesDecide) {
+            case .allowed:
+                break
+            case .unattended:
+                Log.chat.notice("hermes · unattended: user lets Hermes decide (\(String(describing: mode), privacy: .public))")
+                edit(assistantID) { $0.notice = HermesAgent.unattendedNotice }
+            case .blocked(let reason):
+                Log.chat.notice("hermes · refused: approvals not manual (\(String(describing: mode), privacy: .public))")
+                end(error: reason)
+                return
+            }
+        } catch {
+            if wasStopped(error) { end(stopped: true) } else { end(error: error.localizedDescription) }
+            return
+        }
+        if Task.isCancelled { end(stopped: true); return }
+        intelligence.noteOffDeviceUse()
+        Log.chat.notice("hermes ▶ start: chars=\(userText.count, privacy: .public) images=\(images.count, privacy: .public) history=\(turnRequest.history.count, privacy: .public)")
+
+        let answerLabel = route?.label ?? "Hermes's model"
+        var turn = HermesTurn(answerLabel: answerLabel, steps: leadSteps)
+        var seenApprovals: Set<String> = []
+        var lastPaint = Date.distantPast
+        func paint(force: Bool) {
+            let now = Date()
+            guard force || now.timeIntervalSince(lastPaint) > 0.05 else { return }
+            lastPaint = now
+            let pending = turn.pendingApprovals.first { !answeredApprovals.contains($0.key) }
+            edit(assistantID) { $0.text = turn.text; $0.steps = turn.steps; $0.approval = pending }
+        }
+
+        do {
+            // Started outside this task: a Stop that lands while the POST is in flight must not lose the
+            // run id, or the run would carry on with no one watching.
+            let starting = Task { try await client.start(turnRequest) }
+            let runID = try await starting.value
+            if Task.isCancelled {
+                Task.detached { await client.stop(runID: runID) }
+                throw CancellationError()
+            }
+            turn = HermesTurn(runID: runID, answerLabel: answerLabel, steps: leadSteps)
+            hermesRunClients[runID] = client
+            defer { hermesRunClients[runID] = nil }
+            Log.chat.notice("hermes · run \(runID, privacy: .public) (+\(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public)ms)")
+            for try await event in client.events(runID: runID) {
+                turn.apply(event)
+                if case .approvalRequested = event { seenApprovals.formUnion(turn.pendingApprovals.map(\.key)) }
+                if case .delta = event { paint(force: false) } else { paint(force: true) }
+                if event.endsRun { break }
+            }
+            if Task.isCancelled { throw CancellationError() }
+            turn.streamEnded()
+        } catch {
+            if wasStopped(error) {
+                turn.apply(.cancelled)
+            } else {
+                Log.chat.error("hermes · failed: \(error.localizedDescription, privacy: .public)")
+                turn.apply(.failed(error.localizedDescription))
+            }
+        }
+        answeredApprovals.subtract(seenApprovals)
+        paint(force: true)
+        let ms = Int(Date().timeIntervalSince(t0) * 1000)
+        switch turn.outcome {
+        case .failed(let message):
+            Log.chat.notice("hermes ✗ \(message, privacy: .public) (+\(ms, privacy: .public)ms)")
+            end(error: turn.text.isEmpty ? message : turn.text + "\n\n" + message)
+        case .cancelled:
+            Log.chat.notice("hermes · stopped (+\(ms, privacy: .public)ms)")
+            end(stopped: true)
+        case .completed, nil:
+            Log.chat.notice("hermes ✓ chars=\(turn.text.count, privacy: .public) in=\(turn.inputTokens ?? -1, privacy: .public) out=\(turn.outputTokens ?? -1, privacy: .public) (+\(ms, privacy: .public)ms)")
+            end()
+        }
+    }
+
+    /// Answer the approval card under an assistant message. The card goes at once; the step text
+    /// changes when Hermes confirms. If the answer can't be delivered while the turn is still running,
+    /// the card comes back; once the turn has ended there is nothing left to answer.
+    func respondToApproval(_ messageID: UUID, choice: String) {
+        guard let approval = messages.first(where: { $0.id == messageID })?.approval,
+              let client = hermesRunClients[approval.runID] else { return }
+        let session = active
+        answeredApprovals.insert(approval.key)
+        update(messageID) { $0.approval = nil }
+        Log.chat.notice("hermes · approval \(choice, privacy: .public)")
+        Task { [weak self] in
+            do {
+                try await client.respond(runID: approval.runID, requestID: approval.requestID, choice: choice)
+            } catch {
+                Log.chat.error("hermes · approval not delivered: \(error.localizedDescription, privacy: .public)")
+                guard let self else { return }
+                self.answeredApprovals.remove(approval.key)
+                if let i = session.messages.firstIndex(where: { $0.id == messageID }), session.messages[i].isStreaming {
+                    session.messages[i].approval = approval
+                }
+            }
+        }
+    }
+
+    /// Earlier turns as plain text for Hermes (newest kept when long): what each model saw, with
+    /// thinking stripped and failed replies left out.
+    static func hermesHistory(from messages: ArraySlice<ChatMessage>,
+                              maxMessages: Int = 40, maxChars: Int = 60_000) -> [(role: String, content: String)] {
+        var out: [(role: String, content: String)] = []
+        var total = 0
+        for m in messages.reversed() where !m.isError {
+            let text = m.role == .assistant ? stripThoughtBlocks(from: m.text) : (m.promptText ?? m.text)
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, trimmed != "(Stopped.)" else { continue }
+            guard out.count < maxMessages, total + trimmed.count <= maxChars else { break }
+            total += trimmed.count
+            out.append((m.role == .user ? "user" : "assistant", trimmed))
+        }
+        return out.reversed()
     }
 
     // MARK: - Message mutation helpers

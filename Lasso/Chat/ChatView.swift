@@ -378,14 +378,27 @@ struct ChatView: View {
 
                 Button { chat.webSearchOn.toggle() } label: { Image(systemName: "globe") }
                     .buttonStyle(IconButtonStyle())
-                    .disabled(!chat.webConnectorsAvailable)
-                    .foregroundStyle(!chat.webConnectorsAvailable ? Color.secondary.opacity(0.4)
+                    .disabled(!chat.webConnectorsAvailable || chat.hermesActive)
+                    .foregroundStyle(!chat.webConnectorsAvailable || chat.hermesActive ? Color.secondary.opacity(0.4)
                                      : (chat.webSearchOn ? Color.accentColor : Color.secondary))
-                    .help(!chat.webConnectorsAvailable
+                    .help(chat.hermesActive
+                          ? "The agent searches the web itself while Agent is on"
+                          : !chat.webConnectorsAvailable
                           ? "No web connectors on — enable Web search under Settings ▸ Connectors to ground answers"
                           : (chat.webSearchOn
                              ? "Web grounding ON — answers use your connectors (Wikipedia, search, reverse-image)"
                              : "Web grounding OFF — tap to ground answers with your connectors"))
+
+                if chat.agentAvailable {
+                    Button { chat.toggleAgent() } label: {
+                        Image(systemName: "point.3.connected.trianglepath.dotted")
+                    }
+                    .buttonStyle(IconButtonStyle())
+                    .foregroundStyle(chat.hermesActive ? Color.accentColor : Color.secondary)
+                    .help(chat.hermesActive
+                          ? "Agent on: the chat can use tools on your Mac (web, files, terminal) and asks before risky commands. Click to turn off."
+                          : "Agent: let the chat take actions (search, read files, run commands), asking before risky ones")
+                }
 
                 micButton
 
@@ -657,7 +670,7 @@ struct ChatView: View {
 
 // MARK: - Message bubble
 
-private struct MessageBubble: View {
+struct MessageBubble: View {
     let message: ChatMessage
     let fontSize: CGFloat
 
@@ -820,6 +833,15 @@ private struct MessageBubble: View {
                             .foregroundStyle(message.isError ? Color.orange : Color.primary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    if let notice = message.notice {
+                        Label(notice, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let approval = message.approval {
+                        ApprovalCard(approval: approval) { chat.respondToApproval(message.id, choice: $0) }
+                    }
                     if !message.isStreaming, !message.text.isEmpty || !message.attachments.isEmpty {
                         actionsRow
                     }
@@ -833,6 +855,53 @@ private struct MessageBubble: View {
         }
     }
 
+}
+
+// MARK: - Hermes approval
+
+/// A command Hermes Agent flagged and is holding until the user answers. Hermes denies it by itself
+/// after five minutes, so ignoring the card is safe.
+private struct ApprovalCard: View {
+    let approval: HermesApproval
+    let answer: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Hermes wants to run a command", systemImage: "hand.raised.fill")
+                .font(.caption).fontWeight(.semibold)
+                .foregroundStyle(.orange)
+            if let command = approval.command {
+                Text(command)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .lineLimit(6)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+            }
+            if let reason = approval.reason {
+                Text("Flagged: \(reason)").font(.caption2).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 8) {
+                ForEach(approval.offered, id: \.self) { choice in
+                    if choice == "deny" {
+                        Button(HermesApproval.label(for: choice), role: .destructive) { answer(choice) }
+                            .buttonStyle(.bordered)
+                    } else if choice == "once" {
+                        Button(HermesApproval.label(for: choice)) { answer(choice) }
+                            .buttonStyle(.borderedProminent)
+                    } else {
+                        Button(HermesApproval.label(for: choice)) { answer(choice) }
+                            .buttonStyle(.bordered)
+                    }
+                }
+            }
+            .controlSize(.small)
+        }
+        .padding(10)
+        .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.orange.opacity(0.35)))
+    }
 }
 
 // MARK: - Activity trace ("Thought for Xs" + steps)

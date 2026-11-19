@@ -62,6 +62,9 @@ final class Conversation: Identifiable {
     var pendingAttachments: [Attachment] = []
     var seededContext: String?
     var isStreaming = false
+    /// Which send owns `isStreaming`. A stopped Hermes turn can take a few seconds to wind down after
+    /// the user has already sent the next message; it may only clear the flag while it still owns it.
+    var turnToken = UUID()
     var streamTask: Task<Void, Never>?
 
     // MARK: Memory (two-track summary + in-session semantic retrieval) — per session
