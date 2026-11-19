@@ -901,7 +901,6 @@ struct SettingsView: View {
                 // Test reaches the address typed above: never in local-only mode.
                 .disabled(draft.localOnly || PrivacyMode.localOnly || draft.hermesKey.isEmpty || hermesTest == .testing)
             }
-        }
     }
 
     private var hermesAddressIsLocal: Bool {
