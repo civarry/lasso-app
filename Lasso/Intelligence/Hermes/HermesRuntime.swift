@@ -5,13 +5,15 @@ import Observation
 /// is used, and stops when Agent is turned off, local-only is turned on, or Lasso quits. Hermes itself is
 /// the user's install (Homebrew or its installer); nothing of it ships inside Lasso.
 ///
-/// The profile is cloned from the user's active Hermes profile (model, provider keys, skills, persona),
-/// then Lasso owns two things in it:
+/// The profile is created fresh, not cloned from the user's own Hermes: nothing about how (or whether)
+/// the user set up Hermes for themselves leaks in, their model, keys and memory included. Lasso owns two
+/// things in it:
 ///   • `.env`: messaging-platform credentials are removed (a second gateway on the same bot token would
 ///     take the user's messages) and the API server key, host and port are Lasso's;
 ///   • `config.yaml`: a block at the end, between `HermesProfileFiles` markers, that turns on the API
 ///     server on loopback, sets the approval mode, turns every messaging platform off, and holds the
-///     model route that makes Hermes think with the model chosen in Lasso. Hermes reads YAML with PyYAML,
+///     model (as `model:` and as a route) that makes Hermes think with the model chosen in Lasso, and
+///     only that model. Hermes reads YAML with PyYAML,
 ///     where a repeated top-level key replaces the earlier one, so the block wins.
 /// Lasso only ever writes to a profile it created (marked by `HermesProfileFiles.sentinel`), and only
 /// ever signals processes it launched; cleaning up a gateway it lost track of is left to Hermes
@@ -80,9 +82,16 @@ final class HermesRuntime {
         FileManager.default.fileExists(atPath: profileDirectory.appending(path: HermesProfileFiles.sentinel).path)
     }
 
+    /// Lasso made it fresh (not the earlier clone of the user's own Hermes, which carried their model,
+    /// keys and memory). A cloned one is replaced on the next setup.
+    nonisolated static var profileIsFresh: Bool {
+        let text = (try? String(contentsOf: profileDirectory.appending(path: HermesProfileFiles.sentinel), encoding: .utf8)) ?? ""
+        return text.contains(HermesProfileFiles.freshMark)
+    }
+
     var isInstalled: Bool { Self.hermesExecutable() != nil }
     var isSetUp: Bool {
-        Self.profileIsLassos
+        Self.profileIsLassos && Self.profileIsFresh
             && HermesProfileFiles.hasManagedBlock(
                 (try? String(contentsOf: Self.profileDirectory.appending(path: "config.yaml"), encoding: .utf8)) ?? "")
             && !HermesAgent.managedKey.isEmpty
@@ -108,9 +117,15 @@ final class HermesRuntime {
         state = .settingUp
         do {
             let dir = Self.profileDirectory
+            if Self.profileIsLassos, !Self.profileIsFresh {
+                // Lasso's own older profile, cloned from the user's Hermes: replace it with a fresh one.
+                // (Its gateway isn't running: a profile that isn't set up is never started.)
+                try await Self.run(hermes, ["profile", "delete", Self.profileName, "--yes"])
+                Log.chat.notice("hermes runtime · replaced the cloned profile with a fresh one")
+            }
             if !FileManager.default.fileExists(atPath: dir.path) {
                 do {
-                    try await Self.run(hermes, ["profile", "create", Self.profileName, "--clone", "--no-alias",
+                    try await Self.run(hermes, ["profile", "create", Self.profileName, "--no-alias",
                                                 "--description", "Used by the Lasso app's chat Agent. Managed by Lasso."])
                 } catch {
                     // It didn't exist a moment ago: whatever a failed create left is Lasso's to remove,
@@ -118,7 +133,7 @@ final class HermesRuntime {
                     try? FileManager.default.removeItem(at: dir)
                     throw error
                 }
-                try Self.writePrivate("Created by the Lasso app, which rewrites this profile's .env and the end of its config.yaml.\n",
+                try Self.writePrivate("Created by the Lasso app, which rewrites this profile's .env and the end of its config.yaml.\n\(HermesProfileFiles.freshMark)\n",
                                       to: dir.appending(path: HermesProfileFiles.sentinel))
             }
             guard Self.profileIsLassos else { throw HermesRuntimeError.profileTaken(dir.path) }
@@ -462,14 +477,20 @@ struct HermesRoute: Equatable, Sendable {
     /// For the Activity trace ("Answering · …").
     var label: String
 
-    /// The route for Lasso's current text model, or nil when Hermes can't use it: Apple Intelligence and
-    /// MLX run inside Lasso, so Hermes keeps its own model for those.
+    /// The route for Lasso's current text model, or nil when Hermes can't use it (then the Agent doesn't
+    /// run; see `unavailableReason`). MLX is served to Hermes by Lasso itself on loopback
+    /// (`LocalModelServer`); Apple Intelligence can't be served to another program.
     @MainActor
     static func current(_ intelligence: IntelligenceCoordinator) async -> HermesRoute? {
         let label = intelligence.textEngineLabel
         switch intelligence.effectivePreferred {
-        case .onDevice, .mlx:
+        case .onDevice:
             return nil
+        case .mlx:
+            let server = LocalModelServer.shared
+            guard let base = try? await server.start(model: intelligence.mlxModel) else { return nil }
+            return HermesRoute(provider: "custom", model: intelligence.mlxModel,
+                               baseURL: base.absoluteString, apiKey: server.token, label: label)
         case .anthropic:
             let key = Keychain.getMigrating("anthropic.apiKey", legacyDefaultsKey: "anthropic.apiKey") ?? ""
             guard !intelligence.anthropicModel.isEmpty else { return nil }
@@ -492,6 +513,19 @@ struct HermesRoute: Equatable, Sendable {
             return HermesRoute(provider: "custom", model: model,
                                baseURL: OllamaEndpoint.baseURL.appending(path: "v1").absoluteString,
                                apiKey: "ollama", label: label)
+        }
+    }
+
+    /// Why the Agent can't run on the model chosen in Lasso, for the reply.
+    @MainActor
+    static func unavailableReason(_ intelligence: IntelligenceCoordinator) -> String {
+        switch intelligence.effectivePreferred {
+        case .onDevice:
+            "Agent can't use Apple Intelligence: it only runs inside Lasso. Pick an MLX, Ollama or cloud model."
+        case .mlx:
+            "Agent couldn't start your MLX model. Check it's downloaded in Settings ▸ Intelligence."
+        default:
+            "Agent needs a model: choose one in Settings ▸ Intelligence."
         }
     }
 }
@@ -523,6 +557,8 @@ enum HermesProfileFiles {
 
     /// Marks a profile Lasso created; Lasso writes to no other.
     static let sentinel = ".lasso-managed"
+    /// In the sentinel of a profile Lasso created fresh rather than cloned.
+    static let freshMark = "profile: fresh"
 
     static let beginMarker = "# >>> Lasso: managed block. Lasso rewrites everything down to the end marker."
     static let endMarker = "# <<< Lasso"
@@ -587,8 +623,18 @@ enum HermesProfileFiles {
     /// `letHermesDecide`: the user's opt-out in Settings; Hermes's `smart` mode then decides flagged
     /// commands with its helper model (its hard blocklist still applies), and every reply says so.
     static func managedBlock(port: Int, route: HermesRoute?, letHermesDecide: Bool = false) -> String {
-        var lines = [beginMarker,
-                     "approvals:",
+        var lines = [beginMarker]
+        // The model Hermes thinks with, for everything: replies, and its side tasks (titles, history
+        // summaries), which follow `model:` rather than the per-request route. Lasso's choice, never a
+        // default Hermes ships with or one the user set for their own Hermes.
+        if let route {
+            lines += ["model:",
+                      "  provider: \(quoted(route.provider))",
+                      "  default: \(quoted(route.model))"]
+            if let base = route.baseURL { lines.append("  base_url: \(quoted(base))") }
+            if let key = route.apiKey { lines.append("  api_key: \(quoted(key))") }
+        }
+        lines += ["approvals:",
                      "  mode: \(letHermesDecide ? "smart" : "manual")",
                      "platforms:",
                      "  api_server:",

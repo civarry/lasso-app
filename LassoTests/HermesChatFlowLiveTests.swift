@@ -97,6 +97,52 @@ struct HermesChatFlowLiveTests {
         #expect(HermesRuntime.shared.state == .stopped)
     }
 
+    /// With an MLX model chosen in Lasso, the Agent must think with it (served by `LocalModelServer`),
+    /// not fall back to Hermes's own model. Needs TEST_RUNNER_LASSO_TEST_MLX=<model id>.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["LASSO_TEST_MLX"] != nil), .timeLimit(.minutes(15)))
+    func agentRunsOnLassosMLXModel() async throws {
+        let model = try #require(ProcessInfo.processInfo.environment["LASSO_TEST_MLX"])
+        let intelligence = IntelligenceCoordinator.shared
+        let (providerWas, mlxWas, agentWas) = (intelligence.preferred, intelligence.mlxModel, chat.hermesSelected)
+        intelligence.preferred = .mlx
+        intelligence.mlxModel = model
+        chat.newChat()
+        let conversation = chat.active.id
+        defer {
+            chat.close(conversation)
+            if chat.hermesSelected != agentWas { chat.hermesSelected = agentWas }
+            intelligence.preferred = providerWas
+            intelligence.mlxModel = mlxWas
+            HermesRuntime.shared.stop()
+        }
+        if !chat.hermesSelected { chat.toggleAgent() }
+
+        let route = await HermesRoute.current(intelligence)
+        #expect(route?.provider == "custom")
+        #expect(route?.baseURL?.hasPrefix("http://127.0.0.1:") == true)
+        let config = { (try? String(contentsOf: HermesRuntime.profileDirectory.appending(path: "config.yaml"), encoding: .utf8)) ?? "" }
+
+        for (n, ask) in ["Reply with exactly: lasso-ok. Use no tools.",
+                         "Run the terminal command `echo lasso-tool-ok` and tell me what it printed."].enumerated() {
+            let started = Date()
+            chat.send(text: ask)
+            try await Task.sleep(for: .milliseconds(100))
+            try await waitUntil(400) { !chat.isStreaming || lastReply()?.approval != nil }
+            let seconds = Date().timeIntervalSince(started)
+            dump("mlx turn \(n + 1) in \(String(format: "%.1f", seconds))s")
+            let reply = try #require(lastReply())
+            #expect(!reply.isError, "\(reply.text.prefix(200))")
+            #expect(!reply.steps.contains { $0.text.hasPrefix("Using Hermes's own model") }, "fell back to Hermes's model")
+            #expect(reply.steps.contains { $0.text.contains("MLX") }, "the trace should name the MLX model")
+            #expect(reply.text.contains(n == 0 ? "lasso-ok" : "lasso-tool-ok"))
+        }
+        // A fresh profile, and Hermes's main model is Lasso's (its side tasks follow it), not a cloud default.
+        #expect(HermesRuntime.profileIsFresh)
+        let block = config().components(separatedBy: HermesProfileFiles.beginMarker).last ?? ""
+        #expect(block.contains("default: \"\(model)\""))
+        #expect(block.contains("base_url: \"http://127.0.0.1:"))
+    }
+
     /// After Agent is turned off, the regular model must not take the Agent's "I opened Chrome" in the
     /// history as something it can do (seen: it claimed to open apps it couldn't).
     @Test func regularChatDoesNotClaimAgentActions() async throws {

@@ -76,7 +76,7 @@ final class ChatController {
         guard !HermesAgent.usesOwnHermes else { return }
         if hermesSelected {
             Task {
-                let route = await HermesRoute.current(intelligence)
+                guard let route = await HermesRoute.current(intelligence) else { return }
                 do { _ = try await HermesRuntime.shared.ready(route: route) }
                 catch { Log.chat.notice("hermes · warm-up failed: \(error.localizedDescription, privacy: .public)") }
             }
@@ -2525,10 +2525,15 @@ final class ChatController {
             client = own
         } else {
             route = await HermesRoute.current(intelligence)
-            if route == nil {
-                leadSteps.append(ActivityStep(
-                    icon: "cpu", text: "Using Hermes's own model: \(intelligence.textEngineLabel) runs only inside Lasso",
-                    done: true))
+            // The Agent thinks with the model chosen in Lasso or not at all: never with some other model
+            // (a default Hermes ships with is a cloud one).
+            guard route != nil else {
+                end(error: HermesRoute.unavailableReason(intelligence))
+                return
+            }
+            if intelligence.effectivePreferred == .mlx, MLXPromptCache.shared.isEmpty {
+                leadSteps.append(ActivityStep(icon: "hourglass", text: "First reply is slower: your model reads the agent's setup once",
+                                              done: true))
             }
             let runtime = HermesRuntime.shared
             if runtime.state != .running || runtime.activeRoute != route {

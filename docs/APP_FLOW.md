@@ -588,12 +588,15 @@ still shows the Lasso model, and the agent thinks with it.
 
 **Lasso's own Hermes** (`HermesRuntime`, the default). Hermes is the user's install (Homebrew; ~500 MB
 with Python and Node, so never bundled). Set up (Settings ▸ Intelligence ▸ Agent, or the first time
-Agent is turned on) runs `hermes profile create lasso --clone`, then Lasso owns two things in that
-profile: `.env` loses every messaging-platform credential (a second gateway on the user's bot would take
+Agent is turned on) runs `hermes profile create lasso-app` (fresh, not `--clone`: nothing of the
+user's own Hermes setup, model, keys or memory, is used; an older cloned profile, whose sentinel lacks
+`profile: fresh`, is deleted and recreated), then Lasso owns two things in that profile: `.env` loses every messaging-platform credential (a second gateway on the user's bot would take
 their messages) and gets Lasso's own API key (Keychain `hermes.managedKey`); `config.yaml` gets a block
 at the end, between `HermesProfileFiles` markers, with the API server on loopback, `approvals.mode:
-manual`, every messaging platform off, and the model route. Hermes reads YAML with PyYAML, where a
-repeated top-level key replaces the earlier one, so the block wins over the cloned settings. The user's
+manual`, every messaging platform off, and the model, as the top-level `model:` (Hermes's side tasks,
+titles and history summaries, follow it rather than the request's route; a fresh profile otherwise
+defaults to a cloud Claude) and as the route. Hermes reads YAML with PyYAML, where a repeated top-level
+key replaces the earlier one, so the block wins (checked with Hermes's own `load_config`). The user's
 own profiles and running gateway are never touched (`--replace` acts on this profile's `gateway.pid`
 only; checked by `HermesRuntimeLiveTests`). Lasso starts the gateway when Agent is turned on (so the first
 turn doesn't wait) or at the first agent turn, restarts it when the Lasso model changes, and stops it
@@ -605,9 +608,23 @@ stays unbindable for ~30 s (TIME_WAIT), which made an immediate restart on the s
 **Model route** (`HermesRoute.current`): Anthropic → `anthropic` + model (+ key); an OpenAI-compatible
 connection → `custom` + base URL + key; Gemini → `gemini`; Ollama → `custom` + its `/v1` endpoint.
 Written as `platforms.api_server.extra.model_routes.lasso` and selected per run with `"model": "lasso"`
-(verified in Hermes's session store: the routed turn ran on the routed model). Apple Intelligence and MLX
-run in-process, so there's no route: Hermes uses its own model and the trace says so. A model switch
+(verified in Hermes's session store: the routed turn ran on the routed model). MLX → `custom` + Lasso's
+own `LocalModelServer` (below). Apple Intelligence can't be served to another program: no route, and the
+turn ends with `HermesRoute.unavailableReason` rather than running on any other model. A model switch
 costs one restart (~1 s measured).
+
+**MLX for the agent** (`Intelligence/Hermes/LocalModelServer.swift`, `MLXProvider.serve`,
+`MLXPromptCache`). A minimal OpenAI-compatible server on 127.0.0.1 (new port and bearer token per
+launch): `GET /v1/models` with the model's real context window (Hermes refuses under 64K) and
+`POST /v1/chat/completions`, streamed or not, with tool calls (MLX parses the model's own format; Qwen3.5
+is XML function calls), one generation at a time. The model loads through the text-model factory even
+for a vision checkpoint: the vision Qwen3.5 resets its position state per request, which would restart
+positions at 0 when continuing from a saved state. Hermes sends ~14K tokens of instructions per request,
+which a 9B mxfp4 model reads at ~180 tok/s (Release; `MLXPrefillBenchmark`), so each request is read in
+two parts: up to its last message (state saved, up to three, longest-prefix match), then the rest. Measured
+on Qwen3.5-9B mxfp4, M4 Pro, Debug: first Agent reply 46.7 s (13,769 tokens read), the next turn with a
+tool call 3.4 s (13,748 reused, 52 read); before, 226 s per turn. Thinking is off for served requests.
+Later system messages are folded into the first (Qwen's template refuses them elsewhere).
 
 **A Hermes the user runs** (Settings ▸ Agent ▸ "Use a Hermes I run"): address + key, as before.
 
@@ -615,7 +632,7 @@ costs one restart (~1 s measured).
 flowchart LR
   Send["send()"] -->|"Agent on"| HT["runHermesTurn"]
   Send -->|"otherwise"| RT["runTurn (Lasso's own loop)"]
-  HT --> Route["HermesRoute.current<br/>Lasso's model → Hermes route (nil for Apple / MLX)"]
+  HT --> Route["HermesRoute.current<br/>Lasso's model → Hermes route<br/>(MLX → LocalModelServer · Apple → turn refused)"]
   Route --> Runtime["HermesRuntime.ready(route)<br/>set up once · start · restart on model change<br/>(or the user's own Hermes)"]
   Runtime --> Gate["gate: approvals.mode manual<br/>(or the user's opt-out → notice on every reply)"]
   Gate --> Start["POST /v1/runs<br/>model: lasso + input + conversation_history + session_id + instructions"]
@@ -770,6 +787,11 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **The agent uses Lasso's model, always.** With MLX selected it had silently run on the cloud Claude
+  that Lasso's profile inherited by cloning the user's Hermes. Now MLX is served to Hermes on loopback,
+  with saved prompt state so only the first reply pays for Hermes's ~14K-token setup; the profile is
+  created fresh and its main model is Lasso's (side tasks included); and Apple Intelligence refuses the
+  turn instead of falling back.
 - **Lasso updates itself.** Sparkle, vendored (the Swift package's binary download hung command-line
   builds whenever Xcode held its lock). Installs when idle rather than at quit, plain-text notes so no web
   view, off in local-only mode. Releases move to a self-signed certificate so a revoked free-account

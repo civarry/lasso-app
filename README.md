@@ -75,11 +75,14 @@ cleanup off in Settings.
 box and the chat can take actions: search the web, read files, run commands,
 showing each step as it goes. It's powered by
 [Hermes Agent](https://github.com/NousResearch/hermes-agent), which you install
-once (`brew install hermes-agent`). Lasso sets it up in a separate Hermes
-profile from your existing Hermes settings (your own profiles and any running
-gateway stay untouched), starts it when you use Agent, and stops it when Lasso
-quits. The agent thinks with the model you picked in Lasso; Apple Intelligence
-and MLX models run only inside Lasso, so for those it uses Hermes's own. When
+once (`brew install hermes-agent`); you don't need to set Hermes up. Lasso
+gives it a fresh profile of its own (your own Hermes settings, keys and any
+running gateway stay untouched and aren't used), starts it when you use Agent,
+and stops it when Lasso quits. The agent thinks with the model you picked in
+Lasso and nothing else, side tasks included. An MLX model is served to it by
+Lasso on your Mac (the first reply takes a while as the model reads the agent's
+setup, later ones are quick). Apple Intelligence can't drive the agent, so with
+it selected Agent says so instead of using another model. When
 Hermes flags a risky command, Lasso shows it and waits for you to allow or deny
 it. Settings ▸ Intelligence ▸ Agent has a switch to let Hermes decide those
 itself instead (every reply then says it's on), and an advanced option to use

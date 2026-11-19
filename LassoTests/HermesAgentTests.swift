@@ -176,6 +176,21 @@ struct HermesAgentTests {
         #expect(none.hasPrefix(user))
     }
 
+    /// Hermes's side tasks (titles, history summaries) follow the top-level `model:`, not the request's
+    /// route, so the block sets that too: the user's own model (here a cloud Opus) must not survive.
+    @Test func managedBlockReplacesTheMainModel() {
+        let user = "model:\n  provider: anthropic\n  default: claude-opus-4-8\n"
+        let route = HermesRoute(provider: "custom", model: "Qwen3.5-9B", baseURL: "http://127.0.0.1:60801/v1",
+                                apiKey: "tok", label: "MLX")
+        let block = HermesProfileFiles.withManagedBlock(user, port: 8653, route: route)
+            .components(separatedBy: HermesProfileFiles.beginMarker)[1]
+        #expect(block.hasPrefix("\nmodel:\n  provider: \"custom\"\n  default: \"Qwen3.5-9B\"\n  base_url: \"http://127.0.0.1:60801/v1\"\n  api_key: \"tok\"\n"))
+        // No route (the Agent then doesn't run): Lasso writes no model rather than invent one.
+        let none = HermesProfileFiles.withManagedBlock(user, port: 8653, route: nil)
+            .components(separatedBy: HermesProfileFiles.beginMarker)[1]
+        #expect(!none.contains("model:"))
+    }
+
     @Test func routeValuesAreQuotedSafely() {
         #expect(HermesProfileFiles.quoted("a\"b: c # d") == #""a\"b: c # d""#)
         #expect(HermesProfileFiles.quoted("https://x.example/v1") == #""https://x.example/v1""#)
