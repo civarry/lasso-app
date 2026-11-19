@@ -48,6 +48,22 @@ struct HermesChatRenderTests {
         try render(message, to: "hermes-answer.png")
     }
 
+    /// The whole chat panel with the Agent on: the Agent button lit next to the (dimmed) web globe.
+    @Test func panelWithAgentOn() throws {
+        let dir = try #require(ProcessInfo.processInfo.environment["LASSO_RENDER_DIR"])
+        let chat = ChatController.shared
+        let was = chat.hermesSelected
+        chat.hermesSelected = true
+        defer { chat.hermesSelected = was }
+        let view = ChatView().frame(width: 420, height: 560).environment(\.colorScheme, .dark)
+            .background(Color(white: 0.12))
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 2
+        let png = try #require(renderer.nsImage?.tiffRepresentation.flatMap { NSBitmapImageRep(data: $0) }?
+            .representation(using: .png, properties: [:]))
+        try png.write(to: URL(fileURLWithPath: dir).appending(path: "chat-agent-on.png"))
+    }
+
     @Test func unattendedNotice() throws {
         var turn = HermesTurn()
         turn.apply(.toolStarted(tool: "terminal", preview: "rm -r ~/Downloads/old-logs"))

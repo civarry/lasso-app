@@ -86,6 +86,9 @@ final class ChatController {
     }
     /// Approval requests the user already answered, so a late repaint can't bring the card back.
     private var answeredApprovals: Set<String> = []
+    /// The connection each running Hermes run uses (Lasso's own Hermes or the user's), by run id, so an
+    /// approval is answered on the server that asked.
+    private var hermesRunClients: [String: HermesClient] = [:]
 
     /// The budgeted assembler — char-based, provider-agnostic. Shared (stateless) across sessions.
     private var contextBuilder = ChatContextBuilder()
@@ -2564,6 +2567,8 @@ final class ChatController {
                 throw CancellationError()
             }
             turn = HermesTurn(runID: runID, answerLabel: answerLabel, steps: leadSteps)
+            hermesRunClients[runID] = client
+            defer { hermesRunClients[runID] = nil }
             Log.chat.notice("hermes · run \(runID, privacy: .public) (+\(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public)ms)")
             for try await event in client.events(runID: runID) {
                 turn.apply(event)
@@ -2602,7 +2607,7 @@ final class ChatController {
     /// the card comes back; once the turn has ended there is nothing left to answer.
     func respondToApproval(_ messageID: UUID, choice: String) {
         guard let approval = messages.first(where: { $0.id == messageID })?.approval,
-              let client = HermesAgent.client() else { return }
+              let client = hermesRunClients[approval.runID] else { return }
         let session = active
         answeredApprovals.insert(approval.key)
         update(messageID) { $0.approval = nil }
