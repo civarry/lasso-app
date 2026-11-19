@@ -48,7 +48,7 @@ struct HermesChatFlowLiveTests {
         let plain = try #require(lastReply())
         #expect(!plain.isError)
         #expect(plain.text.contains("lasso-ok"))
-        #expect(plain.steps.contains { $0.text.hasPrefix("Answering · ") })
+        #expect(plain.steps.isEmpty, "a plain answer has no trace")
         #expect(plain.steps.allSatisfy { $0.done })
         #expect(plain.notice == nil)
 
@@ -133,7 +133,7 @@ struct HermesChatFlowLiveTests {
             let reply = try #require(lastReply())
             #expect(!reply.isError, "\(reply.text.prefix(200))")
             #expect(!reply.steps.contains { $0.text.hasPrefix("Using Hermes's own model") }, "fell back to Hermes's model")
-            #expect(reply.steps.contains { $0.text.contains("MLX") }, "the trace should name the MLX model")
+            #expect(route?.label.contains("MLX") == true, "the header should name the MLX model")
             #expect(reply.text.contains(n == 0 ? "lasso-ok" : "lasso-tool-ok"))
             if n == 1 { #expect(reply.steps.contains { $0.text.hasPrefix("Ran a command") }, "no tool actually ran") }
         }

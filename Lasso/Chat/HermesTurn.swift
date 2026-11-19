@@ -42,11 +42,8 @@ struct HermesTurn {
         switch event {
         case .delta(let piece):
             guard !piece.isEmpty else { return }
-            if answerStepID == nil {
-                let step = ActivityStep(icon: "sparkles", text: "Answering · \(answerLabel)")
-                steps.append(step)
-                answerStepID = step.id
-            }
+            // No "Answering · model" step: the header already says who answers, and the step gave
+            // every reply an Activity disclosure. The trace is for work: tools and approvals.
             text += piece
 
         case .toolStarted(let tool, let preview):

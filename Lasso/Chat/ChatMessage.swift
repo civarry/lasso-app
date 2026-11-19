@@ -69,6 +69,8 @@ struct ChatMessage: Identifiable, @unchecked Sendable {
     var reasoningSeconds: Int?
     /// A command Hermes Agent is waiting on the user to allow or deny (shown as a card in the bubble).
     var approval: HermesApproval?
+    /// Approval requests waiting in this turn, `approval` first ("1 of N" on the card).
+    var approvalsWaiting = 0
     /// A standing warning shown in the bubble (Hermes approving risky commands itself).
     var notice: String?
     /// Written by the Agent (Hermes, with tools). The regular chat model sees these marked as such, so it

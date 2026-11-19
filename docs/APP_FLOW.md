@@ -788,6 +788,16 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Chat, release 1 of the UI/UX review** (two rounds with a separate reviewer; the composer waits for
+  the owner's uncommitted text box). The header alone says who answers: the "Answering · model" step
+  is gone (it gave every reply an Activity disclosure); a reply names its model only when a fallback
+  answered. The trace appears only for real work, collapsed, as one live status line then a summary
+  ("2 steps", "Thought for 6s"), no sparkles or green dots; the cold-load hint moved to the reply's
+  status line. Replies: one 12 pt shape, no tail, no border. Copy, Delete and ⋯ show on the newest
+  message and on hover for older ones. Scrolling follows a streaming reply only at the bottom, with a
+  "Latest" button otherwise. Errors get Try Again. Approval buttons wrap when narrow and the card says
+  "1 of N". Empty state: What can you do? / Ask about something on screen / Attach a file or image.
+  Stale copy fixed (reverse-image, "photo button", em dashes). Rendered in `ChatSnapshotTests` (opt-in).
 - **Settings window toolbar like System Settings.** It showed the title centred over a second row with a
   sidebar toggle and a centred back button. SwiftUI's `Settings` scene forces the preferences toolbar
   style (checked on the real window: style "preference", `.windowToolbarStyle` ignored), so Settings is
