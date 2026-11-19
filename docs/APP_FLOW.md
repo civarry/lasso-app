@@ -788,6 +788,12 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Settings window toolbar like System Settings.** It showed the title centred over a second row with a
+  sidebar toggle and a centred back button. SwiftUI's `Settings` scene forces the preferences toolbar
+  style (checked on the real window: style "preference", `.windowToolbarStyle` ignored), so Settings is
+  now a regular `Window` scene (`SettingsWindow.open(with:)`) with `.unified(showsTitle: true)`, the
+  sidebar toggle removed, and System Settings' ‹ › (with forward history) in the navigation slot of
+  every page, before the title. Checked by photographing the real window (`SettingsWindowCaptureTests`).
 - **Click any image in the chat to see it full size.** A pending attachment (44 pt), a sent one (40 pt) or
   a picture in a reply couldn't be enlarged. `ImageViewer` opens it in its own window sized to the image
   (up to 85% of the screen), with Copy, Open in Preview and, for a file on this Mac, Show in Finder;

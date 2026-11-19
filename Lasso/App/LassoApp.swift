@@ -14,8 +14,13 @@ struct LassoApp: App {
             MenuBarController()
         }
 
-        Settings {
+        // A regular window, not SwiftUI's `Settings` scene: that one forces the old preferences toolbar
+        // (title centred, controls on a row of their own, toolbar style ignored). This gets System
+        // Settings' look: one row level with the traffic lights, ‹ › then the page title.
+        Window("Settings", id: SettingsWindow.id) {
             SettingsView(intelligence: .shared)
         }
+        .windowToolbarStyle(.unified(showsTitle: true))
+        .windowResizability(.contentSize)
     }
 }

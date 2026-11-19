@@ -61,7 +61,7 @@ struct InlineTranslationView: View {
     @State private var sideBySide = false
     @State private var copied = false
     @AppStorage("ui.resultTextScale") private var textScale = 1.0
-    @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
     @State private var target: Locale.Language =
         Locale.Language(identifier: Locale.current.language.languageCode?.identifier ?? "en")
 
@@ -460,7 +460,7 @@ struct InlineTranslationView: View {
             Divider()
             Button("Open Settings…") {
                 CaptureCoordinator.shared.cancel()
-                openSettings()
+                SettingsWindow.open(with: openWindow)
             }
         } label: {
             HStack(spacing: 4) {

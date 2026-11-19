@@ -108,6 +108,9 @@ struct SettingsView: View {
     @State private var loaded = false
     /// The pages opened in the current pane (back/forward in the toolbar).
     @State private var path: [SettingsRoute] = []
+    /// Pages left with Back, for Forward (cleared by opening a different page).
+    @State private var forwardPath: [SettingsRoute] = []
+    @State private var goingForward = false
     /// Observed, so a request arriving while Settings is already open (on any pane) is honored.
     @AppStorage(SettingsView.routeKey) private var requestedRoute = ""
     @State private var searchText = ""
@@ -181,23 +184,60 @@ struct SettingsView: View {
         NavigationSplitView {
             sidebar
                 .navigationSplitViewColumnWidth(200)
+                // Not collapsible, like System Settings.
+                .toolbar(removing: .sidebarToggle)
         } detail: {
             NavigationStack(path: $path) {
                 paneRoot(pane)
                     .navigationTitle(pane.title)
+                    .toolbar { backForward }
                     .navigationDestination(for: SettingsRoute.self) { route in
-                        page(route).navigationTitle(route.title)
+                        page(route)
+                            .navigationTitle(route.title)
+                            // Back is the ‹ › pair at the leading edge like System Settings; the
+                            // stack's own button sat centred on a row of its own.
+                            .navigationBarBackButtonHidden(true)
+                            .toolbar { backForward }
                     }
             }
         }
         .frame(width: 740)
         .frame(minHeight: 560, idealHeight: 640)
         .task { await load(); loaded = true; consumeRequestedRoute() }
-        .onChange(of: paneRaw) { _, _ in path = []; consumeRequestedRoute() }
+        .onChange(of: paneRaw) { _, _ in path = []; forwardPath = []; consumeRequestedRoute() }
+        .onChange(of: path) { old, new in
+            // Opening a page from a row starts a new history, as in a browser.
+            if new.count > old.count, !goingForward { forwardPath = [] }
+            goingForward = false
+        }
         .onChange(of: requestedRoute) { _, _ in consumeRequestedRoute() }
         .onChange(of: draft) { _, _ in scheduleApply() }
         .onChange(of: registryKeyValues) { _, _ in scheduleApply() }
         .onDisappear { flushApply() }
+    }
+
+    /// System Settings' ‹ ›, before the page title. On every page (toolbar items belong to the page
+    /// that's showing; attached outside the stack they never appeared).
+    @ToolbarContentBuilder private var backForward: some ToolbarContent {
+        ToolbarItemGroup(placement: .navigation) {
+            Button { goBack() } label: { Image(systemName: "chevron.left") }
+                .disabled(path.isEmpty)
+                .help("Back")
+            Button { goForward() } label: { Image(systemName: "chevron.right") }
+                .disabled(forwardPath.isEmpty)
+                .help("Forward")
+        }
+    }
+
+    private func goBack() {
+        guard let last = path.popLast() else { return }
+        forwardPath.append(last)
+    }
+
+    private func goForward() {
+        guard let next = forwardPath.popLast() else { return }
+        goingForward = true
+        path.append(next)
     }
 
     /// Search results replace the pane list while there's a query; picking one opens its page.

@@ -252,3 +252,17 @@ struct SettingsPage<Content: View>: View {
         .background(SettingsPalette.pageFill)
     }
 }
+
+// MARK: - Window
+
+/// The Settings window (a regular `Window` scene; see `LassoApp`).
+enum SettingsWindow {
+    static let id = "settings"
+
+    /// Opens it (or brings it forward) in front of other apps: Lasso is a menu bar app with no Dock icon,
+    /// so it has to activate itself for its window to come to the front.
+    @MainActor static func open(with openWindow: OpenWindowAction) {
+        NSApp.activate()
+        openWindow(id: id)
+    }
+}
