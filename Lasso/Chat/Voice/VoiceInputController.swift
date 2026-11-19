@@ -23,12 +23,40 @@ final class VoiceInputController {
 
     private var engine: AVAudioEngine?
     private var live: AppleLiveTranscription?
-    private var baseText = ""
     private var clearFailure: Task<Void, Never>?
     private var silenceWatch: Task<Void, Never>?
     /// Bumped whenever a dictation ends, so a recognizer update that arrives late (after Send, Esc or
     /// stop) can't write into the message box. Before this, sent text reappeared in the box.
     private(set) var session = 0
+
+    // The dictation's place in the box. Words go in at the caret (replacing a selection, like system
+    // dictation), not at the end, and text typed before or after them is left alone.
+
+    /// Where the dictation's words sit in the box, in UTF-16 units, including `lead` and `trail`.
+    private(set) var span = NSRange(location: 0, length: 0)
+    /// A space added before the words when the caret was right after a word, and after them when it
+    /// was right before one.
+    private var lead = ""
+    private var trail = ""
+    /// What the dictation replaced (a selection), put back on Esc.
+    private var replaced = ""
+    /// The person edited inside the span, so it no longer holds what dictation wrote: no cleanup swap.
+    private(set) var spanEdited = false
+
+    // Cleanup after you stop: the raw words go in at once, the cleaned ones replace them when ready.
+
+    struct Cleanup: Equatable {
+        let raw: String
+        let cleaned: String
+    }
+
+    /// True while the on-device model is cleaning up the last dictation.
+    private(set) var isCleaning = false
+    private var cleanupTask: Task<Void, Never>?
+    /// The last swap, for the composer's Undo. Nil once it's no longer in the box as written.
+    private(set) var lastCleanup: Cleanup?
+    /// Give up on a cleanup that takes longer than this; your raw words are already in the box.
+    static let cleanupTimeout: Duration = .seconds(15)
 
     var isActive: Bool {
         switch state {
@@ -50,12 +78,14 @@ final class VoiceInputController {
     func start() async {
         guard !isActive else { return }
         clearFailure?.cancel()
+        endCleanup()
         state = .starting
         guard await Self.microphoneAllowed() else {
             fail("Microphone access is off for Lasso. Turn it on in System Settings ▸ Privacy & Security ▸ Microphone.")
             return
         }
-        baseText = ChatController.shared.input.trimmingCharacters(in: .whitespacesAndNewlines)
+        beginSpan()
+        DictationCleaner.prewarm()
         do {
             let live = try await AppleLiveTranscription.make(localeID: await Self.englishLocaleID())
             let engine = AVAudioEngine()
@@ -68,8 +98,10 @@ final class VoiceInputController {
             Self.installTap(on: input, format: format, sink: live, activity: activity)
             self.live = live
             let session = self.session
-            try await live.start { text in
-                Task { @MainActor in VoiceInputController.shared.show(text, session: session) }
+            try await live.start { finalized, volatile in
+                Task { @MainActor in
+                    VoiceInputController.shared.show(finalized, volatile: volatile, session: session)
+                }
             }
             engine.prepare()
             try engine.start()
@@ -82,7 +114,8 @@ final class VoiceInputController {
         }
     }
 
-    /// Stop listening; the final text replaces the live draft in the box.
+    /// Stop listening. The final text replaces the live draft in the box straight away, then cleanup
+    /// (if it's on) runs and swaps in the cleaned text.
     func stop() async {
         guard state == .listening else { return }
         silenceWatch?.cancel()
@@ -97,6 +130,10 @@ final class VoiceInputController {
             show(text, session: session)
             session += 1
             state = .idle
+            let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if DictationCleaner.isEnabled, !raw.isEmpty {
+                cleanUp(raw, useModel: DictationCleaner.modelAvailable)
+            }
         } catch {
             session += 1
             fail(error.localizedDescription)
@@ -108,12 +145,17 @@ final class VoiceInputController {
         guard isActive else { return }
         live?.cancel()
         teardown()
-        ChatController.shared.input = baseText
+        let editor = Composer.current
+        if !spanEdited, NSMaxRange(span) <= (editor.text as NSString).length {
+            editor.replace(span, with: replaced, caret: nil, undoable: false)
+        }
+        editor.markVolatile(nil)
         state = .idle
     }
 
     /// Send what's in the box, finishing any dictation first so its last words are included and
-    /// nothing the recognizer says afterwards reaches the box.
+    /// nothing the recognizer says afterwards reaches the box. A cleanup still running is dropped:
+    /// what you see is what's sent.
     func sendEndingDictation() async {
         switch state {
         case .listening: await stop()
@@ -122,6 +164,7 @@ final class VoiceInputController {
         case .idle, .failed: break
         }
         if case .failed = state { return }
+        endCleanup()
         ChatController.shared.send()
     }
 
@@ -132,13 +175,123 @@ final class VoiceInputController {
         return try await Task { try await live.finish() }.value
     }
 
-    // MARK: Helpers
+    // MARK: The span in the box
 
-    /// Write what was heard into the box, but only for the dictation that's still running.
-    func show(_ transcript: String, session: Int) {
+    /// Mark where this dictation's words will go: the caret, or the selection they'll replace.
+    func beginSpan(in editor: ComposerEditing = Composer.current) {
+        editor.beginDictation()
+        let ns = editor.text as NSString
+        let selection = editor.selectedRange
+        let at = NSMaxRange(selection) <= ns.length ? selection : NSRange(location: ns.length, length: 0)
+        replaced = ns.substring(with: at)
+        span = at
+        spanEdited = false
+        lastCleanup = nil
+        lead = at.location > 0 && !Self.isSpace(ns.character(at: at.location - 1)) ? " " : ""
+        let after = NSMaxRange(at)
+        trail = after < ns.length && !Self.isSpace(ns.character(at: after))
+            && !Self.isClosingPunctuation(ns.character(at: after)) ? " " : ""
+    }
+
+    /// Write what was heard into the span, but only for the dictation that's still running. The
+    /// caret follows the newest word; the recognizer's unconfirmed words are greyed out.
+    func show(_ finalized: String, volatile: String = "", session: Int) {
         guard session == self.session else { return }
-        let heard = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        ChatController.shared.input = [baseText, heard].filter { !$0.isEmpty }.joined(separator: " ")
+        let editor = Composer.current
+        let heard = (finalized + volatile).trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = heard.isEmpty ? replaced : lead + heard + trail
+        guard NSMaxRange(span) <= (editor.text as NSString).length else { return }
+        let caret = span.location + (heard.isEmpty ? text : lead + heard).utf16.count
+        editor.replace(span, with: text, caret: caret, undoable: false)
+        span.length = text.utf16.count
+        let unconfirmed = min(volatile.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count,
+                              heard.utf16.count)
+        editor.markVolatile(unconfirmed > 0 ? NSRange(location: caret - unconfirmed, length: unconfirmed) : nil)
+    }
+
+    /// The person typed in the box. Edits before the span move it; edits inside it mean the cleaned
+    /// text must not overwrite theirs.
+    func composerEdited(_ range: NSRange, replacementLength: Int) {
+        if NSMaxRange(range) <= span.location {
+            span.location += replacementLength - range.length
+        } else if range.location < NSMaxRange(span) {
+            spanEdited = true
+        }
+    }
+
+    // MARK: Cleanup
+
+    /// Clean `raw` (already in the box) and swap the result in when it's ready.
+    func cleanUp(_ raw: String, useModel: Bool) {
+        endCleanup()
+        isCleaning = useModel
+        let task = Task { [weak self] in
+            let outcome = await DictationCleaner.clean(raw, useModel: useModel)
+            guard let self, !Task.isCancelled else { return }
+            self.isCleaning = false
+            self.cleanupTask = nil
+            Log.voice.info("Dictation cleanup route: \(outcome.route.rawValue, privacy: .public)")
+            self.swapIn(outcome.text, for: raw)
+        }
+        cleanupTask = task
+        Task { [weak self] in
+            try? await Task.sleep(for: Self.cleanupTimeout)
+            guard let self, self.cleanupTask == task else { return }
+            Log.voice.notice("Dictation cleanup timed out; keeping the raw text")
+            self.endCleanup()
+        }
+    }
+
+    /// Replace `raw` with `cleaned` in the box, as one undoable step, if the box still holds `raw`
+    /// exactly where dictation put it.
+    func swapIn(_ cleaned: String, for raw: String) {
+        guard cleaned != raw, !cleaned.isEmpty, !spanEdited else { return }
+        let editor = Composer.current
+        let ns = editor.text as NSString
+        guard NSMaxRange(span) <= ns.length, ns.substring(with: span) == lead + raw + trail else { return }
+        let rawRange = NSRange(location: span.location + lead.utf16.count, length: raw.utf16.count)
+        let delta = cleaned.utf16.count - raw.utf16.count
+        let selection = editor.selectedRange
+        let caret = selection.location >= NSMaxRange(rawRange) ? selection.location + delta
+            : min(selection.location, rawRange.location + cleaned.utf16.count)
+        editor.replace(rawRange, with: cleaned, caret: caret, undoable: true)
+        span.length += delta
+        lastCleanup = Cleanup(raw: raw, cleaned: cleaned)
+    }
+
+    /// The last cleanup, while the box still shows it as written (for the composer's Undo).
+    var undoableCleanup: Cleanup? {
+        guard let cleanup = lastCleanup, !spanEdited, !isActive else { return nil }
+        let ns = ChatController.shared.input as NSString
+        guard NSMaxRange(span) <= ns.length,
+              ns.substring(with: span) == lead + cleanup.cleaned + trail else { return nil }
+        return cleanup
+    }
+
+    /// Put the raw words back.
+    func undoCleanup() {
+        guard let cleanup = undoableCleanup else { return }
+        let range = NSRange(location: span.location + lead.utf16.count, length: cleanup.cleaned.utf16.count)
+        Composer.current.replace(range, with: cleanup.raw, caret: nil, undoable: true)
+        span.length += cleanup.raw.utf16.count - cleanup.cleaned.utf16.count
+        lastCleanup = nil
+    }
+
+    /// Drop a running cleanup and forget the last one.
+    private func endCleanup() {
+        cleanupTask?.cancel()
+        cleanupTask = nil
+        isCleaning = false
+        lastCleanup = nil
+    }
+
+    private static func isSpace(_ c: unichar) -> Bool {
+        c == 0x20 || c == 0x09 || c == 0x0A || c == 0x0D
+    }
+
+    private static func isClosingPunctuation(_ c: unichar) -> Bool {
+        guard let scalar = Unicode.Scalar(c) else { return false }
+        return ".,!?;:)]}\"'".unicodeScalars.contains(scalar)
     }
 
     private func teardown() {

@@ -9,7 +9,8 @@ struct ChatView: View {
     @AppStorage("ui.resultTextScale") private var textScale = 1.0
     /// Observed so the header updates the moment "Use my own Hermes" is switched in Settings.
     @AppStorage(HermesAgent.useOwnHermesKey) private var useOwnHermes = false
-    @FocusState private var inputFocused: Bool
+    @State private var inputFocused = false
+    @State private var inputHeight = ComposerTextView.lineHeight
     @State private var isDropTarget = false
     /// The conversation is scrolled to the bottom (so new text is followed).
     @State private var followsLatest = true
@@ -465,36 +466,13 @@ struct ChatView: View {
 
                 micButton
 
-                TextField(voice.isActive ? "Listening…" : "Message…", text: Binding(
-                    get: { chat.active.input }, set: { chat.active.input = $0 }))
-                    .textFieldStyle(.plain)
-                    .lineLimit(1)
-                    .focused($inputFocused)
-                    .onSubmit { Task { await voice.sendEndingDictation() } }
+                ComposerTextView(text: Binding(get: { chat.active.input }, set: { chat.active.input = $0 }),
+                                 isFocused: $inputFocused, height: $inputHeight,
+                                 placeholder: voice.isActive ? "Listening…" : "Message…",
+                                 onKey: composerKey)
+                    .frame(height: inputHeight)
                     .onChange(of: chat.active.input) { _, _ in
                         if slashSelection >= slashMatches.count { slashSelection = 0 }
-                    }
-                    // Drive the slash palette from the keyboard; pass everything else through.
-                    .onKeyPress { press in
-                        if press.key == .escape, voice.isActive { voice.cancel(); return .handled }
-                        guard !slashMatches.isEmpty else { return .ignored }
-                        switch press.key {
-                        case .downArrow:
-                            slashSelection = min(slashSelection + 1, slashMatches.count - 1); return .handled
-                        case .upArrow:
-                            slashSelection = max(slashSelection - 1, 0); return .handled
-                        case .return:
-                            runSlash(slashMatches[min(slashSelection, slashMatches.count - 1)]); return .handled
-                        case .tab:
-                            // Complete to the full command name; keep the palette open so Enter runs it.
-                            chat.active.input = slashMatches[min(slashSelection, slashMatches.count - 1)].name
-                            slashSelection = 0
-                            return .handled
-                        case .escape:
-                            chat.active.input = ""; return .handled
-                        default:
-                            return .ignored
-                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 10).padding(.vertical, 8)
@@ -524,9 +502,50 @@ struct ChatView: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .transition(.opacity)
+            } else if voice.isCleaning {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Cleaning up what you said…")
+                }
+                .font(.caption).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let cleanup = voice.undoableCleanup {
+                HStack(spacing: 6) {
+                    Text("Cleaned up what you said.").foregroundStyle(.secondary)
+                    Button("Undo") { voice.undoCleanup() }
+                        .buttonStyle(.link)
+                }
+                .font(.caption)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .help("You said: \(cleanup.raw)")
             }
         }
         .padding(12)
+    }
+
+    /// Keys from the message box: Esc cancels dictation; with the slash palette open, the arrows,
+    /// Return, Tab and Esc drive it; otherwise Return sends.
+    private func composerKey(_ key: ComposerTextView.Key) -> Bool {
+        if key == .escape, voice.isActive { voice.cancel(); return true }
+        if !slashMatches.isEmpty {
+            switch key {
+            case .down:
+                slashSelection = min(slashSelection + 1, slashMatches.count - 1)
+            case .up:
+                slashSelection = max(slashSelection - 1, 0)
+            case .submit:
+                runSlash(slashMatches[min(slashSelection, slashMatches.count - 1)])
+            case .tab:
+                // Complete to the full command name; keep the palette open so Enter runs it.
+                chat.active.input = slashMatches[min(slashSelection, slashMatches.count - 1)].name
+                slashSelection = 0
+            case .escape:
+                chat.active.input = ""
+            }
+            return true
+        }
+        if key == .submit { Task { await voice.sendEndingDictation() }; return true }
+        return false
     }
 
     /// Dictate instead of typing. Tap to start, tap to stop; the text lands in the box for editing.

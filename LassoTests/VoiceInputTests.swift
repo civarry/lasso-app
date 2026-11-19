@@ -118,12 +118,17 @@ struct VoiceSessionTests {
         let saved = ChatController.shared.input
         defer { ChatController.shared.input = saved }
 
+        let savedView = Composer.textView
+        Composer.textView = nil
+        defer { Composer.textView = savedView }
+
         ChatController.shared.input = "typed after sending"
+        voice.beginSpan()
         voice.show("late words from the recognizer", session: voice.session - 1)
         #expect(ChatController.shared.input == "typed after sending")
 
         voice.show("words from the running dictation", session: voice.session)
-        #expect(ChatController.shared.input == "words from the running dictation")
+        #expect(ChatController.shared.input == "typed after sending words from the running dictation")
     }
 }
 
@@ -144,7 +149,7 @@ struct LiveDictationTests {
         try say.run(); say.waitUntilExit()
 
         let live = try await AppleLiveTranscription.make(localeID: "en_US")
-        try await live.start { _ in }
+        try await live.start { _, _ in }
         let audio = try AVAudioFile(forReading: file)
         let converter = BufferConverter(from: audio.processingFormat, to: live.format)
         while audio.framePosition < audio.length {

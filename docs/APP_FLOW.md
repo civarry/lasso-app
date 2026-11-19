@@ -478,9 +478,40 @@ Persistent top-right panel (⌥⌘A), independent of the capture overlay. The sy
 device date/time as background ("use it only when the question needs it"); calling it authoritative made
 a local Qwen3.5 answer greetings with the date (`ChatDatePromptLiveTests`). **Voice input** (`Chat/Voice/`):
 English speech-to-text on this Mac with Apple's `SpeechTranscriber`, no model or connection involved.
-The mic in the composer streams into the message box as you talk, stops itself ~2 s after you pause
-(`SpeechActivity`), and never sends; Send finishes the dictation first, and a session number keeps late
-recognizer updates out of the box. Needs the `com.apple.security.device.audio-input` entitlement. Resizable down to 340×360
+The mic in the composer streams into the message box at the caret (replacing a selection, like system
+dictation; text typed before or after is kept), stops itself ~2 s after you pause (`SpeechActivity`), and
+never sends; Send finishes the dictation first, and a session number keeps late recognizer updates out of
+the box. The box is an `NSTextView` (`ComposerTextView`): it grows to 6 lines then scrolls, keeps the
+newest word in view unless you scroll up, and greys the recognizer's unconfirmed words. **Cleanup**
+(Settings ▸ General ▸ Voice input, on by default): the raw words go in the moment you stop, then
+`DictationCleaner` runs plain-code rules (`DictationCleanup.tidy`: ums, accidental repeats) and one
+on-device Apple Foundation Models pass (`.permissiveContentTransformations`, greedy, plain-text reply,
+~220-word sentence chunks). Every model edit must pass `DictationCleanup.problems`: only hesitations,
+fillers, repeats and a/an/the/that may go; only articles and auxiliaries may be added; one-word grammar
+swaps within a budget; numbers, negations and a trailing "?" must survive. A failed check gets one retry
+told what was wrong, then that chunk keeps the speaker's words. The swap is one Cmd-Z step (a small
+"Undo" under the box does the same, its tooltip shows what you said), and it's skipped if you edited
+inside the dictation or sent the message first; a 15 s timeout leaves the raw text. Known v1 gap: a
+meaningful "like" may be dropped as a filler (pinned by `aMeaningfulLikeCanStillBeDropped`). Without
+Apple Intelligence only the rules run. Needs the `com.apple.security.device.audio-input` entitlement.
+
+```mermaid
+flowchart LR
+  MIC["mic tap"] --> ST["SpeechTranscriber (live)"]
+  ST -->|confirmed + grey tail| BOX["message box at caret"]
+  ST -->|stop / 2 s pause| RAW["raw text in box"]
+  RAW -->|cleanup off| DONE["you edit and send"]
+  RAW -->|cleanup on| R["tidy: ums, repeats"]
+  R -->|no Apple Intelligence| SW
+  R --> FM["on-device model, per chunk"]
+  FM --> CK{"word check"}
+  CK -->|fail| FM2["one retry with the reason"] --> CK2{"check"}
+  CK2 -->|fail| KEEP["chunk keeps your words"] --> SW
+  CK -->|pass| SW["swap in, if box unchanged"]
+  CK2 -->|pass| SW
+  SW --> DONE
+  SW -.->|Cmd-Z or Undo| RAW
+``` Resizable down to 340×360
 (set in the SwiftUI root and passed to the window via `sizingOptions = [.minSize]`; a plain
 `panel.minSize` is wiped by AppKit's first layout pass). Opening it, a result card, Lens or a capture
 goes through `AppActivation.bringForward`: the window becomes key *and main* before the app activates,
@@ -875,6 +906,12 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
   server. Measured on Hermes 0.21: first token ~1.9–3 s, ~21k-token system prompt per turn (prompt
   cache keeps repeat turns cheap), and `rm -r` auto-approved unless `approvals.mode: manual`, so Lasso
   refuses any Hermes not set to manual. Off in local-only mode.
+- **Dictation cleanup, and a message box that keeps up with you.** The one-line field hid the newest
+  dictated word; it is now an `NSTextView` that grows, follows the caret and greys unconfirmed words.
+  Dictation inserts at the caret instead of appending. After you stop, the raw words appear at once and
+  an on-device cleanup (rules plus one Foundation Models pass, checked word by word) replaces them when
+  ready, as one undoable step. Scoped down from a larger spec: no Verbatim mode (the setting turns
+  cleanup off instead), no cloud route, no custom vocabulary, `SpeechTranscriber` unchanged.
 - **The toolbar is the user's now, and every action has a hotkey.** From user feedback: "I only use
   select text and Ask AI, it always takes time to find those icons" and "a hotkey for each feature would
   be great". `ActionBarLayout` (pure, testable) puts the user's saved order first and `relevancePriority`

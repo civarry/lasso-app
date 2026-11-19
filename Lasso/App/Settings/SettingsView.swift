@@ -73,6 +73,7 @@ struct SettingsView: View {
         var localOnly = false
         var lensSearch = false
         var pretranslate = true
+        var voiceCleanup = true
         var betterTranslation = LLMTranslation.Mode.ask.rawValue
         var launchAtLogin = false
         var autoUpdateChecks = true
@@ -304,6 +305,7 @@ struct SettingsView: View {
         case .softwareUpdate: softwareUpdatePage
         case .shortcuts: shortcutsPage
         case .translation: translationPage
+        case .dictation: dictationPage
         case .languageModel: SettingsPage { languageSection }
         case .imageModel: SettingsPage { imageSection }
         case .embeddingModel: SettingsPage { embeddingSection }
@@ -347,6 +349,7 @@ struct SettingsView: View {
                 SettingsLinkRow(route: .shortcuts)
                 SettingsLinkRow(route: .translation,
                                 value: LLMTranslation.Mode(rawValue: draft.betterTranslation)?.label)
+                SettingsLinkRow(route: .dictation, value: draft.voiceCleanup ? "Clean up" : "As spoken")
             }
             SettingsCard(title: "") {
                 SettingsRow("Open at login") { SettingsSwitch(title: "", isOn: $draft.launchAtLogin) }
@@ -374,6 +377,16 @@ struct SettingsView: View {
                     Button("Check for Updates Now") { AppUpdater.shared.checkForUpdates() }
                         .disabled(draft.localOnly || !AppUpdater.shared.canCheck)
                 }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var dictationPage: some View {
+        Form {
+            Section {
+                Toggle("Clean up dictation", isOn: $draft.voiceCleanup)
+                caption("Removes ums, filler words and repeats after you stop talking. Undo puts back what you said.")
             }
         }
         .formStyle(.grouped)
@@ -2565,6 +2578,7 @@ struct SettingsView: View {
         d.localOnly = UserDefaults.standard.bool(forKey: "privacy.localOnly")
         d.lensSearch = UserDefaults.standard.bool(forKey: LensSearchAction.enabledKey)
         d.pretranslate = UserDefaults.standard.object(forKey: "translation.pretranslate") as? Bool ?? true
+        d.voiceCleanup = DictationCleaner.isEnabled
         d.betterTranslation = LLMTranslation.Mode.current.rawValue
         d.launchAtLogin = LoginItem.isEnabled
         d.autoUpdateChecks = AppUpdater.shared.automaticallyChecks
@@ -2737,6 +2751,7 @@ struct SettingsView: View {
         UserDefaults.standard.set(draft.localOnly, forKey: "privacy.localOnly")
         UserDefaults.standard.set(draft.lensSearch, forKey: LensSearchAction.enabledKey)
         UserDefaults.standard.set(draft.pretranslate, forKey: "translation.pretranslate")
+        UserDefaults.standard.set(draft.voiceCleanup, forKey: DictationCleaner.settingKey)
         UserDefaults.standard.set(draft.betterTranslation, forKey: LLMTranslation.Mode.key)
         UserDefaults.standard.set(draft.actionBarStyle, forKey: Self.actionBarStyleKey)
         UserDefaults.standard.set(draft.hideUnavailable, forKey: Self.hideUnavailableKey)
