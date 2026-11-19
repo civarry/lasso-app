@@ -579,6 +579,47 @@ flowchart LR
 
 ---
 
+### Hermes Agent (optional engine, `Intelligence/Hermes/HermesAgent.swift`, `Chat/HermesTurn.swift`)
+
+An alternative to the chat's own loop: picked under **Agent** in the chat's model menu, it hands each
+turn to the user's own Hermes Agent gateway (API server on, address + key in Settings ▸ Intelligence ▸
+Hermes Agent). Lasso never starts Hermes; it speaks plain HTTP to `/v1/runs`. Chosen over the gateway's
+OpenAI-compatible chat endpoint and over ACP after measuring all three (Hermes 0.21, 2026-11-19):
+`/v1/runs` is where a flagged command waits for the person, Stop kills a running tool in
+~0.3 s (a disconnect alone doesn't; over ACP a cancel mid-tool wedged the session), and it needs no
+child process. Per turn Lasso sends its own text history (`ChatController.hermesHistory`, so Edit /
+Regenerate / Delete work as with any model), a `session_id` per conversation and first message (Hermes
+reloads a session's stored history when a run brings none, so `/clear` must get a new one), attachments as
+JPEG data URLs, and short `instructions` saying screen text is content, not commands. Lasso's
+grounding, memory retrieval and image description are skipped: the agent has its own tools.
+**Approvals depend on Hermes's config:** only `approvals.mode: manual` sends every flagged command to
+Lasso; in Hermes's default `smart` mode a helper model approved `rm -r` without asking (caught by
+`HermesAgentLiveTests`). The API can't change that per run, so **Lasso refuses to send a turn** unless
+`HermesAgent.gate` allows it, checked before every turn because Hermes re-reads its config live: the
+profile's config.yaml (found from the profile name the server reports, for a gateway on this Mac) must
+say `manual`, read the way Hermes reads it (direct child of `approvals:`, last wins, YAML booleans). A
+local gateway whose config can't be found is refused outright; a remote one needs "Approvals are manual"
+confirmed in Settings, stored for that address only. Not detectable: a gateway started with `--yolo` /
+`HERMES_YOLO_MODE`, or a loopback address tunnelled to another machine. "Always allow" is never offered
+from chat. A turn stays bound to the conversation it started in. Stop (or a dropped stream) sends
+`/stop` unless the run already ended, including a run created while Stop was pressed. Off in local-only
+mode (Hermes uses its own cloud models and web tools), enforced in `HermesClient` on every request and
+mid-stream, not just the menu.
+
+```mermaid
+flowchart LR
+  Send["send()"] -->|"hermesActive"| HT["runHermesTurn"]
+  Send -->|"otherwise"| RT["runTurn (Lasso's own loop)"]
+  HT --> Start["POST /v1/runs<br/>input + conversation_history + session_id + instructions"]
+  Start --> SSE["GET /v1/runs/{id}/events"]
+  SSE -->|"message.delta"| Text["answer text"]
+  SSE -->|"tool.started / completed"| Steps["Activity steps"]
+  SSE -->|"approval.request"| Card["approval card<br/>Allow once · Allow in this chat · Deny"]
+  Card -->|"POST /approval"| SSE
+  SSE -->|"run.completed → final output"| Done["finishStreaming"]
+  Stop["Stop"] -->|"cancel consumer → POST /stop"| SSE
+```
+
 ## 8. Connectors, web grounding & privacy
 
 Reverse-image via a keyed API was **removed** — Google Lens (zero-setup, opt-in) is the only
@@ -690,6 +731,12 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Hermes Agent as an optional chat engine (experimental).** Instead of building the plan→act→check
+  loop first, chat can hand turns to the user's own Hermes Agent through its API server's `/v1/runs`.
+  Tool calls show as Activity steps, flagged commands get an approval card, Stop stops the run on the
+  server. Measured on Hermes 0.21: first token ~1.9–3 s, ~21k-token system prompt per turn (prompt
+  cache keeps repeat turns cheap), and `rm -r` auto-approved unless `approvals.mode: manual`, so Lasso
+  refuses any Hermes not set to manual. Off in local-only mode.
 - **The toolbar is the user's now, and every action has a hotkey.** From user feedback: "I only use
   select text and Ask AI, it always takes time to find those icons" and "a hotkey for each feature would
   be great". `ActionBarLayout` (pure, testable) puts the user's saved order first and `relevancePriority`

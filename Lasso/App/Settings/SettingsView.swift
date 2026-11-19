@@ -49,6 +49,9 @@ struct SettingsView: View {
         var anthropicBaseURL = "https://api.anthropic.com"
         var anthropicModel = "claude-3-5-haiku-latest"
         var anthropicKey = ""
+        var hermesBaseURL = ""
+        var hermesKey = ""
+        var hermesApprovalsConfirmed = false
         // Independent image (vision) provider.
         var visionEngine: VisionEngine = .matchText
         var visionAnthropicBaseURL = "https://api.anthropic.com"
@@ -94,6 +97,8 @@ struct SettingsView: View {
     @State private var embeddingStatus: (ok: Bool, text: String)?
     @State private var embeddingStatusTask: Task<Void, Never>?
     @State private var draft = Draft()
+    private enum HermesTest: Equatable { case idle, testing, ok(String, HermesAgent.ApprovalMode), failed(String) }
+    @State private var hermesTest: HermesTest = .idle
     @State private var saved = Draft()
     @State private var availableModels: [String] = []
     @State private var modelsLoaded = false
@@ -468,6 +473,7 @@ struct SettingsView: View {
                 embeddingSection
                 // Ollama plumbing shown once, only when text OR image actually uses Ollama.
                 if usesOllama { ollamaSection }
+                hermesSection
             }
             .padding(SettingsMetrics.pagePadding)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -781,6 +787,84 @@ struct SettingsView: View {
                     SettingsSwitch(title: "Start with Lasso", isOn: $draft.ollamaAutoStart)
                 }
             }
+        }
+    }
+
+    /// Hermes Agent: an optional chat engine the user runs themselves (`HermesAgent`). The address and
+    /// key are all Lasso needs; which model and tools the agent uses is set in Hermes.
+    private var hermesSection: some View {
+        SettingsCard(title: "Hermes Agent",
+                     footnote: draft.localOnly
+                         ? "Off in local-only mode: Hermes uses its own cloud models and web tools."
+                         : "Optional. Lets chat hand turns to your Hermes Agent (pick it in the chat's model menu). "
+                           + "Run `hermes gateway` with API_SERVER_ENABLED=true and API_SERVER_KEY set in your "
+                           + "Hermes profile's .env. Hermes's own settings decide its model and tools; Lasso asks "
+                           + "you before any command Hermes flags as risky.") {
+            SettingsRow("Address") {
+                TextField("", text: $draft.hermesBaseURL, prompt: Text(HermesAgent.defaultBaseURL))
+                    .textFieldStyle(.roundedBorder)
+                    .settingsFieldWidth()
+            }
+            SettingsRow("API key", caption: "API_SERVER_KEY from Hermes's .env") {
+                SettingsKeyField(text: $draft.hermesKey, placeholder: "API_SERVER_KEY",
+                                 onClear: { draft.hermesKey = "" })
+                    .settingsFieldWidth()
+            }
+            .onChange(of: draft.hermesKey) { _, _ in hermesTest = .idle }
+            .onChange(of: draft.hermesBaseURL) { _, address in
+                hermesTest = .idle
+                // A confirmation is for one machine: editing the address away from the saved one clears it.
+                if address != saved.hermesBaseURL { draft.hermesApprovalsConfirmed = false }
+            }
+            .onChange(of: draft.localOnly) { _, _ in hermesTest = .idle }
+            if !hermesAddressIsLocal {
+                SettingsRow("Approvals are manual",
+                            caption: "Lasso can't read the config of a Hermes on another machine. Turn this on "
+                                + "once approvals.mode: manual is set there; Lasso won't send turns until then.") {
+                    SettingsSwitch(title: "Approvals are manual", isOn: $draft.hermesApprovalsConfirmed)
+                }
+            }
+            SettingsRow("Connection", caption: hermesTestCaption) {
+                Button {
+                    hermesTest = .testing
+                    let address = draft.hermesBaseURL.isEmpty ? HermesAgent.defaultBaseURL : draft.hermesBaseURL
+                    let client = HermesClient(baseURLString: address, apiKey: draft.hermesKey)
+                    Task {
+                        guard let client else { hermesTest = .failed("Enter the address and API key."); return }
+                        do {
+                            let profile = try await client.check()
+                            hermesTest = .ok(profile, HermesAgent.approvalMode(profile: profile, baseURL: client.baseURL))
+                        }
+                        catch { hermesTest = .failed(error.localizedDescription) }
+                    }
+                } label: {
+                    if hermesTest == .testing { ProgressView().controlSize(.small) } else { Text("Test") }
+                }
+                .buttonStyle(.bordered)
+                // Test reaches the address typed above: never in local-only mode.
+                .disabled(draft.localOnly || PrivacyMode.localOnly || draft.hermesKey.isEmpty || hermesTest == .testing)
+            }
+        }
+    }
+
+    private var hermesAddressIsLocal: Bool {
+        let address = draft.hermesBaseURL.isEmpty ? HermesAgent.defaultBaseURL : draft.hermesBaseURL
+        let host = (URL(string: address.trimmingCharacters(in: .whitespaces))?.host ?? "").lowercased()
+        return ["127.0.0.1", "localhost", "::1"].contains(host)
+    }
+
+    private var hermesTestCaption: String {
+        switch hermesTest {
+        case .idle: "Not tested"
+        case .testing: "Testing…"
+        case .ok(let model, let mode):
+            switch HermesAgent.gate(mode, local: hermesAddressIsLocal, confirmed: draft.hermesApprovalsConfirmed) {
+            case .allowed: "Connected · profile \(model) · asks you before risky commands"
+            case .blocked(let reason):
+                "Connected · profile \(model). " + reason.replacingOccurrences(of: "```yaml\n", with: "")
+                    .replacingOccurrences(of: "\n```", with: "").replacingOccurrences(of: "\n", with: " ")
+            }
+        case .failed(let message): message
         }
     }
 
@@ -2201,6 +2285,9 @@ struct SettingsView: View {
         d.anthropicBaseURL = intelligence.anthropicBaseURL
         d.anthropicModel = intelligence.anthropicModel
         d.anthropicKey = Keychain.getMigrating("anthropic.apiKey", legacyDefaultsKey: "anthropic.apiKey") ?? ""
+        d.hermesBaseURL = UserDefaults.standard.string(forKey: HermesAgent.baseURLKey) ?? ""
+        d.hermesKey = HermesAgent.apiKey
+        d.hermesApprovalsConfirmed = HermesAgent.client().map { HermesAgent.approvalsConfirmed(for: $0.baseURL) } ?? false
         d.visionEngine = intelligence.visionEngine
         d.visionAnthropicBaseURL = intelligence.visionAnthropicBaseURL
         d.visionAnthropicModel = intelligence.visionAnthropicModel
@@ -2320,6 +2407,15 @@ struct SettingsView: View {
         intelligence.anthropicBaseURL = draft.anthropicBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         intelligence.anthropicModel = draft.anthropicModel
         Keychain.set(draft.anthropicKey, for: "anthropic.apiKey")
+        UserDefaults.standard.set(draft.hermesBaseURL.trimmingCharacters(in: .whitespacesAndNewlines),
+                                  forKey: HermesAgent.baseURLKey)
+        HermesAgent.setAPIKey(draft.hermesKey)
+        // The confirmation belongs to the address it was given for, and only to one Lasso can't check.
+        if draft.hermesApprovalsConfirmed, !hermesAddressIsLocal, let client = HermesAgent.client() {
+            UserDefaults.standard.set(client.baseURL.absoluteString, forKey: HermesAgent.approvalsConfirmedKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: HermesAgent.approvalsConfirmedKey)
+        }
         intelligence.visionEngine = draft.visionEngine
         intelligence.visionAnthropicBaseURL = draft.visionAnthropicBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         intelligence.visionAnthropicModel = draft.visionAnthropicModel

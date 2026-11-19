@@ -202,7 +202,15 @@ struct ChatView: View {
                     }
                 }
             }
-            if chat.imageInputAvailable {
+            if HermesAgent.isAvailable {
+                Section("Agent") {
+                    Button { chat.hermesSelected.toggle() } label: {
+                        Label("Hermes Agent", systemImage: chat.hermesActive ? "checkmark" : "point.3.connected.trianglepath.dotted")
+                    }
+                    .help("Hand chat turns to your Hermes Agent: it plans, uses its own tools, and asks before risky commands.")
+                }
+            }
+            if chat.imageInputAvailable, !chat.hermesActive {
                 Section("Image model") {
                     Text(Self.shortModel(intelligence.imageEngineLabel))   // read-only — change in Settings
                 }
@@ -213,8 +221,9 @@ struct ChatView: View {
             Button("Open Intelligence Settings…") { openSettings() }
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: textIcon).font(.system(size: 9))
-                Text(Self.friendlyModel(intelligence.textEngineLabel))
+                Image(systemName: chat.hermesActive ? "point.3.connected.trianglepath.dotted" : textIcon)
+                    .font(.system(size: 9))
+                Text(chat.hermesActive ? "Hermes Agent" : Self.friendlyModel(intelligence.textEngineLabel))
                     .font(.caption).lineLimit(1).truncationMode(.middle)
                 Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold))
             }
@@ -657,7 +666,7 @@ struct ChatView: View {
 
 // MARK: - Message bubble
 
-private struct MessageBubble: View {
+struct MessageBubble: View {
     let message: ChatMessage
     let fontSize: CGFloat
 
@@ -820,6 +829,9 @@ private struct MessageBubble: View {
                             .foregroundStyle(message.isError ? Color.orange : Color.primary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    if let approval = message.approval {
+                        ApprovalCard(approval: approval) { chat.respondToApproval(message.id, choice: $0) }
+                    }
                     if !message.isStreaming, !message.text.isEmpty || !message.attachments.isEmpty {
                         actionsRow
                     }
@@ -833,6 +845,53 @@ private struct MessageBubble: View {
         }
     }
 
+}
+
+// MARK: - Hermes approval
+
+/// A command Hermes Agent flagged and is holding until the user answers. Hermes denies it by itself
+/// after five minutes, so ignoring the card is safe.
+private struct ApprovalCard: View {
+    let approval: HermesApproval
+    let answer: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Hermes wants to run a command", systemImage: "hand.raised.fill")
+                .font(.caption).fontWeight(.semibold)
+                .foregroundStyle(.orange)
+            if let command = approval.command {
+                Text(command)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .lineLimit(6)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+            }
+            if let reason = approval.reason {
+                Text("Flagged: \(reason)").font(.caption2).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 8) {
+                ForEach(approval.offered, id: \.self) { choice in
+                    if choice == "deny" {
+                        Button(HermesApproval.label(for: choice), role: .destructive) { answer(choice) }
+                            .buttonStyle(.bordered)
+                    } else if choice == "once" {
+                        Button(HermesApproval.label(for: choice)) { answer(choice) }
+                            .buttonStyle(.borderedProminent)
+                    } else {
+                        Button(HermesApproval.label(for: choice)) { answer(choice) }
+                            .buttonStyle(.bordered)
+                    }
+                }
+            }
+            .controlSize(.small)
+        }
+        .padding(10)
+        .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.orange.opacity(0.35)))
+    }
 }
 
 // MARK: - Activity trace ("Thought for Xs" + steps)
