@@ -3,7 +3,7 @@ import SwiftUI
 /// The menu shown from the status-bar icon. Left-click opens this menu; "Capture Now" and the
 /// global hotkey both start a session (Spec §5).
 struct MenuBarController: View {
-    @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Button("Capture Now") {
@@ -17,8 +17,7 @@ struct MenuBarController: View {
         Divider()
 
         Button("Settings…") {
-            NSApp.activate(ignoringOtherApps: true)
-            openSettings()
+            SettingsWindow.open(with: openWindow)
         }
         .keyboardShortcut(",", modifiers: .command)
 

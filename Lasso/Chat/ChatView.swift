@@ -12,7 +12,7 @@ struct ChatView: View {
     @FocusState private var inputFocused: Bool
     @State private var isDropTarget = false
     @State private var slashSelection = 0
-    @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
     private var voice = VoiceInputController.shared
 
     var body: some View {
@@ -233,7 +233,7 @@ struct ChatView: View {
             Button("Open Model Settings…") {
                 UserDefaults.standard.set(SettingsView.Pane.models.rawValue, forKey: SettingsView.paneKey)
                 UserDefaults.standard.set(SettingsRoute.languageModel.rawValue, forKey: SettingsView.routeKey)
-                openSettings()
+                SettingsWindow.open(with: openWindow)
             }
         } label: {
             HStack(spacing: 4) {
