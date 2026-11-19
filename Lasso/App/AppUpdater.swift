@@ -38,7 +38,9 @@ final class AppUpdater: NSObject {
 
     /// Called once at launch.
     func start() {
-        guard controller == nil else { return }
+        // Not inside the unit-test host: no feed requests, no installs during a test run.
+        guard controller == nil,
+              ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
         controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self,
                                                   userDriverDelegate: nil)
     }
