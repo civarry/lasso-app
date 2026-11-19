@@ -8,6 +8,16 @@ import OSLog
 /// Nothing leaves the Mac. Every path ends with text: when the model is off, missing, refuses, errors
 /// or fails the check (after one retry), you get the rules-only result, which is your own words.
 enum DictationCleaner {
+    /// Greedy decoding. The macOS 27 SDK (Xcode 27, Swift 6.4) renamed the argument; CI builds with
+    /// Xcode 26.6, so both spellings are kept.
+    private static var greedy: GenerationOptions {
+        #if compiler(>=6.4)
+        GenerationOptions(samplingMode: .greedy)
+        #else
+        GenerationOptions(sampling: .greedy)
+        #endif
+    }
+
     enum Route: String, Sendable { case rulesOnly, model, modelRejected }
 
     struct Outcome: Sendable {
@@ -87,7 +97,7 @@ enum DictationCleaner {
             }
             do {
                 let session = LanguageModelSession(model: model, instructions: instructions)
-                let reply = try await session.respond(to: prompt, options: GenerationOptions(samplingMode: .greedy))
+                let reply = try await session.respond(to: prompt, options: Self.greedy)
                 let edited = polish(reply.content, like: chunk)
                 feedback = DictationCleanup.problems(edited: edited, original: chunk)
                 if feedback.isEmpty { return edited }
