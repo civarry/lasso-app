@@ -14,14 +14,17 @@ struct Attachment: Identifiable, @unchecked Sendable {
     var caption: String?
     /// On-screen text recognized in the image (generated once, cached).
     var ocr: String?
+    /// The file it came from, when an Agent reply showed an image from this Mac (opened on click).
+    var sourcePath: String?
 
     /// `id` is restorable so a persisted attachment reloads matched to its thumbnail file. The default
     /// keeps every existing `Attachment(image:)` call site working unchanged.
-    init(id: UUID = UUID(), image: CGImage, caption: String? = nil, ocr: String? = nil) {
+    init(id: UUID = UUID(), image: CGImage, caption: String? = nil, ocr: String? = nil, sourcePath: String? = nil) {
         self.id = id
         self.image = image
         self.caption = caption
         self.ocr = ocr
+        self.sourcePath = sourcePath
     }
 }
 
@@ -38,6 +41,8 @@ struct ChatMessage: Identifiable, @unchecked Sendable {
     /// What's shown in the bubble (the user's typed text).
     var text: String
     var attachments: [Attachment] = []
+    /// Non-image files attached to a user message (see `FileAttachment`).
+    var files: [FileAttachment] = []
     var isStreaming: Bool = false
     /// Set on an assistant message when the request failed, so the bubble can style it as an error.
     var isError: Bool = false

@@ -63,7 +63,8 @@ confidence rating. Repeat lookups are instant.
 
 <p align="center"><img src="screenshots/chat.png" alt="A persistent chat panel that remembers the thread and grounds answers with sources"></p>
 
-A persistent chat panel that remembers the thread, takes a dropped image, and
+A persistent chat panel that remembers the thread, takes any file you attach or
+drop (images, text, PDFs, code; the model gets what it can use), and
 grounds its answers with real sources when you want. Click the mic to talk
 instead of typing: English speech recognition on your Mac, with words appearing
 at the cursor as you speak. When you stop, Lasso tidies what you said on your

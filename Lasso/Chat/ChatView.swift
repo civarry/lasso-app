@@ -1,11 +1,14 @@
 import KeyboardShortcuts
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The Chat panel UI: a scrollable conversation with a composer. Renders `ChatController.shared`.
 struct ChatView: View {
     @Bindable private var chat = ChatController.shared
     @Bindable private var intelligence = IntelligenceCoordinator.shared
     @AppStorage("ui.resultTextScale") private var textScale = 1.0
+    /// Observed so the header updates the moment "Use my own Hermes" is switched in Settings.
+    @AppStorage(HermesAgent.useOwnHermesKey) private var useOwnHermes = false
     @FocusState private var inputFocused: Bool
     @State private var isDropTarget = false
     @State private var slashSelection = 0
@@ -38,7 +41,17 @@ struct ChatView: View {
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        guard chat.imageInputAvailable else { return false }
+        // Files from Finder: any type (`attachFile` sorts images from the rest).
+        let fileProviders = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+        if !fileProviders.isEmpty {
+            for provider in fileProviders {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    Task { @MainActor in chat.attachFile(url) }
+                }
+            }
+            return true
+        }
         guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSImage.self) })
             ?? providers.first else { return false }
         _ = provider.loadObject(ofClass: NSImage.self) { object, _ in
@@ -151,8 +164,15 @@ struct ChatView: View {
     private var modelChip: some View {
         Menu {
             // Full model string lives here (moved out of the header, which shows a friendly name).
-            Text(intelligence.textEngineLabel)
-            Section("Language model") {
+            if agentUsesOwnHermes {
+                // Agent turns go to the user's Hermes and think with its model; Lasso's choice below
+                // only applies with Agent off. Saying so is the whole point of this branch.
+                Text("Agent: \(HermesAgent.ownHermesLabel)")
+                Text("Its model is set in your Hermes.")
+            } else {
+                Text(intelligence.textEngineLabel)
+            }
+            Section(agentUsesOwnHermes ? "With Agent off" : "Language model") {
                 Button { chat.selectTextModel(.onDevice) } label: {
                     Label("Apple Intelligence",
                           systemImage: chat.isCurrentTextModel(.onDevice) ? "checkmark" : "cpu")
@@ -213,8 +233,9 @@ struct ChatView: View {
             Button("Open Intelligence Settings…") { openSettings() }
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: textIcon).font(.system(size: 9))
-                Text(Self.friendlyModel(intelligence.textEngineLabel))
+                Image(systemName: agentUsesOwnHermes ? "point.3.connected.trianglepath.dotted" : textIcon)
+                    .font(.system(size: 9))
+                Text(agentUsesOwnHermes ? "Your Hermes" : Self.friendlyModel(intelligence.textEngineLabel))
                     .font(.caption).lineLimit(1).truncationMode(.middle)
                 Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold))
             }
@@ -228,8 +249,11 @@ struct ChatView: View {
         // Its natural width, so it sits against the close button. (A maxWidth frame here made the
         // pop-up take the whole 170pt and float the chip left of the ✕.)
         .fixedSize()
-        .help("Switch model")
+        .help(agentUsesOwnHermes ? "Agent replies come from your Hermes and its model" : "Switch model")
     }
+
+    /// Agent is on and pointed at the user's own Hermes (Settings ▸ Intelligence ▸ Agent).
+    private var agentUsesOwnHermes: Bool { chat.hermesActive && useOwnHermes }
 
     /// "Groq · openai/gpt-oss-20b" → "gpt-oss-20b" for the compact chip.
     private static func shortModel(_ label: String) -> String {
@@ -338,7 +362,7 @@ struct ChatView: View {
     private var composer: some View {
         VStack(spacing: 8) {
             // Seeded capture context + pending image attachment chips.
-            if chat.seededContext != nil || !chat.pendingAttachments.isEmpty {
+            if chat.seededContext != nil || !chat.pendingAttachments.isEmpty || !chat.pendingFiles.isEmpty {
                 HStack(spacing: 8) {
                     ForEach(chat.pendingAttachments) { att in
                         // Delete button lives *inside* the 44×44 frame (not offset outside), so it's
@@ -358,6 +382,9 @@ struct ChatView: View {
                                 .buttonStyle(.plain)
                             }
                     }
+                    ForEach(chat.pendingFiles) { file in
+                        FileChip(file: file) { chat.removeFile(file.id) }
+                    }
                     if let context = chat.seededContext {
                         contextChip(context)
                     }
@@ -369,12 +396,9 @@ struct ChatView: View {
             if inputFocused, !slashMatches.isEmpty { slashPalette }
 
             HStack(alignment: .bottom, spacing: 8) {
-                Button { attachImage() } label: { Image(systemName: "photo.badge.plus") }
+                Button { attachImage() } label: { Image(systemName: "paperclip") }
                     .buttonStyle(IconButtonStyle())
-                    .disabled(!chat.imageInputAvailable)
-                    .help(chat.imageInputAvailable
-                          ? "Attach an image — or paste (⌘V) or drag one onto the panel"
-                          : "Attach an image — needs a multimodal or Image model (Settings ▸ Intelligence)")
+                    .help(chat.imageHandlingNote)
 
                 Button { chat.webSearchOn.toggle() } label: { Image(systemName: "globe") }
                     .buttonStyle(IconButtonStyle())
@@ -634,6 +658,7 @@ struct ChatView: View {
 
     private var canSend: Bool {
         !chat.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !chat.pendingAttachments.isEmpty
+            || !chat.pendingFiles.isEmpty
     }
 
     private var engineName: String {
@@ -656,18 +681,57 @@ struct ChatView: View {
         }
     }
 
+    /// Any file: images go in as images, everything else as files; the turn decides how each is used.
     private func attachImage() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK else { return }
-        for url in panel.urls {
-            if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
-                chat.attach(image)
+        for url in panel.urls { chat.attachFile(url) }
+    }
+}
+
+// MARK: - File chip
+
+/// A non-image attachment: type icon, name and size. In the composer it has a remove button; in a sent
+/// message a click shows the file in Finder (if it's still there).
+struct FileChip: View {
+    let file: FileAttachment
+    let onRemove: (() -> Void)?
+
+    private var icon: String {
+        switch file.kind {
+        case .pdf: "doc.richtext"
+        case .text: "doc.text"
+        case .other: "doc"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(file.name).font(.caption).fontWeight(.medium).lineLimit(1).truncationMode(.middle)
+                Text("\(file.typeName) · \(file.sizeText)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            if let onRemove {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark.circle.fill").font(.caption).foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Remove")
             }
         }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .frame(maxWidth: 220, alignment: .leading)
+        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.10)))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard onRemove == nil, FileManager.default.fileExists(atPath: file.path) else { return }
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: file.path)])
+        }
+        .help(onRemove == nil ? "Show in Finder" : file.path)
     }
 }
 
@@ -784,6 +848,19 @@ struct MessageBubble: View {
             style: .continuous)
     }
 
+    /// An image in a reply, at reading size; a click opens the file it came from (if it's still there).
+    private func replyImage(_ att: Attachment) -> some View {
+        let file = att.sourcePath.flatMap { FileManager.default.fileExists(atPath: $0) ? URL(fileURLWithPath: $0) : nil }
+        return Image(decorative: att.image, scale: 1)
+            .resizable().scaledToFit()
+            .frame(maxWidth: .infinity, maxHeight: 280, alignment: .leading)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.10)))
+            .onTapGesture { if let file { NSWorkspace.shared.open(file) } }
+            .help(file.map { "Open \($0.lastPathComponent)" } ?? "")
+            .accessibilityLabel(Text("Image"))
+    }
+
     /// Compact attachment card (thumbnail + label + dimensions) — replaces shrinking a whole screenshot
     /// into an unreadable bubble.
     private func attachmentCard(_ att: Attachment) -> some View {
@@ -812,9 +889,10 @@ struct MessageBubble: View {
         HStack(spacing: 0) {
             if isUser { Spacer(minLength: 40) }
             VStack(alignment: .leading, spacing: 6) {
-                if !message.attachments.isEmpty {
+                if isUser, !message.attachments.isEmpty || !message.files.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(message.attachments) { attachmentCard($0) }
+                        ForEach(message.files) { FileChip(file: $0, onRemove: nil) }
                     }
                 }
                 if editing {
@@ -835,6 +913,10 @@ struct MessageBubble: View {
                                      streaming: message.isStreaming)
                             .foregroundStyle(message.isError ? Color.orange : Color.primary)
                             .fixedSize(horizontal: false, vertical: true)
+                    }
+                    // Images the agent showed (`MEDIA:` files on this Mac): big enough to see, under the text.
+                    if !isUser {
+                        ForEach(message.attachments) { replyImage($0) }
                     }
                     if let notice = message.notice {
                         Label(notice, systemImage: "exclamationmark.triangle.fill")

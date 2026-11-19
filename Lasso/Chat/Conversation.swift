@@ -60,6 +60,7 @@ final class Conversation: Identifiable {
     var messages: [ChatMessage] = []
     var input = ""
     var pendingAttachments: [Attachment] = []
+    var pendingFiles: [FileAttachment] = []
     var seededContext: String?
     var isStreaming = false
     /// Which send owns `isStreaming`. A stopped Hermes turn can take a few seconds to wind down after
