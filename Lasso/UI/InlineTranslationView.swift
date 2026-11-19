@@ -95,6 +95,8 @@ struct InlineTranslationView: View {
         .onDisappear { modelTask?.cancel() }
         .onChange(of: target) { _, _ in restart() }
         .onChange(of: sourceOverride) { _, _ in restart() }
+        // The pre-translation's last group can land after this view took over: show it at once.
+        .onChange(of: CaptureCoordinator.shared.pretranslated) { _, cached in adoptPretranslated(cached) }
         .translationTask(config) { @Sendable session in
             let work = await MainActor.run { pass1Work() }
             guard let work else { return }
@@ -516,10 +518,14 @@ struct InlineTranslationView: View {
         samplePlateColors()
         // Reuse the background pre-translation (pass 1 only) for whatever blocks it covered.
         let shared = CaptureCoordinator.shared
-        if sourceOverride == nil, shared.pretranslatedTarget == target {
-            pass1 = shared.pretranslated
-        }
+        adoptPretranslated(shared.pretranslated)
         restart(keepingPass1: true)
+    }
+
+    /// Background pre-translations for blocks pass 1 hasn't filled, when they're for what's on screen.
+    private func adoptPretranslated(_ cached: [UUID: String]) {
+        guard sourceOverride == nil, CaptureCoordinator.shared.pretranslatedTarget == target else { return }
+        for (id, text) in cached where pass1[id] == nil { pass1[id] = text }
     }
 
     /// (Re)run pass 1 for every source language, then the model pass per the setting.
@@ -527,7 +533,10 @@ struct InlineTranslationView: View {
         generation += 1
         modelTask?.cancel()
         modelTask = nil
-        if !keepingPass1 { pass1 = [:] }
+        if !keepingPass1 {
+            pass1 = [:]
+            adoptPretranslated(CaptureCoordinator.shared.pretranslated)   // e.g. switched back to it
+        }
         pass1Done = false
         pass1Duration = nil
         pass1Started = Date()

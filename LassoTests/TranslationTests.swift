@@ -206,6 +206,20 @@ struct TranslationTests {
         #expect(groups[0].blocks.map(\.text) == ["Hello there, friend.", "こんにちは"])   // letterless stays
     }
 
+    // MARK: Pass 1 goes to Apple in small groups
+
+    @Test func passPlanTranslatesEachTextOnceInSmallGroups() {
+        let texts = ["Small", "Large", "Small", "Tea", "Coffee", "Large", "Water"]
+        let blocks = texts.map { block($0, lang: "es") }
+        let plan = BlockTranslationPass.plan(blocks)
+        #expect(plan.map { $0.map(\.text) } == [["Small", "Large", "Tea"], ["Coffee", "Water"]])
+        #expect(plan.allSatisfy { $0.count <= BlockTranslationPass.groupSize })
+        let small = plan[0][0], large = plan[0][1]
+        #expect(small.ids == [blocks[0].id, blocks[2].id])
+        #expect(large.ids == [blocks[1].id, blocks[5].id])
+        #expect(BlockTranslationPass.plan([]).isEmpty)
+    }
+
     // MARK: 3. Source label (P2)
 
     @Test func sourceLabelSaysWhatWasFound() {

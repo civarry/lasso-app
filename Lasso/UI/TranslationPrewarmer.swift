@@ -71,57 +71,90 @@ struct TranslationPrewarmer: View {
         config = TranslationSession.Configuration(source: first.source, target: systemTarget)
     }
 
+    /// Each block lands in the coordinator's cache the moment it's translated, not when the whole
+    /// selection is done: tapping Translate cancels this view, and whatever it finished by then is
+    /// kept instead of being translated again.
     nonisolated private func speculativelyTranslate(with session: TranslationSession,
                                                     target: Locale.Language,
                                                     blocks: [TextBlock]) async {
         let started = Date()
-        let mapped = Pass1Results()
+        // Back from the overlay to the bar, this view runs again: keep what's cached for this target.
+        let todo = await MainActor.run { () -> [TextBlock] in
+            let shared = CaptureCoordinator.shared
+            if shared.pretranslatedTarget != target {
+                shared.pretranslated = [:]
+                shared.pretranslatedDuration = nil
+                shared.pretranslatedTarget = target
+            }
+            return blocks.filter { shared.pretranslated[$0.id] == nil }
+        }
+        guard !todo.isEmpty else { return }
         do {
-            try await BlockTranslationPass.run(blocks, session: session) { ids, text in
-                if Task.isCancelled { return }   // user opened the overlay or re-selected
-                await mapped.set(ids, text)
+            try await BlockTranslationPass.run(todo, session: session) { ids, text in
+                // Still written after a cancel: it's a correct translation for this target, and the
+                // overlay picks it up.
+                await MainActor.run {
+                    let shared = CaptureCoordinator.shared
+                    guard shared.pretranslatedTarget == target else { return }
+                    for id in ids { shared.pretranslated[id] = text }
+                }
             }
         } catch {
             return
         }
         if Task.isCancelled { return }
         let duration = Date().timeIntervalSince(started)
-        let cached = await mapped.values
-        await MainActor.run {
-            CaptureCoordinator.shared.pretranslated = cached
-            CaptureCoordinator.shared.pretranslatedTarget = target
-            CaptureCoordinator.shared.pretranslatedDuration = duration
-        }
+        await MainActor.run { CaptureCoordinator.shared.pretranslatedDuration = duration }
     }
-}
-
-private actor Pass1Results {
-    var values: [UUID: String] = [:]
-    func set(_ ids: [UUID], _ text: String) { for id in ids { values[id] = text } }
 }
 
 /// Pass 1: Apple's Translation framework over blocks, all from the session's one source language.
 /// Identical block texts are translated once. `apply` gets every block id sharing a result.
+///
+/// Work goes to Apple a few blocks at a time. Its translator does one request after another and a
+/// batch handed over can't be taken back: cancelling a 32-block batch left the next request waiting
+/// 6.1 s for its first line on an M4 Pro, against 0.5 s when the cancelled work went in groups of
+/// three (0.27 s with nothing ahead). So a cancel (Translate tapped mid pre-translation, a language
+/// changed) frees the translator within one small group. Throughput cost: about 5%.
 enum BlockTranslationPass {
-    static func run(_ blocks: [TextBlock], session: TranslationSession,
-                    apply: @Sendable ([UUID], String) async -> Void) async throws {
-        var groups: [String: [UUID]] = [:]
+    struct Request: Equatable, Sendable {
+        let text: String
+        let ids: [UUID]
+    }
+
+    /// Blocks handed to Apple at once.
+    static let groupSize = 3
+
+    /// One request per distinct text, in first-seen order, with every block id that shares it,
+    /// split into groups of `size`.
+    static func plan(_ blocks: [TextBlock], size: Int = groupSize) -> [[Request]] {
+        var ids: [String: [UUID]] = [:]
         var order: [String] = []
         for block in blocks {
-            if groups[block.text] == nil { order.append(block.text) }
-            groups[block.text, default: []].append(block.id)
+            if ids[block.text] == nil { order.append(block.text) }
+            ids[block.text, default: []].append(block.id)
         }
-        var idsForRequest: [String: [UUID]] = [:]
-        var requests: [TranslationSession.Request] = []
-        for text in order {
-            let cid = UUID().uuidString
-            idsForRequest[cid] = groups[text]
-            requests.append(.init(sourceText: text, clientIdentifier: cid))
+        let requests = order.map { Request(text: $0, ids: ids[$0] ?? []) }
+        let step = max(size, 1)
+        return stride(from: 0, to: requests.count, by: step).map {
+            Array(requests[$0..<min($0 + step, requests.count)])
         }
-        guard !requests.isEmpty else { return }
-        for try await response in session.translate(batch: requests) {
-            guard let cid = response.clientIdentifier, let ids = idsForRequest[cid] else { continue }
-            await apply(ids, response.targetText)
+    }
+
+    static func run(_ blocks: [TextBlock], session: TranslationSession,
+                    apply: @Sendable ([UUID], String) async -> Void) async throws {
+        for group in plan(blocks) {
+            if Task.isCancelled { return }
+            var idsForRequest: [String: [UUID]] = [:]
+            let requests = group.map { request -> TranslationSession.Request in
+                let cid = UUID().uuidString
+                idsForRequest[cid] = request.ids
+                return .init(sourceText: request.text, clientIdentifier: cid)
+            }
+            for try await response in session.translate(batch: requests) {
+                guard let cid = response.clientIdentifier, let ids = idsForRequest[cid] else { continue }
+                await apply(ids, response.targetText)
+            }
         }
     }
 }

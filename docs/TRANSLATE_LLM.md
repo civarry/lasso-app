@@ -15,7 +15,7 @@ Read these four files before changing anything:
 | `Lasso/Actions/TranslateAction.swift` | Returns `.inlineTranslate` when OCR produced line geometry. |
 | `Lasso/UI/InlineTranslationView.swift` | The whole feature: overlay, reading view, language bar, translation. |
 | `Lasso/Engines/LanguageDetect.swift` | Script-first language detection and the per-line `shouldTranslate` rule. |
-| `Lasso/UI/TranslationPrewarmer.swift` | Translates in the background while the toolbar is still up (`translation.pretranslate`). |
+| `Lasso/UI/TranslationPrewarmer.swift` | Translates in the background while the toolbar is still up (`translation.pretranslate`), caching each block as it lands. Also `BlockTranslationPass`: pass 1 in groups of three blocks. |
 
 The current flow:
 

@@ -453,7 +453,7 @@ flowchart TD
 flowchart LR
   Lines["OCR lines"] --> Blocks["TextBlocks.group<br/>lines → blocks (paragraph, heading, label, each list item)<br/>language detected per block (Filipino by function words, since NaturalLanguage reads it as Indonesian); an unsure short Latin block takes the selection's confident Latin language"]
   Blocks --> Plan["TranslationPlan<br/>block in target language → left alone<br/>code, commands, URLs, emails, paths → verbatim (TranslationPlan.isVerbatim)<br/>others grouped by source language<br/>(manual source override → every block)"]
-  Plan --> P1["Pass 1: Apple Translation<br/>one session per source language Apple supports<br/>(prewarmer may have done the largest installed group)"]
+  Plan --> P1["Pass 1: Apple Translation<br/>one session per source language Apple supports<br/>sent 3 blocks at a time (BlockTranslationPass), so a cancel frees Apple within one group<br/>(prewarmer streams each block into the cache; the overlay adopts them, even ones landing after Translate)"]
   Plan -->|"pair Apple lacks (Filipino, either side):<br/>model-only, pass 2 starts unasked;<br/>Better translation Off → bar: 'Filipino needs AI'"| P2
   P1 --> Plates["Plates: one opaque plate per translated block<br/>colour sampled from the capture; too long → widens into free space beside it, then grows + pushes down; never overlaps"]
   Plan -->|"Better translation: Always, or 'Improve with AI' (When I ask)<br/>never from the prewarmer"| P2["Pass 2: LLMTranslator<br/>whole selection, ≤6k chars/chunk + previous block as context<br/>IntelligenceCoordinator.respond(messages:) → NDJSON stream<br/>into Filipino: + modern-usage rules (LLMTranslation.styleNotes)"]
