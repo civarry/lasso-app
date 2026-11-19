@@ -819,6 +819,14 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Chat, release 2 of the UI/UX review: the composer.** Built on the dictation text box
+  (`ComposerTextView`, committed with the dictation cleanup). The box gets the full width and grows to
+  six lines, with the mic and send inside its trailing edge (at 340 pt the four icon buttons had left it
+  ~140 pt). Tools sit in a row under it: paperclip, globe, Agent. Agent is an icon while off, a tinted
+  "Agent" chip while on, and orange "Agent · unattended" when it approves risky commands itself (colour
+  alone before). The globe is hidden while Agent is on or when no web search is set up; in local-only
+  mode globe and Agent stay visible, locked and disabled, the same rule as Settings. The attachment row
+  scrolls sideways. Dictation's setting moved to Settings › General › Dictation.
 - **Chat, release 1 of the UI/UX review** (two rounds with a separate reviewer; the composer waits for
   the owner's uncommitted text box). The header alone says who answers: the "Answering · model" step
   is gone (it gave every reply an Activity disclosure); a reply names its model only when a fallback
