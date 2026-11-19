@@ -41,6 +41,8 @@ struct ChatMessage: Identifiable, @unchecked Sendable {
     /// What's shown in the bubble (the user's typed text).
     var text: String
     var attachments: [Attachment] = []
+    /// Non-image files attached to a user message (see `FileAttachment`).
+    var files: [FileAttachment] = []
     var isStreaming: Bool = false
     /// Set on an assistant message when the request failed, so the bubble can style it as an error.
     var isError: Bool = false

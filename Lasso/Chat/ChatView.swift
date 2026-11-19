@@ -1,5 +1,6 @@
 import KeyboardShortcuts
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The Chat panel UI: a scrollable conversation with a composer. Renders `ChatController.shared`.
 struct ChatView: View {
@@ -40,7 +41,17 @@ struct ChatView: View {
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        guard chat.imageInputAvailable else { return false }
+        // Files from Finder: any type (`attachFile` sorts images from the rest).
+        let fileProviders = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+        if !fileProviders.isEmpty {
+            for provider in fileProviders {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    Task { @MainActor in chat.attachFile(url) }
+                }
+            }
+            return true
+        }
         guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSImage.self) })
             ?? providers.first else { return false }
         _ = provider.loadObject(ofClass: NSImage.self) { object, _ in
@@ -351,7 +362,7 @@ struct ChatView: View {
     private var composer: some View {
         VStack(spacing: 8) {
             // Seeded capture context + pending image attachment chips.
-            if chat.seededContext != nil || !chat.pendingAttachments.isEmpty {
+            if chat.seededContext != nil || !chat.pendingAttachments.isEmpty || !chat.pendingFiles.isEmpty {
                 HStack(spacing: 8) {
                     ForEach(chat.pendingAttachments) { att in
                         // Delete button lives *inside* the 44×44 frame (not offset outside), so it's
@@ -371,6 +382,9 @@ struct ChatView: View {
                                 .buttonStyle(.plain)
                             }
                     }
+                    ForEach(chat.pendingFiles) { file in
+                        FileChip(file: file) { chat.removeFile(file.id) }
+                    }
                     if let context = chat.seededContext {
                         contextChip(context)
                     }
@@ -382,12 +396,9 @@ struct ChatView: View {
             if inputFocused, !slashMatches.isEmpty { slashPalette }
 
             HStack(alignment: .bottom, spacing: 8) {
-                Button { attachImage() } label: { Image(systemName: "photo.badge.plus") }
+                Button { attachImage() } label: { Image(systemName: "paperclip") }
                     .buttonStyle(IconButtonStyle())
-                    .disabled(!chat.imageInputAvailable)
-                    .help(chat.imageInputAvailable
-                          ? "Attach an image — or paste (⌘V) or drag one onto the panel"
-                          : "Attach an image — needs a multimodal or Image model (Settings ▸ Intelligence)")
+                    .help(chat.imageHandlingNote)
 
                 Button { chat.webSearchOn.toggle() } label: { Image(systemName: "globe") }
                     .buttonStyle(IconButtonStyle())
@@ -647,6 +658,7 @@ struct ChatView: View {
 
     private var canSend: Bool {
         !chat.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !chat.pendingAttachments.isEmpty
+            || !chat.pendingFiles.isEmpty
     }
 
     private var engineName: String {
@@ -669,18 +681,57 @@ struct ChatView: View {
         }
     }
 
+    /// Any file: images go in as images, everything else as files; the turn decides how each is used.
     private func attachImage() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK else { return }
-        for url in panel.urls {
-            if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
-                chat.attach(image)
+        for url in panel.urls { chat.attachFile(url) }
+    }
+}
+
+// MARK: - File chip
+
+/// A non-image attachment: type icon, name and size. In the composer it has a remove button; in a sent
+/// message a click shows the file in Finder (if it's still there).
+struct FileChip: View {
+    let file: FileAttachment
+    let onRemove: (() -> Void)?
+
+    private var icon: String {
+        switch file.kind {
+        case .pdf: "doc.richtext"
+        case .text: "doc.text"
+        case .other: "doc"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(file.name).font(.caption).fontWeight(.medium).lineLimit(1).truncationMode(.middle)
+                Text("\(file.typeName) · \(file.sizeText)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            if let onRemove {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark.circle.fill").font(.caption).foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Remove")
             }
         }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .frame(maxWidth: 220, alignment: .leading)
+        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.10)))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard onRemove == nil, FileManager.default.fileExists(atPath: file.path) else { return }
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: file.path)])
+        }
+        .help(onRemove == nil ? "Show in Finder" : file.path)
     }
 }
 
@@ -838,9 +889,10 @@ struct MessageBubble: View {
         HStack(spacing: 0) {
             if isUser { Spacer(minLength: 40) }
             VStack(alignment: .leading, spacing: 6) {
-                if isUser, !message.attachments.isEmpty {
+                if isUser, !message.attachments.isEmpty || !message.files.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(message.attachments) { attachmentCard($0) }
+                        ForEach(message.files) { FileChip(file: $0, onRemove: nil) }
                     }
                 }
                 if editing {

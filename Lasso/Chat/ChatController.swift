@@ -1,8 +1,10 @@
 import AppKit
 import CoreGraphics
+import ImageIO
 import KeyboardShortcuts
 import Observation
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Drives the Chat panel: a persistent, multi-turn conversation against the active Text engine.
 /// Independent of the capture session — opened with its own shortcut (⌥⌘A) — but can be *seeded* from
@@ -36,6 +38,7 @@ final class ChatController {
     var messages: [ChatMessage] { get { active.messages } set { active.messages = newValue } }
     var input: String { get { active.input } set { active.input = newValue } }
     var pendingAttachments: [Attachment] { get { active.pendingAttachments } set { active.pendingAttachments = newValue } }
+    var pendingFiles: [FileAttachment] { get { active.pendingFiles } set { active.pendingFiles = newValue } }
     var seededContext: String? { get { active.seededContext } set { active.seededContext = newValue } }
     var isStreaming: Bool { get { active.isStreaming } set { active.isStreaming = newValue } }
     private var streamTask: Task<Void, Never>? { get { active.streamTask } set { active.streamTask = newValue } }
@@ -307,13 +310,35 @@ final class ChatController {
         pendingAttachments.append(Attachment(image: image))
     }
     func removeAttachment(_ id: UUID) { pendingAttachments.removeAll { $0.id == id } }
-    func clearAttachments() { pendingAttachments.removeAll() }
+    func clearAttachments() { pendingAttachments.removeAll(); pendingFiles.removeAll() }
+
+    /// Attach any file: an image goes in as an image, anything else as a file (see `FileAttachment`).
+    /// Nothing is refused for the current model; the turn delivers each in the best form it can use.
+    func attachFile(_ url: URL) {
+        if let type = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType, type.conforms(to: .image),
+           let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+           let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+            attach(image)
+            return
+        }
+        guard pendingFiles.count < Self.maxAttachments, !pendingFiles.contains(where: { $0.path == url.path }),
+              let file = FileAttachment(url: url) else { return }
+        pendingFiles.append(file)
+    }
+    func removeFile(_ id: UUID) { pendingFiles.removeAll { $0.id == id } }
+
+    /// How an attached image will reach the model this turn, for the attach button's tooltip.
+    var imageHandlingNote: String {
+        if hermesActive { return "Attach images or files — the agent gets them" }
+        return imageInputAvailable
+            ? "Attach images or files — or paste (⌘V) or drag them onto the panel"
+            : "Attach images or files — this model can't see images, so it gets the text read from them"
+    }
     func clearSeededContext() { seededContext = nil }
 
-    /// Attach an image only when a vision backend can actually use it (otherwise no-op).
+    /// Attach an image. Always possible: a model that can't see gets the text read from it.
     @discardableResult
     func attachIfPossible(_ image: CGImage) -> Bool {
-        guard imageInputAvailable else { return false }
         attach(image)
         return true
     }
@@ -323,7 +348,7 @@ final class ChatController {
     /// as text.
     @discardableResult
     func pasteImageFromClipboard() -> Bool {
-        guard imageInputAvailable, let image = Self.clipboardImage() else { return false }
+        guard let image = Self.clipboardImage() else { return false }
         attach(image)
         return true
     }
@@ -839,6 +864,7 @@ final class ChatController {
         resetDerivedMemory()
         active.input = m.text
         active.pendingAttachments = m.attachments
+        active.pendingFiles = m.files
         send()
     }
 
@@ -851,10 +877,12 @@ final class ChatController {
               let idx = active.messages.firstIndex(where: { $0.id == id }),
               active.messages[idx].role == .user else { return }
         let atts = active.messages[idx].attachments
+        let files = active.messages[idx].files
         active.messages.removeSubrange(idx..<active.messages.count)
         resetDerivedMemory()
         active.input = text
         active.pendingAttachments = atts
+        active.pendingFiles = files
         send()
     }
 
@@ -870,6 +898,7 @@ final class ChatController {
         resetDerivedMemory()
         active.input = userMsg.text
         active.pendingAttachments = userMsg.attachments
+        active.pendingFiles = userMsg.files
         send()
     }
 
@@ -905,15 +934,19 @@ final class ChatController {
             return
         }
 
-        guard !typed.isEmpty || !pendingAttachments.isEmpty else { return }
+        guard !typed.isEmpty || !pendingAttachments.isEmpty || !pendingFiles.isEmpty else { return }
         guard !isStreaming else { return }
 
         let attachments = pendingAttachments
+        let files = pendingFiles
         let context = seededContext
-        let placeholder = attachments.count > 1 ? "Look at these images" : "Look at this image"
+        let placeholder = !files.isEmpty && attachments.isEmpty
+            ? (files.count > 1 ? "Look at these files" : "Look at this file")
+            : (attachments.count > 1 ? "Look at these images" : "Look at this image")
 
-        let userMessage = ChatMessage(role: .user, text: typed.isEmpty ? placeholder : typed,
+        var userMessage = ChatMessage(role: .user, text: typed.isEmpty ? placeholder : typed,
                                       attachments: attachments)
+        userMessage.files = files
         messages.append(userMessage)
         let userID = userMessage.id
         let assistant = ChatMessage(role: .assistant, text: "", isStreaming: true)
@@ -922,6 +955,7 @@ final class ChatController {
 
         input = ""
         pendingAttachments = []
+        pendingFiles = []
         seededContext = nil
         isStreaming = true
         active.turnToken = UUID()
@@ -937,16 +971,17 @@ final class ChatController {
         let viaHermes = hermesActive
         streamTask = Task { [weak self] in
             if viaHermes {
-                await self?.runHermesTurn(typed: typed, attachments: attachments, context: context,
+                await self?.runHermesTurn(typed: typed, attachments: attachments, files: files, context: context,
                                           appContext: extraContext, userID: userID, assistantID: assistantID)
             } else {
-                await self?.runTurn(typed: typed, attachments: attachments, context: context, appContext: extraContext,
+                await self?.runTurn(typed: typed, attachments: attachments, files: files, context: context, appContext: extraContext,
                                     allowGround: allowGround, userID: userID, assistantID: assistantID)
             }
         }
     }
 
-    private func runTurn(typed: String, attachments: [Attachment], context: String?, appContext: String?,
+    private func runTurn(typed: String, attachments: [Attachment], files: [FileAttachment] = [],
+                         context: String?, appContext: String?,
                          allowGround: Bool, userID: UUID, assistantID: UUID) async {
         let t0 = Date()
         func ms() -> Int { Int(Date().timeIntervalSince(t0) * 1000) }
@@ -1013,7 +1048,7 @@ final class ChatController {
                                                   enabled: heuristicGround,
                                                   plan: grounding.plan)
 
-        if !attachments.isEmpty {
+        imageHandling: if !attachments.isEmpty {
             let native = await intelligence.textModelSupportsVision()
             Log.chat.notice("runTurn · \(attachments.count, privacy: .public) image(s), native=\(native, privacy: .public) (+\(ms(), privacy: .public)ms)")
             if native {
@@ -1025,10 +1060,20 @@ final class ChatController {
                 let vision = await intelligence.activeVisionProvider()
                 let label = intelligence.imageEngineLabel
                 guard let vision else {
-                    finishError(assistantID,
-                        "No image model is set. Choose one under Settings ▸ Intelligence ▸ Image model "
-                        + "(a local Ollama vision model, or a multimodal cloud model) to chat about images.")
-                    return
+                    // Nothing here can see images. Don't refuse the turn: the text read from the image
+                    // (below) goes in, and the model is told plainly what it's missing, so it can answer
+                    // from that or say what it can't tell.
+                    let readStep = addStep(assistantID, icon: "text.viewfinder", text: "Reading the text in the image…")
+                    completeStep(assistantID, readStep,
+                                 text: "Read the text in the image\(multi ? "s" : "") · this model can't see images")
+                    let note = """
+                    [I attached \(attachments.count) image\(multi ? "s" : ""). You can't see images and no image \
+                    model is set up, so you only get the text read from \(multi ? "them" : "it") below\
+                    \(ocrText == nil ? " (none was found)" : ""). Answer from that; if the question needs \
+                    seeing the image, say so briefly.]
+                    """
+                    userText = note + "\n\n" + (userText.isEmpty ? (multi ? "What are these?" : "What is this?") : userText)
+                    break imageHandling
                 }
                 let stepID = addStep(assistantID, icon: "eye",
                                      text: "Looking at \(attachments.count) image\(multi ? "s" : "") · \(label)")
@@ -1091,6 +1136,12 @@ final class ChatController {
         // Fold any OCR'd text into the turn so the model can use it directly.
         if let ocrText, !ocrText.isEmpty {
             userText += "\n\nText visible in the image\(multi ? "s" : ""):\n\(ocrText)"
+        }
+        // Files: the text of text files and PDFs, or a note naming what the model can't take.
+        if !files.isEmpty {
+            userText += "\n\n" + files.map { $0.contentForModel() }.joined(separator: "\n\n")
+            let fileStep = addStep(assistantID, icon: "doc.text", text: "Reading files…")
+            completeStep(assistantID, fileStep, text: "Read \(files.count == 1 ? files[0].name : "\(files.count) files")")
         }
 
         // Fold in the connector evidence started above (waits only if it's still running). Tool-path
@@ -2485,7 +2536,8 @@ final class ChatController {
     /// History is sent from this conversation every turn, so Edit / Regenerate / Delete behave as with
     /// any model. The turn is bound to the conversation it started in: an approval can keep it going
     /// for minutes, and switching chats meanwhile must not write into the other one.
-    private func runHermesTurn(typed: String, attachments: [Attachment], context: String?, appContext: String?,
+    private func runHermesTurn(typed: String, attachments: [Attachment], files: [FileAttachment] = [],
+                               context: String?, appContext: String?,
                                userID: UUID, assistantID: UUID) async {
         let session = active
         let token = session.turnToken
@@ -2553,6 +2605,16 @@ final class ChatController {
                 + (typed.isEmpty ? "What does this say / mean?" : typed)
         }
         if let appContext, !appContext.isEmpty { userText = "\(appContext)\n\n\(userText)" }
+        if !files.isEmpty {
+            if typed.isEmpty, attachments.isEmpty { userText = files.count > 1 ? "Look at these files." : "Look at this file." }
+            // The agent opens files itself, so it gets where they are; a Hermes on another machine can't
+            // reach this Mac's paths, so it gets their content like a regular model.
+            let hermesIsLocal = !HermesAgent.usesOwnHermes
+                || (URL(string: HermesAgent.baseURLString).map(HermesAgent.isLoopback) ?? false)
+            userText += hermesIsLocal
+                ? "\n\nAttached files (open them with your tools):\n" + files.map(\.agentReference).joined(separator: "\n")
+                : "\n\n" + files.map { $0.contentForModel() }.joined(separator: "\n\n")
+        }
         let images = attachments.compactMap { ImageEncoder.jpegBase64($0.image) }
         // Same record as a native-vision turn, so a later turn on a regular model keeps the context.
         edit(userID) { $0.promptText = userText; $0.imageBase64s = images }

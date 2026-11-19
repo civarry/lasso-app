@@ -788,6 +788,15 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Attach anything; the type decides what the model gets.** The attach button was greyed out unless
+  Lasso's model could see images, and only images were allowed, even in Agent mode where Hermes reads
+  files itself. Now any file attaches (button, drag, ⌘V) and nothing is refused for the model:
+  `FileAttachment` sorts by type. The agent gets paths (it opens files with its tools; a Hermes on
+  another machine gets content instead). A regular model gets a text file's or PDF's text (capped at
+  24K characters, said so when cut) or a note naming what it can't read (audio, video, archives). An
+  image on a model that can't see, with no image model, gets the text read from it and a note, instead
+  of the turn failing. Live: invoice number from an image on Apple Intelligence; a word from a .txt on
+  MLX; the agent opening an attached .md itself (`AttachmentLiveTests`).
 - **Agent replies show images, and the agent knows the panel.** Hermes marks a file to show with a
   `MEDIA:/path` line; its API server turns that into an image on the chat endpoints but not on `/v1/runs`
   (Lasso's), so replies printed "MEDIA:/tmp/demo.jpg". `AgentMedia` turns image files on this Mac into
