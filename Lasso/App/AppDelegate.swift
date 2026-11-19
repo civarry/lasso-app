@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         HermesRuntime.shared.cleanUpAfterCrash()
+        AppUpdater.shared.start()
         // Defaults for user settings that should start enabled.
         UserDefaults.standard.register(defaults: ["translation.pretranslate": true])
 

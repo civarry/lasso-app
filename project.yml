@@ -49,6 +49,10 @@ packages:
   SwiftTransformers:
     url: https://github.com/huggingface/swift-transformers
     from: 1.3.0
+  # In-app updates. Exact: an updater is the last thing to change by accident.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.10.1
 
 targets:
   Lasso:
@@ -72,6 +76,7 @@ targets:
         product: HuggingFace
       - package: SwiftTransformers
         product: Tokenizers
+      - package: Sparkle
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.cjcarito.Lasso
