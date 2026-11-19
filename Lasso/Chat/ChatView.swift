@@ -797,6 +797,19 @@ struct MessageBubble: View {
             style: .continuous)
     }
 
+    /// An image in a reply, at reading size; a click opens the file it came from (if it's still there).
+    private func replyImage(_ att: Attachment) -> some View {
+        let file = att.sourcePath.flatMap { FileManager.default.fileExists(atPath: $0) ? URL(fileURLWithPath: $0) : nil }
+        return Image(decorative: att.image, scale: 1)
+            .resizable().scaledToFit()
+            .frame(maxWidth: .infinity, maxHeight: 280, alignment: .leading)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.10)))
+            .onTapGesture { if let file { NSWorkspace.shared.open(file) } }
+            .help(file.map { "Open \($0.lastPathComponent)" } ?? "")
+            .accessibilityLabel(Text("Image"))
+    }
+
     /// Compact attachment card (thumbnail + label + dimensions) — replaces shrinking a whole screenshot
     /// into an unreadable bubble.
     private func attachmentCard(_ att: Attachment) -> some View {
@@ -825,7 +838,7 @@ struct MessageBubble: View {
         HStack(spacing: 0) {
             if isUser { Spacer(minLength: 40) }
             VStack(alignment: .leading, spacing: 6) {
-                if !message.attachments.isEmpty {
+                if isUser, !message.attachments.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(message.attachments) { attachmentCard($0) }
                     }
@@ -848,6 +861,10 @@ struct MessageBubble: View {
                                      streaming: message.isStreaming)
                             .foregroundStyle(message.isError ? Color.orange : Color.primary)
                             .fixedSize(horizontal: false, vertical: true)
+                    }
+                    // Images the agent showed (`MEDIA:` files on this Mac): big enough to see, under the text.
+                    if !isUser {
+                        ForEach(message.attachments) { replyImage($0) }
                     }
                     if let notice = message.notice {
                         Label(notice, systemImage: "exclamationmark.triangle.fill")

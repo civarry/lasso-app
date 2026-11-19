@@ -788,6 +788,13 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Agent replies show images, and the agent knows the panel.** Hermes marks a file to show with a
+  `MEDIA:/path` line; its API server turns that into an image on the chat endpoints but not on `/v1/runs`
+  (Lasso's), so replies printed "MEDIA:/tmp/demo.jpg". `AgentMedia` turns image files on this Mac into
+  pictures under the reply (clicking opens the file; up to 4, 20 MB, downsampled) and leaves anything
+  else as a path; directives are hidden while streaming; skipped for a Hermes on another machine. The
+  instructions Lasso adds now describe the panel (Markdown incl. tables and math, `MEDIA:` images, no
+  audio/video, attachments and dictation) and replace Hermes's "unknown client, assume plain text" hint.
 - **The chat says when your own Hermes answers.** With "Use my own Hermes" on and Agent on, the header
   read "MLX" while replies came from the user's Hermes and its model (Claude Opus). The chip now reads
   "Your Hermes", its menu names that Hermes's model (from `~/.hermes/config.yaml` when the address is on

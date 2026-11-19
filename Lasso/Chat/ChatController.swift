@@ -2497,7 +2497,7 @@ final class ChatController {
                 m.isStreaming = false
                 m.approval = nil
                 if let error { m.text = error; m.isError = true }
-                else if m.text.isEmpty { m.text = stopped ? "(Stopped.)" : "(No response.)" }
+                else if m.text.isEmpty, m.attachments.isEmpty { m.text = stopped ? "(Stopped.)" : "(No response.)" }
             }
             // Stopped, and the user already sent the next message: that turn owns the flag now.
             guard session.turnToken == token else { return }
@@ -2594,6 +2594,9 @@ final class ChatController {
         Log.chat.notice("hermes ▶ start: chars=\(userText.count, privacy: .public) images=\(images.count, privacy: .public) history=\(turnRequest.history.count, privacy: .public)")
 
         let answerLabel = route?.label ?? (HermesAgent.usesOwnHermes ? HermesAgent.ownHermesLabel : "Hermes's model")
+        // `MEDIA:` paths are on this Mac only when the Hermes is: Lasso's own, or the user's on loopback.
+        let mediaIsLocal = !HermesAgent.usesOwnHermes
+            || (URL(string: HermesAgent.baseURLString).map(HermesAgent.isLoopback) ?? false)
         var turn = HermesTurn(answerLabel: answerLabel, steps: leadSteps)
         var seenApprovals: Set<String> = []
         var lastPaint = Date.distantPast
@@ -2602,7 +2605,10 @@ final class ChatController {
             guard force || now.timeIntervalSince(lastPaint) > 0.05 else { return }
             lastPaint = now
             let pending = turn.pendingApprovals.first { !answeredApprovals.contains($0.key) }
-            edit(assistantID) { $0.text = turn.text; $0.steps = turn.steps; $0.approval = pending }
+            edit(assistantID) {
+                $0.text = mediaIsLocal ? AgentMedia.hidingDirectives(turn.text) : turn.text
+                $0.steps = turn.steps; $0.approval = pending
+            }
         }
 
         do {
@@ -2646,6 +2652,14 @@ final class ChatController {
             end(stopped: true)
         case .completed, nil:
             Log.chat.notice("hermes ✓ chars=\(turn.text.count, privacy: .public) in=\(turn.inputTokens ?? -1, privacy: .public) out=\(turn.outputTokens ?? -1, privacy: .public) (+\(ms, privacy: .public)ms)")
+            if mediaIsLocal {
+                let media = AgentMedia.resolve(turn.text)
+                edit(assistantID) { m in
+                    m.text = media.text
+                    m.attachments += media.images.map { Attachment(image: $0.image, sourcePath: $0.path) }
+                }
+                if !media.images.isEmpty { Log.chat.notice("hermes · showed \(media.images.count, privacy: .public) image(s) from MEDIA:") }
+            }
             end()
         }
     }
