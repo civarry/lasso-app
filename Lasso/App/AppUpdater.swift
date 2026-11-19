@@ -58,12 +58,16 @@ final class AppUpdater: NSObject {
     }
 
     /// Idle: no capture overlay up, no chat reply (or Agent turn) streaming in any conversation.
-    static var isIdle: Bool {
+    /// Replaceable so tests can make Lasso look busy.
+    @ObservationIgnored var isIdle: () -> Bool = {
         !CaptureCoordinator.shared.isActive && !ChatController.shared.sessions.contains { $0.isStreaming }
     }
 
-    private func installIfIdle() {
-        guard let install = pendingInstall, Self.isIdle else { return }
+    /// Whether a downloaded update is waiting for Lasso to be idle.
+    var hasPendingInstall: Bool { pendingInstall != nil }
+
+    func installIfIdle() {
+        guard let install = pendingInstall, isIdle() else { return }
         pendingInstall = nil
         idleTimer?.invalidate()
         idleTimer = nil

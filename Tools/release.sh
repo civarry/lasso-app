@@ -8,8 +8,10 @@
 # notes.txt: plain-text release notes. They become the GitHub release notes and are embedded in the
 # update feed as plain text (Lasso shows update notes without a web view).
 #
-# Needs, on this Mac: the "Lasso Release" code-signing certificate and the Sparkle update key
-# (account "lasso-app") in the login Keychain, xcodegen, and gh signed in to GitHub.
+# Needs, on this Mac: the "Lasso Release" code-signing certificate in the login Keychain, the Sparkle
+# update key as a file (~/.config/lasso-release/sparkle-ed25519.key, mode 600, exported once with
+# `generate_keys --account lasso-app -x`; reading it from the Keychain pops a dialog for every new
+# Sparkle binary), xcodegen, and gh signed in to GitHub.
 # Builds from a fresh checkout of origin/main, so uncommitted work never ships.
 set -euo pipefail
 
@@ -23,6 +25,8 @@ identity="Lasso Release"
 sparkle_version=2.10.1
 sparkle_sha256=$(sed -n 's/.*sha256 `\([0-9a-f]*\)`.*/\1/p' "$(git rev-parse --show-toplevel)/Vendor/README.md")
 root=$(git rev-parse --show-toplevel)
+edkey=${LASSO_UPDATE_KEY:-$HOME/.config/lasso-release/sparkle-ed25519.key}
+[[ -r $edkey ]] || { echo "No update key at $edkey." >&2; exit 1; }
 
 security find-identity -p codesigning | grep -q "\"$identity\"" \
   || { echo "The \"$identity\" signing certificate isn't in the Keychain." >&2; exit 1; }
@@ -54,7 +58,8 @@ git -c user.email=108951259+civarry@users.noreply.github.com commit -q -am "Rele
 
 echo "Building $version ($build)…"
 xcodebuild -scheme Lasso -configuration Release -derivedDataPath "$work/dd" -skipMacroValidation \
-  CODE_SIGN_IDENTITY="$identity" DEVELOPMENT_TEAM="" CODE_SIGN_STYLE=Manual build \
+  CODE_SIGN_IDENTITY="$identity" DEVELOPMENT_TEAM="" CODE_SIGN_STYLE=Manual \
+  CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO build \
   > "$work/build.log" 2>&1 || { tail -30 "$work/build.log" >&2; exit 1; }
 app="$work/dd/Build/Products/Release/Lasso.app"
 
@@ -69,11 +74,13 @@ hdiutil create -quiet -volname Lasso -srcfolder "$stage" -format UDZO "$dmg"
 feed="$work/feed"; mkdir -p "$feed"
 cp "$dmg" "$feed/"
 cp "$notes" "$feed/Lasso-$version.txt"
-"$tools/bin/generate_appcast" --account lasso-app --embed-release-notes \
+"$tools/bin/generate_appcast" --ed-key-file "$edkey" --embed-release-notes \
   --download-url-prefix "https://github.com/$repo/releases/download/v$version/" \
   -o "$feed/appcast.xml" "$feed"
 grep -q 'sparkle:edSignature' "$feed/appcast.xml" || { echo "Feed isn't signed." >&2; exit 1; }
 grep -q 'sparkle:format="plain-text"' "$feed/appcast.xml" || { echo "Notes aren't plain text." >&2; exit 1; }
+codesign -d --entitlements - --xml "$app" 2>/dev/null | grep -q disable-library-validation \
+  || { echo "Missing disable-library-validation: Sparkle wouldn't load." >&2; exit 1; }
 
 git push -q origin HEAD:main
 gh release create "v$version" -R "$repo" --title "Lasso $version" --notes-file "$notes" --latest \
