@@ -54,10 +54,12 @@ cd "$work/src"
 build=$(( $(sed -n 's/.*CURRENT_PROJECT_VERSION: "\([0-9]*\)".*/\1/p' project.yml) + 1 ))
 sed -i '' "s/MARKETING_VERSION: \"[^\"]*\"/MARKETING_VERSION: \"$version\"/; s/CURRENT_PROJECT_VERSION: \"[0-9]*\"/CURRENT_PROJECT_VERSION: \"$build\"/" project.yml
 xcodegen generate -q
+Tools/pin-packages.sh
 git -c user.email=108951259+civarry@users.noreply.github.com commit -q -am "Release $version"
 
 echo "Building $version ($build)…"
 xcodebuild -scheme Lasso -configuration Release -derivedDataPath "$work/dd" -skipMacroValidation \
+  -disableAutomaticPackageResolution \
   CODE_SIGN_IDENTITY="$identity" DEVELOPMENT_TEAM="" CODE_SIGN_STYLE=Manual \
   CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO build \
   > "$work/build.log" 2>&1 || { tail -30 "$work/build.log" >&2; exit 1; }

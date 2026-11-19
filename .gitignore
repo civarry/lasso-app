@@ -14,6 +14,8 @@ build/
 # SwiftPM
 .swiftpm/
 Package.resolved
+# The exact package versions every build uses (copied into the generated project; see BUILDING.md).
+!Config/Package.resolved
 
 # macOS
 .DS_Store

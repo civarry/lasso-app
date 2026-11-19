@@ -51,13 +51,15 @@ jobs:
         run: rm -f .dd/SourcePackages/workspace-state.json .dd/SourcePackages/Package.resolved
 
       - name: Generate the Xcode project
-        run: xcodegen generate
+        run: |
+          xcodegen generate
+          Tools/pin-packages.sh
 
       - name: Build and test
         run: |
           set -o pipefail
           xcodebuild -scheme Lasso -configuration Debug -destination 'platform=macOS' \
-            -derivedDataPath .dd -skipMacroValidation test 2>&1 | tee xcodebuild.log | grep -E "^(✔|✘|◇ Test run|\*\*)|error:" || true
+            -derivedDataPath .dd -skipMacroValidation -disableAutomaticPackageResolution test 2>&1 | tee xcodebuild.log | grep -E "^(✔|✘|◇ Test run|\*\*)|error:" || true
           grep -q "TEST SUCCEEDED" xcodebuild.log
 
       - name: Upload the log on failure
