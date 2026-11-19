@@ -88,6 +88,13 @@ extension AppUpdater: SPUUpdaterDelegate {
         return true
     }
 
+    /// Testing hook: `defaults write <bundle id> LassoUpdateFeedURL <url>` points Lasso at another
+    /// feed (a local server, for the end-to-end update test). Safe to leave in: whatever the feed, an
+    /// update installs only if it's signed with Lasso's update key.
+    nonisolated func feedURLString(for updater: SPUUpdater) -> String? {
+        UserDefaults.standard.string(forKey: "LassoUpdateFeedURL")
+    }
+
     /// The one gate for every update check: local-only means nothing leaves the Mac.
     nonisolated func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
         if PrivacyMode.localOnly {
