@@ -96,4 +96,44 @@ struct HermesChatFlowLiveTests {
         try await waitUntil(5) { HermesRuntime.shared.state == .stopped }
         #expect(HermesRuntime.shared.state == .stopped)
     }
+
+    /// After Agent is turned off, the regular model must not take the Agent's "I opened Chrome" in the
+    /// history as something it can do (seen: it claimed to open apps it couldn't).
+    @Test func regularChatDoesNotClaimAgentActions() async throws {
+        let agentWasOn = chat.hermesSelected
+        if agentWasOn { chat.toggleAgent() }
+        // A small local model, the most prone to this, cached on this Mac (TEST_RUNNER_LASSO_TEST_MLX).
+        let intelligence = IntelligenceCoordinator.shared
+        let (providerWas, mlxWas) = (intelligence.preferred, intelligence.mlxModel)
+        if let model = ProcessInfo.processInfo.environment["LASSO_TEST_MLX"] {
+            intelligence.preferred = .mlx
+            intelligence.mlxModel = model
+        }
+        chat.newChat()
+        let conversation = chat.active.id
+        defer {
+            chat.close(conversation)
+            if chat.hermesSelected != agentWasOn { chat.hermesSelected = agentWasOn }
+            intelligence.preferred = providerWas
+            intelligence.mlxModel = mlxWas
+        }
+        var reply = ChatMessage(role: .assistant, text: "Opened Chrome for you.")
+        reply.viaAgent = true
+        chat.messages = [ChatMessage(role: .user, text: "open chrome"), reply]
+
+        let claims = ["opened", "launched", "launching", "i've started", "is now open", "now open"]
+        var failures: [String] = []
+        for ask in ["now open Safari", "open the Notes app please", "can you open Finder", "what did you do earlier?"] {
+            chat.send(text: ask)
+            try await Task.sleep(for: .milliseconds(100))
+            try await waitUntil { !chat.isStreaming }
+            let text = (lastReply()?.text ?? "").lowercased()
+            // A failed model call would pass this vacuously.
+            #expect(lastReply()?.isError == false, "the model didn't answer: \(text.prefix(120))")
+            print("[hermes-chat] agent off, '\(ask)' -> \(text.prefix(160))")
+            if claims.contains(where: { text.contains($0) }) { failures.append(ask) }
+        }
+        print("[hermes-chat] rule in prompt: \(ChatController.systemPrompt.contains("Agent mode"))")
+        #expect(failures.isEmpty, "claimed an action it can't take: \(failures)")
+    }
 }

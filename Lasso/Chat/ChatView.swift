@@ -394,10 +394,13 @@ struct ChatView: View {
                         Image(systemName: "point.3.connected.trianglepath.dotted")
                     }
                     .buttonStyle(IconButtonStyle())
-                    .foregroundStyle(chat.hermesActive ? Color.accentColor : Color.secondary)
-                    .help(chat.hermesActive
-                          ? "Agent on: the chat can use tools on your Mac (web, files, terminal) and asks before risky commands. Click to turn off."
-                          : "Agent: let the chat take actions (search, read files, run commands), asking before risky ones")
+                    .foregroundStyle(!chat.hermesActive ? Color.secondary
+                                     : (HermesAgent.letHermesDecide ? Color.orange : Color.accentColor))
+                    .help(!chat.hermesActive
+                          ? "Agent: let the chat search the web, read files and run commands"
+                          : HermesAgent.letHermesDecide
+                          ? "Agent on, approving risky commands without asking you. Click to turn off."
+                          : "Agent on. It asks before risky commands. Click to turn off.")
                 }
 
                 micButton

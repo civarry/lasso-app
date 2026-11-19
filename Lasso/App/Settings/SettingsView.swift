@@ -797,27 +797,18 @@ struct SettingsView: View {
     private var hermesSection: some View {
         SettingsCard(title: "Agent",
                      footnote: draft.localOnly
-                         ? "Off in local-only mode: the agent uses cloud models and the web."
-                         : "Lets the chat take actions: search the web, read files, run commands. Powered by "
-                           + "Hermes Agent, which you install once; Lasso sets it up in its own Hermes profile, "
-                           + "starts it when you turn on Agent in the chat, stops it when Lasso quits, and asks "
-                           + "you before any command Hermes flags as risky. It thinks with the model you pick "
-                           + "in Lasso (Apple Intelligence and MLX models run only inside Lasso, so for those "
-                           + "it uses Hermes's own).") {
+                         ? "Off in local-only mode."
+                         : "Lets the chat search the web, read files and run commands with Hermes Agent, "
+                           + "using the model you pick above.") {
             if !draft.hermesUseOwn {
                 SettingsRow("Status", caption: agentStatusCaption) { agentStatusControl }
             }
-            SettingsRow("Let the agent approve risky commands itself",
-                        caption: "Not recommended. Normally Lasso only works with a Hermes that asks you first "
-                            + "(approvals.mode: manual). With this on, Hermes or its helper model decides on "
-                            + "commands like rm -r without asking, while chat messages can include text from "
-                            + "your screen. Every agent reply says when this is on.") {
-                SettingsSwitch(title: "Let the agent approve risky commands itself", isOn: $draft.hermesLetDecide)
+            SettingsRow("Ask before risky commands", caption: "Recommended") {
+                SettingsSwitch(title: "", isOn: Binding(get: { !draft.hermesLetDecide },
+                                                        set: { draft.hermesLetDecide = !$0 }))
             }
-            SettingsRow("Use a Hermes I run",
-                        caption: "Advanced: connect to your own Hermes gateway (another Mac, or your own profile) "
-                            + "instead of the one Lasso manages.") {
-                SettingsSwitch(title: "Use a Hermes I run", isOn: $draft.hermesUseOwn)
+            SettingsRow("Use my own Hermes", caption: "Connect to a Hermes gateway you run") {
+                SettingsSwitch(title: "", isOn: $draft.hermesUseOwn)
             }
             if draft.hermesUseOwn { ownHermesRows }
         }
@@ -826,8 +817,8 @@ struct SettingsView: View {
 
     private var agentStatusCaption: String {
         switch HermesRuntime.shared.state {
-        case .notInstalled: "Install Hermes Agent first: run `brew install hermes-agent` in Terminal, then Check again."
-        case .notSetUp: "Hermes Agent is installed. Set up creates a Lasso profile from your Hermes settings; your own profiles aren't changed."
+        case .notInstalled: "Install with: brew install hermes-agent"
+        case .notSetUp: "Hermes Agent is installed"
         case .settingUp: "Setting up…"
         case .stopped: "Ready. Turn on Agent in the chat to use it."
         case .starting: "Starting…"
@@ -862,7 +853,7 @@ struct SettingsView: View {
                     .textFieldStyle(.roundedBorder)
                     .settingsFieldWidth()
             }
-            SettingsRow("API key", caption: "API_SERVER_KEY from that Hermes's .env") {
+            SettingsRow("API key", caption: "API_SERVER_KEY") {
                 SettingsKeyField(text: $draft.hermesKey, placeholder: "API_SERVER_KEY",
                                  onClear: { draft.hermesKey = "" })
                     .settingsFieldWidth()
@@ -876,9 +867,8 @@ struct SettingsView: View {
             .onChange(of: draft.localOnly) { _, _ in hermesTest = .idle }
             if !hermesAddressIsLocal {
                 SettingsRow("Approvals are manual",
-                            caption: "Lasso can't read the config of a Hermes on another machine. Turn this on "
-                                + "once approvals.mode: manual is set there; Lasso won't send turns until then.") {
-                    SettingsSwitch(title: "Approvals are manual", isOn: $draft.hermesApprovalsConfirmed)
+                            caption: "Lasso can't check a Hermes on another Mac") {
+                    SettingsSwitch(title: "", isOn: $draft.hermesApprovalsConfirmed)
                 }
             }
             SettingsRow("Connection", caption: hermesTestCaption) {

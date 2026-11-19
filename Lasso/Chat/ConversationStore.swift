@@ -70,6 +70,8 @@ enum ConversationStore {
         var reasoningSeconds: Int?
         var sources: [WebSourcesProvider.Hit]
         var attachments: [AttachmentDTO]
+        /// Optional so conversations saved before the Agent decode unchanged.
+        var viaAgent: Bool? = nil
     }
 
     struct AttachmentDTO: Codable {
@@ -203,7 +205,8 @@ extension ConversationStore {
                 sources: m.sources,
                 attachments: m.attachments.map {
                     AttachmentDTO(id: $0.id, caption: $0.caption, ocr: $0.ocr, hasThumbnail: true)
-                })
+                },
+                viaAgent: m.viaAgent ? true : nil)
         }
         return ConversationDTO(
             schemaVersion: schemaVersion,
@@ -247,6 +250,7 @@ extension ConversationStore {
             msg.reasoning = md.reasoning
             msg.reasoningSeconds = md.reasoningSeconds
             msg.sources = md.sources
+            msg.viaAgent = md.viaAgent ?? false
             msg.attachments = md.attachments.compactMap { ad in
                 guard ad.hasThumbnail, let img = loadThumbnail(ad.id) else { return nil }
                 return Attachment(id: ad.id, image: img, caption: ad.caption, ocr: ad.ocr)

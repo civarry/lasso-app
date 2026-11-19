@@ -30,7 +30,7 @@ enum HermesAgent {
     static var letHermesDecide: Bool { UserDefaults.standard.bool(forKey: letHermesDecideKey) }
 
     /// Shown under every Hermes reply while `letHermesDecide` lets a non-manual Hermes through.
-    static let unattendedNotice = "Hermes approves risky commands itself. Change this in Settings ▸ Intelligence ▸ Agent."
+    static let unattendedNotice = "The agent approves risky commands without asking you (Settings ▸ Intelligence ▸ Agent)."
 
     static func isLoopback(_ url: URL) -> Bool {
         ["127.0.0.1", "localhost", "::1"].contains((url.host ?? "").lowercased())
