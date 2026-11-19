@@ -2593,7 +2593,7 @@ final class ChatController {
         intelligence.noteOffDeviceUse()
         Log.chat.notice("hermes ▶ start: chars=\(userText.count, privacy: .public) images=\(images.count, privacy: .public) history=\(turnRequest.history.count, privacy: .public)")
 
-        let answerLabel = route?.label ?? "Hermes's model"
+        let answerLabel = route?.label ?? (HermesAgent.usesOwnHermes ? HermesAgent.ownHermesLabel : "Hermes's model")
         var turn = HermesTurn(answerLabel: answerLabel, steps: leadSteps)
         var seenApprovals: Set<String> = []
         var lastPaint = Date.distantPast

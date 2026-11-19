@@ -788,6 +788,10 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **The chat says when your own Hermes answers.** With "Use my own Hermes" on and Agent on, the header
+  read "MLX" while replies came from the user's Hermes and its model (Claude Opus). The chip now reads
+  "Your Hermes", its menu names that Hermes's model (from `~/.hermes/config.yaml` when the address is on
+  this Mac) and labels Lasso's list "With Agent off", and the trace says "Answering · Your Hermes · …".
 - **Agent on Ollama gets a big enough context.** Ollama loads models with 4,096 tokens of context and its
   OpenAI endpoint (Hermes's) ignores `options.num_ctx` (checked on 0.40.16), so every Agent turn failed
   with "Context length exceeded … cannot compress further". `OllamaAgentModel` makes a variant,

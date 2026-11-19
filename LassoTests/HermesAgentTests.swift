@@ -191,6 +191,15 @@ struct HermesAgentTests {
         #expect(!none.contains("model:"))
     }
 
+    /// The chat names what answers Agent turns when the user's own Hermes is on; its model is the last
+    /// top-level `model:` block's `default`, as PyYAML reads it.
+    @Test func ownHermesModelIsReadFromItsConfig() {
+        let config = "model:\n  provider: anthropic\n  default: claude-opus-4-8\nagent:\n  default: nope\n"
+        #expect(HermesAgent.mainModel(inConfig: config) == "claude-opus-4-8")
+        #expect(HermesAgent.mainModel(inConfig: config + "model:\n  default: \"qwen3.5:9b\"\n") == "qwen3.5:9b")
+        #expect(HermesAgent.mainModel(inConfig: "agent:\n  max_turns: 5\n") == nil)
+    }
+
     @Test func routeValuesAreQuotedSafely() {
         #expect(HermesProfileFiles.quoted("a\"b: c # d") == #""a\"b: c # d""#)
         #expect(HermesProfileFiles.quoted("https://x.example/v1") == #""https://x.example/v1""#)

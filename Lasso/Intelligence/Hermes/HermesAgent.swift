@@ -84,6 +84,35 @@ enum HermesAgent {
     static let useOwnHermesKey = "hermes.useOwn"
     static var usesOwnHermes: Bool { UserDefaults.standard.bool(forKey: useOwnHermesKey) }
 
+    /// "Your Hermes · claude-opus-4-8": what answers Agent turns when the user's own Hermes is on. Its
+    /// model comes from that Hermes's config when the address is on this Mac; elsewhere it's unknown.
+    static var ownHermesLabel: String {
+        guard let url = URL(string: baseURLString), isLoopback(url),
+              let config = try? String(contentsOf: FileManager.default.homeDirectoryForCurrentUser
+                .appending(path: ".hermes/config.yaml"), encoding: .utf8),
+              let model = mainModel(inConfig: config) else { return "Your Hermes" }
+        return "Your Hermes · \(model)"
+    }
+
+    /// `model.default` from a Hermes config.yaml: the last top-level `model:` block wins, as in PyYAML.
+    static func mainModel(inConfig config: String) -> String? {
+        var inModel = false
+        var found: String?
+        for line in config.split(separator: "\n", omittingEmptySubsequences: false) {
+            if let first = line.first, !first.isWhitespace, first != "#" {
+                inModel = line.hasPrefix("model:")
+                continue
+            }
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if inModel, trimmed.hasPrefix("default:") {
+                let value = trimmed.dropFirst("default:".count).trimmingCharacters(in: .whitespaces)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                if !value.isEmpty { found = value }
+            }
+        }
+        return found
+    }
+
     static var isConfigured: Bool { usesOwnHermes ? client() != nil : HermesRuntime.hermesExecutable() != nil }
 
     /// Can run here: configured (or installed, for Lasso's own), and allowed by the privacy setting.

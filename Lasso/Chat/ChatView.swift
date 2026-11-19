@@ -6,6 +6,8 @@ struct ChatView: View {
     @Bindable private var chat = ChatController.shared
     @Bindable private var intelligence = IntelligenceCoordinator.shared
     @AppStorage("ui.resultTextScale") private var textScale = 1.0
+    /// Observed so the header updates the moment "Use my own Hermes" is switched in Settings.
+    @AppStorage(HermesAgent.useOwnHermesKey) private var useOwnHermes = false
     @FocusState private var inputFocused: Bool
     @State private var isDropTarget = false
     @State private var slashSelection = 0
@@ -151,8 +153,15 @@ struct ChatView: View {
     private var modelChip: some View {
         Menu {
             // Full model string lives here (moved out of the header, which shows a friendly name).
-            Text(intelligence.textEngineLabel)
-            Section("Language model") {
+            if agentUsesOwnHermes {
+                // Agent turns go to the user's Hermes and think with its model; Lasso's choice below
+                // only applies with Agent off. Saying so is the whole point of this branch.
+                Text("Agent: \(HermesAgent.ownHermesLabel)")
+                Text("Its model is set in your Hermes.")
+            } else {
+                Text(intelligence.textEngineLabel)
+            }
+            Section(agentUsesOwnHermes ? "With Agent off" : "Language model") {
                 Button { chat.selectTextModel(.onDevice) } label: {
                     Label("Apple Intelligence",
                           systemImage: chat.isCurrentTextModel(.onDevice) ? "checkmark" : "cpu")
@@ -213,8 +222,9 @@ struct ChatView: View {
             Button("Open Intelligence Settings…") { openSettings() }
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: textIcon).font(.system(size: 9))
-                Text(Self.friendlyModel(intelligence.textEngineLabel))
+                Image(systemName: agentUsesOwnHermes ? "point.3.connected.trianglepath.dotted" : textIcon)
+                    .font(.system(size: 9))
+                Text(agentUsesOwnHermes ? "Your Hermes" : Self.friendlyModel(intelligence.textEngineLabel))
                     .font(.caption).lineLimit(1).truncationMode(.middle)
                 Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold))
             }
@@ -228,8 +238,11 @@ struct ChatView: View {
         // Its natural width, so it sits against the close button. (A maxWidth frame here made the
         // pop-up take the whole 170pt and float the chip left of the ✕.)
         .fixedSize()
-        .help("Switch model")
+        .help(agentUsesOwnHermes ? "Agent replies come from your Hermes and its model" : "Switch model")
     }
+
+    /// Agent is on and pointed at the user's own Hermes (Settings ▸ Intelligence ▸ Agent).
+    private var agentUsesOwnHermes: Bool { chat.hermesActive && useOwnHermes }
 
     /// "Groq · openai/gpt-oss-20b" → "gpt-oss-20b" for the compact chip.
     private static func shortModel(_ label: String) -> String {
