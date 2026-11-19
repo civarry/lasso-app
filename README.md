@@ -91,8 +91,9 @@ Local-only mode.
 
 Out of the box everything runs on your Mac — text via **Apple Intelligence**,
 vision and ranking via a local **Ollama** model. The only things that leave your
-Mac are the optional web lookup in Identify and the optional Google Lens search,
-and both stay off until you turn them on.
+Mac are the optional web lookup in Identify, the optional Google Lens search
+(both off until you turn them on), and the update check, which asks GitHub for
+the latest version a few times a day and sends nothing but Lasso's version.
 There's a **Local-only mode** that forces a local model and blocks every
 incidental network call. Cloud models (OpenAI, Groq, Anthropic, custom) are
 supported too, but strictly opt-in; API keys live in the macOS Keychain.
@@ -109,6 +110,21 @@ supported too, but strictly opt-in; API keys live in the macOS Keychain.
    You only do this once.
 4. Grant **Screen Recording** in System Settings → Privacy & Security, then
    relaunch. The capture shortcut defaults to **⌃⇧C** (changeable in Settings).
+
+## Updates
+
+From 0.16.0, Lasso updates itself. It checks for a new version every few hours,
+downloads it in the background, and installs it the next moment it's idle (no
+capture on screen, no chat reply coming in), then relaunches. No more
+downloading the DMG for each release. Settings → General → Updates turns either
+step off, and the menu bar has **Check for Updates…**. Local-only mode stops the
+checks.
+
+An update installs only if it's signed with Lasso's update key, so a tampered
+download is rejected. Releases from 0.16.0 on are also signed with one
+long-lived certificate, so macOS keeps your Screen Recording and microphone
+permissions across updates. Coming from 0.15.x or earlier, install 0.16.0 from
+the DMG once and grant those permissions again; after that it's automatic.
 
 ## Requirements
 
