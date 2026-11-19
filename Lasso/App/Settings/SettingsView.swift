@@ -52,6 +52,7 @@ struct SettingsView: View {
         var hermesBaseURL = ""
         var hermesKey = ""
         var hermesApprovalsConfirmed = false
+        var hermesLetDecide = false
         // Independent image (vision) provider.
         var visionEngine: VisionEngine = .matchText
         var visionAnthropicBaseURL = "https://api.anthropic.com"
@@ -824,6 +825,13 @@ struct SettingsView: View {
                     SettingsSwitch(title: "Approvals are manual", isOn: $draft.hermesApprovalsConfirmed)
                 }
             }
+            SettingsRow("Let Hermes approve risky commands itself",
+                        caption: "Not recommended. Lasso normally refuses a Hermes that isn't set to ask "
+                            + "(approvals.mode: manual). With this on, Hermes or its helper model decides on "
+                            + "commands like rm -r without asking you, while chat messages can include text "
+                            + "from your screen. Every Hermes reply says when this is on.") {
+                SettingsSwitch(title: "Let Hermes approve risky commands itself", isOn: $draft.hermesLetDecide)
+            }
             SettingsRow("Connection", caption: hermesTestCaption) {
                 Button {
                     hermesTest = .testing
@@ -858,8 +866,10 @@ struct SettingsView: View {
         case .idle: "Not tested"
         case .testing: "Testing…"
         case .ok(let model, let mode):
-            switch HermesAgent.gate(mode, local: hermesAddressIsLocal, confirmed: draft.hermesApprovalsConfirmed) {
+            switch HermesAgent.gate(mode, local: hermesAddressIsLocal, confirmed: draft.hermesApprovalsConfirmed,
+                                    letHermesDecide: draft.hermesLetDecide) {
             case .allowed: "Connected · profile \(model) · asks you before risky commands"
+            case .unattended: "Connected · profile \(model) · Hermes approves risky commands itself"
             case .blocked(let reason):
                 "Connected · profile \(model). " + reason.replacingOccurrences(of: "```yaml\n", with: "")
                     .replacingOccurrences(of: "\n```", with: "").replacingOccurrences(of: "\n", with: " ")
@@ -2288,6 +2298,7 @@ struct SettingsView: View {
         d.hermesBaseURL = UserDefaults.standard.string(forKey: HermesAgent.baseURLKey) ?? ""
         d.hermesKey = HermesAgent.apiKey
         d.hermesApprovalsConfirmed = HermesAgent.client().map { HermesAgent.approvalsConfirmed(for: $0.baseURL) } ?? false
+        d.hermesLetDecide = HermesAgent.letHermesDecide
         d.visionEngine = intelligence.visionEngine
         d.visionAnthropicBaseURL = intelligence.visionAnthropicBaseURL
         d.visionAnthropicModel = intelligence.visionAnthropicModel
@@ -2410,6 +2421,7 @@ struct SettingsView: View {
         UserDefaults.standard.set(draft.hermesBaseURL.trimmingCharacters(in: .whitespacesAndNewlines),
                                   forKey: HermesAgent.baseURLKey)
         HermesAgent.setAPIKey(draft.hermesKey)
+        UserDefaults.standard.set(draft.hermesLetDecide, forKey: HermesAgent.letHermesDecideKey)
         // The confirmation belongs to the address it was given for, and only to one Lasso can't check.
         if draft.hermesApprovalsConfirmed, !hermesAddressIsLocal, let client = HermesAgent.client() {
             UserDefaults.standard.set(client.baseURL.absoluteString, forKey: HermesAgent.approvalsConfirmedKey)

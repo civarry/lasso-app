@@ -829,6 +829,12 @@ struct MessageBubble: View {
                             .foregroundStyle(message.isError ? Color.orange : Color.primary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    if let notice = message.notice {
+                        Label(notice, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if let approval = message.approval {
                         ApprovalCard(approval: approval) { chat.respondToApproval(message.id, choice: $0) }
                     }

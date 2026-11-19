@@ -189,6 +189,12 @@ struct HermesAgentTests {
         guard case .blocked = HermesAgent.gate(.unknown, local: false, confirmed: false) else {
             Issue.record("unverified Hermes was allowed"); return
         }
+        // The explicit opt-out lets any mode through, flagged so every reply carries the warning; it
+        // changes nothing for a manual Hermes.
+        #expect(HermesAgent.gate(.other("smart"), local: true, confirmed: false, letHermesDecide: true) == .unattended)
+        #expect(HermesAgent.gate(.other("off"), local: true, confirmed: false, letHermesDecide: true) == .unattended)
+        #expect(HermesAgent.gate(.unknown, local: true, confirmed: false, letHermesDecide: true) == .unattended)
+        #expect(HermesAgent.gate(.manual, local: true, confirmed: false, letHermesDecide: true) == .allowed)
         // On this Mac the config should be readable: not finding it is never confirmed away.
         guard case .blocked = HermesAgent.gate(.unknown, local: true, confirmed: true) else {
             Issue.record("a local Hermes with no readable config was allowed"); return

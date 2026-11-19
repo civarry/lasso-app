@@ -76,7 +76,8 @@ goes. When Hermes flags a risky command, Lasso shows it and waits for you to
 allow or deny it. Lasso only sends turns to a Hermes whose `approvals.mode` is
 `manual`, since in any other mode Hermes decides risky commands by itself (a
 Hermes started with `--yolo` skips approvals whatever its config says, so don't
-use it with Lasso). Turn on its API server (`API_SERVER_ENABLED`
+use it with Lasso). If you'd rather let Hermes decide those itself, Settings
+has a switch for that; every Hermes reply then says it's on. Turn on its API server (`API_SERVER_ENABLED`
 and `API_SERVER_KEY` in the Hermes profile's `.env`, then `hermes gateway`), and
 enter the address and key in Settings ▸ Intelligence ▸ Hermes Agent. Hermes uses
 its own models and tools, so it's unavailable in Local-only mode.

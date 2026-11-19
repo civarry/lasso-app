@@ -47,4 +47,15 @@ struct HermesChatRenderTests {
         message.steps = turn.steps
         try render(message, to: "hermes-answer.png")
     }
+
+    @Test func unattendedNotice() throws {
+        var turn = HermesTurn()
+        turn.apply(.toolStarted(tool: "terminal", preview: "rm -r ~/Downloads/old-logs"))
+        turn.apply(.toolCompleted(tool: "terminal", duration: 0.4, failed: false))
+        turn.apply(.completed(output: "Removed the old logs folder.", inputTokens: nil, outputTokens: nil))
+        var message = ChatMessage(role: .assistant, text: turn.text)
+        message.steps = turn.steps
+        message.notice = HermesAgent.unattendedNotice
+        try render(message, to: "hermes-unattended.png")
+    }
 }

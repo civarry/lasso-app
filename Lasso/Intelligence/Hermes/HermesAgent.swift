@@ -24,6 +24,14 @@ enum HermesAgent {
         UserDefaults.standard.string(forKey: approvalsConfirmedKey) == baseURL.absoluteString
     }
 
+    /// The user's explicit opt-out: let Hermes decide risky commands itself (its `smart` / `off` mode,
+    /// or a config Lasso can't read). Off by default; every Hermes reply says so while it's on.
+    static let letHermesDecideKey = "hermes.letHermesDecide"
+    static var letHermesDecide: Bool { UserDefaults.standard.bool(forKey: letHermesDecideKey) }
+
+    /// Shown under every Hermes reply while `letHermesDecide` lets a non-manual Hermes through.
+    static let unattendedNotice = "Hermes approves risky commands itself. Change this in Settings ▸ Intelligence ▸ Hermes Agent."
+
     static func isLoopback(_ url: URL) -> Bool {
         ["127.0.0.1", "localhost", "::1"].contains((url.host ?? "").lowercased())
     }
@@ -163,12 +171,17 @@ enum HermesAgent {
     /// config live, so this is checked at the start of every turn.
     enum Gate: Equatable {
         case allowed
+        /// Allowed only because the user let Hermes decide risky commands itself: warn on every reply.
+        case unattended
         case blocked(String)
     }
 
     /// `local`: the gateway is on this Mac, where its config should be readable; not finding it there is
-    /// a reason to refuse, never something a confirmation can cover.
-    static func gate(_ mode: ApprovalMode, local: Bool, confirmed: Bool) -> Gate {
+    /// a reason to refuse, never something a confirmation can cover. `letHermesDecide`: the user's
+    /// explicit opt-out in Settings, which lets any mode through with a standing warning.
+    static func gate(_ mode: ApprovalMode, local: Bool, confirmed: Bool, letHermesDecide: Bool = false) -> Gate {
+        if mode == .manual { return .allowed }
+        if letHermesDecide { return .unattended }
         switch mode {
         case .manual:
             return .allowed

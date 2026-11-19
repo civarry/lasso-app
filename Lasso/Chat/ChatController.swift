@@ -2476,8 +2476,14 @@ final class ChatController {
             let profile = try await client.check()
             let mode = HermesAgent.approvalMode(profile: profile, baseURL: client.baseURL)
             let local = HermesAgent.isLoopback(client.baseURL)
-            if case .blocked(let reason) = HermesAgent.gate(mode, local: local,
-                                                            confirmed: HermesAgent.approvalsConfirmed(for: client.baseURL)) {
+            switch HermesAgent.gate(mode, local: local, confirmed: HermesAgent.approvalsConfirmed(for: client.baseURL),
+                                    letHermesDecide: HermesAgent.letHermesDecide) {
+            case .allowed:
+                break
+            case .unattended:
+                Log.chat.notice("hermes · unattended: user lets Hermes decide (\(String(describing: mode), privacy: .public))")
+                edit(assistantID) { $0.notice = HermesAgent.unattendedNotice }
+            case .blocked(let reason):
                 Log.chat.notice("hermes · refused: approvals not manual (\(String(describing: mode), privacy: .public))")
                 end(error: reason)
                 return

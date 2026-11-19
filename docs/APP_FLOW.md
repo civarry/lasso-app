@@ -600,7 +600,10 @@ profile's config.yaml (found from the profile name the server reports, for a gat
 say `manual`, read the way Hermes reads it (direct child of `approvals:`, last wins, YAML booleans). A
 local gateway whose config can't be found is refused outright; a remote one needs "Approvals are manual"
 confirmed in Settings, stored for that address only. Not detectable: a gateway started with `--yolo` /
-`HERMES_YOLO_MODE`, or a loopback address tunnelled to another machine. "Always allow" is never offered
+`HERMES_YOLO_MODE`, or a loopback address tunnelled to another machine. The user can opt out ("Let
+Hermes approve risky commands itself", off by default, `HermesAgent.letHermesDecide`): the gate then
+returns `.unattended` for any non-manual mode, and every reply carries an orange notice in its bubble
+(`ChatMessage.notice`), not just a step inside the collapsible trace. "Always allow" is never offered
 from chat. A turn stays bound to the conversation it started in. Stop (or a dropped stream) sends
 `/stop` unless the run already ended, including a run created while Stop was pressed. Off in local-only
 mode (Hermes uses its own cloud models and web tools), enforced in `HermesClient` on every request and
