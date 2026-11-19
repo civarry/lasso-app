@@ -66,6 +66,9 @@ struct ChatMessage: Identifiable, @unchecked Sendable {
     var approval: HermesApproval?
     /// A standing warning shown in the bubble (Hermes approving risky commands itself).
     var notice: String?
+    /// Written by the Agent (Hermes, with tools). The regular chat model sees these marked as such, so it
+    /// doesn't take "I opened Chrome" in the history as something it can do.
+    var viaAgent = false
 }
 
 /// One step in an assistant turn's background activity trace.

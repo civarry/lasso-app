@@ -167,6 +167,8 @@ final class ChatController {
 
     \(formatRules(formatting))
 
+    \(actionRule)
+
     Background, not a topic: the device clock reads \(currentDateTimeString). Use it only when the \
     user's question needs the date or time, and don't mention it otherwise. Your training data may be \
     older, so treat your own knowledge of recent events as possibly stale and never claim a past year is \
@@ -213,6 +215,20 @@ final class ChatController {
     /// more shared attributes") replaces taste with something checkable. Prose is the default because
     /// most chat answers are conversational, and structure imposed on a conversational answer reads as
     /// filler. See also `MarkdownTable.isDegenerate`, which catches the tables that slip through.
+    /// The regular chat model can't act on the Mac, and must never say it did. Without this, a thread
+    /// where the Agent opened apps taught the model to claim the same after Agent was turned off.
+    static var actionRule: String {
+        let howTo = HermesAgent.isAvailable
+            ? "say that Agent mode can do it: the Agent button in the message box."
+            : "say you can't do that here."
+        return """
+        You can't take actions on the user's Mac: you can't open or close apps, run commands, browse \
+        websites, or create, move or delete files, and you never say or imply that you did. Earlier replies \
+        noted as handled in Agent mode were done by Lasso's Agent, which had tools; that mode is off now. If \
+        the user asks you to do something on their Mac, \(howTo)
+        """
+    }
+
     static func formatRules(_ policy: FormatPolicy) -> String {
         switch policy {
         case .compact:
@@ -2186,14 +2202,37 @@ final class ChatController {
     /// Map visible `ChatMessage`s to the context builder's `HistoryTurn`s — the exact text the model
     /// saw (`promptText`), `<think>` stripped on assistant turns. Shared by `buildTurns` and the
     /// background summarizer so both work off identical content.
-    private static func historyTurns(from messages: ArraySlice<ChatMessage>) -> [ChatContextBuilder.HistoryTurn] {
-        messages.map { m in
+    /// What the regular model sees in its own place for an Agent reply. Small models copy the pattern
+    /// of earlier assistant turns more than they follow instructions: shown "Opened Chrome for you.",
+    /// a 7B model answered "open Safari" with "Opened Safari for you." So its own history shows it
+    /// declining to act (worth copying: seen copied verbatim), and the Agent's actual reply travels in a note on the user's
+    /// turn, so nothing it found is lost.
+    /// Worded to be right even when copied word for word as the answer to a new request.
+    static let agentTurnStandIn = "I can't act on your Mac myself; turn on Agent (the button in the message box) for requests like that."
+
+    static func agentNote(_ reply: String) -> String {
+        "\n\n(Note from Lasso: Agent mode, which had tools and is off now, handled this and replied: \"\(reply)\")"
+    }
+
+    static func historyTurns(from messages: ArraySlice<ChatMessage>) -> [ChatContextBuilder.HistoryTurn] {
+        var turns: [ChatContextBuilder.HistoryTurn] = []
+        for m in messages {
+            if m.role == .assistant, m.viaAgent {
+                let reply = Self.stripThoughtBlocks(from: m.text).trimmingCharacters(in: .whitespacesAndNewlines)
+                if let last = turns.indices.last, turns[last].role == .user, !reply.isEmpty {
+                    turns[last] = .init(role: .user, text: turns[last].text + agentNote(reply),
+                                        imageBase64s: turns[last].imageBase64s)
+                }
+                turns.append(.init(role: .assistant, text: agentTurnStandIn, imageBase64s: []))
+                continue
+            }
             let role: ChatTurn.Role = m.role == .user ? .user : .assistant
             let text = role == .assistant
                 ? Self.stripThoughtBlocks(from: m.promptText ?? m.text)
                 : (m.promptText ?? m.text)
-            return .init(role: role, text: text, imageBase64s: m.imageBase64s)
+            turns.append(.init(role: role, text: text, imageBase64s: m.imageBase64s))
         }
+        return turns
     }
 
     // MARK: - Background summarization
@@ -2471,6 +2510,7 @@ final class ChatController {
         }
 
         guard !PrivacyMode.localOnly else { end(error: HermesError.localOnly.localizedDescription); return }
+        edit(assistantID) { $0.viaAgent = true }
         let t0 = Date()
         // Lasso's own Hermes, thinking with the model chosen in Lasso when Hermes can reach it; or, in
         // Settings' advanced mode, a Hermes the user runs.
@@ -2531,7 +2571,10 @@ final class ChatController {
                 break
             case .unattended:
                 Log.chat.notice("hermes · unattended: user lets Hermes decide (\(String(describing: mode), privacy: .public))")
-                edit(assistantID) { $0.notice = HermesAgent.unattendedNotice }
+                // Once per conversation; the orange Agent button says it from then on.
+                if !session.messages.contains(where: { $0.notice != nil }) {
+                    edit(assistantID) { $0.notice = HermesAgent.unattendedNotice }
+                }
             case .blocked(let reason):
                 Log.chat.notice("hermes · refused: approvals not manual (\(String(describing: mode), privacy: .public))")
                 end(error: reason)

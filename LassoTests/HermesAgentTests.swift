@@ -214,6 +214,23 @@ struct HermesAgentTests {
         #expect(try String(contentsOf: file, encoding: .utf8) == "A=2\n")
     }
 
+    /// With Agent off, the regular model must not see its "own" past replies claiming actions: the
+    /// Agent's reply moves into a note on the user's turn, and the assistant turn declines to act.
+    @MainActor
+    @Test func agentRepliesBecomeNotesInRegularHistory() {
+        var agent = ChatMessage(role: .assistant, text: "Opened Chrome for you.")
+        agent.viaAgent = true
+        let messages = [ChatMessage(role: .user, text: "open chrome"), agent,
+                        ChatMessage(role: .user, text: "thanks"), ChatMessage(role: .assistant, text: "Anytime.")]
+        let turns = ChatController.historyTurns(from: messages[...])
+        #expect(turns.map(\.role) == [.user, .assistant, .user, .assistant])
+        #expect(turns[0].text.hasPrefix("open chrome"))
+        #expect(turns[0].text.contains("Opened Chrome for you."))
+        #expect(turns[1].text == ChatController.agentTurnStandIn)
+        #expect(!turns[1].text.lowercased().contains("opened"))
+        #expect(turns[3].text == "Anytime.")
+    }
+
     @Test func clientNormalizesTheAddress() {
         #expect(HermesClient(baseURLString: "http://127.0.0.1:8642/v1/", apiKey: "k")?.baseURL.absoluteString == "http://127.0.0.1:8642")
         #expect(HermesClient(baseURLString: " http://localhost:8642 ", apiKey: " k ")?.apiKey == "k")
