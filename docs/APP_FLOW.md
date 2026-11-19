@@ -606,7 +606,8 @@ children and the recorded gateway, then waits for the port to close. Each start 
 stays unbindable for ~30 s (TIME_WAIT), which made an immediate restart on the same port fail.
 
 **Model route** (`HermesRoute.current`): Anthropic → `anthropic` + model (+ key); an OpenAI-compatible
-connection → `custom` + base URL + key; Gemini → `gemini`; Ollama → `custom` + its `/v1` endpoint.
+connection → `custom` + base URL + key; Gemini → `gemini`; Ollama → `custom` + its `/v1` endpoint, with
+`OllamaAgentModel`'s `lasso-agent/<model>` variant (num_ctx 65,536) instead of the model itself.
 Written as `platforms.api_server.extra.model_routes.lasso` and selected per run with `"model": "lasso"`
 (verified in Hermes's session store: the routed turn ran on the routed model). MLX → `custom` + Lasso's
 own `LocalModelServer` (below). Apple Intelligence can't be served to another program: no route, and the
@@ -787,6 +788,14 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Agent on Ollama gets a big enough context.** Ollama loads models with 4,096 tokens of context and its
+  OpenAI endpoint (Hermes's) ignores `options.num_ctx` (checked on 0.40.16), so every Agent turn failed
+  with "Context length exceeded … cannot compress further". `OllamaAgentModel` makes a variant,
+  `lasso-agent/<model>`, whose own parameters set `num_ctx` 65,536 (Hermes's minimum is 64K); it shares
+  the model's files. Measured on qwen3.5:2b: 15.9 s first reply, 2.9 s for a turn that ran a command. A
+  model whose maximum is under 64K is refused by Hermes with its own message. Found while testing: an
+  imported Gemma 4 GGUF whose template has no tools section wrote a made-up tool call and "output" as
+  text; the live tests now require a command to have actually run.
 - **Updates stop asking for the Keychain password.** With no Team ID (self-signed release
   certificate) macOS ties a Keychain item to one exact build (`cdhash:` in its partition list), so every
   update asked once per saved key, about nine times. `Keychain` now saves items whose decrypt permission
