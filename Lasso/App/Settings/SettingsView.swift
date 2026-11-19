@@ -53,6 +53,7 @@ struct SettingsView: View {
         var hermesKey = ""
         var hermesApprovalsConfirmed = false
         var hermesLetDecide = false
+        var hermesUseOwn = false
         // Independent image (vision) provider.
         var visionEngine: VisionEngine = .matchText
         var visionAnthropicBaseURL = "https://api.anthropic.com"
@@ -791,22 +792,77 @@ struct SettingsView: View {
         }
     }
 
-    /// Hermes Agent: an optional chat engine the user runs themselves (`HermesAgent`). The address and
-    /// key are all Lasso needs; which model and tools the agent uses is set in Hermes.
+    /// The chat's Agent, powered by Hermes Agent. By default Lasso sets up and runs its own Hermes
+    /// (`HermesRuntime`); advanced users can point it at a Hermes they run instead.
     private var hermesSection: some View {
-        SettingsCard(title: "Hermes Agent",
+        SettingsCard(title: "Agent",
                      footnote: draft.localOnly
-                         ? "Off in local-only mode: Hermes uses its own cloud models and web tools."
-                         : "Optional. Lets chat hand turns to your Hermes Agent (pick it in the chat's model menu). "
-                           + "Run `hermes gateway` with API_SERVER_ENABLED=true and API_SERVER_KEY set in your "
-                           + "Hermes profile's .env. Hermes's own settings decide its model and tools; Lasso asks "
-                           + "you before any command Hermes flags as risky.") {
+                         ? "Off in local-only mode: the agent uses cloud models and the web."
+                         : "Lets the chat take actions: search the web, read files, run commands. Powered by "
+                           + "Hermes Agent, which you install once; Lasso sets it up in its own Hermes profile, "
+                           + "starts it when you turn on Agent in the chat, stops it when Lasso quits, and asks "
+                           + "you before any command Hermes flags as risky. It thinks with the model you pick "
+                           + "in Lasso (Apple Intelligence and MLX models run only inside Lasso, so for those "
+                           + "it uses Hermes's own).") {
+            if !draft.hermesUseOwn {
+                SettingsRow("Status", caption: agentStatusCaption) { agentStatusControl }
+            }
+            SettingsRow("Let the agent approve risky commands itself",
+                        caption: "Not recommended. Normally Lasso only works with a Hermes that asks you first "
+                            + "(approvals.mode: manual). With this on, Hermes or its helper model decides on "
+                            + "commands like rm -r without asking, while chat messages can include text from "
+                            + "your screen. Every agent reply says when this is on.") {
+                SettingsSwitch(title: "Let the agent approve risky commands itself", isOn: $draft.hermesLetDecide)
+            }
+            SettingsRow("Use a Hermes I run",
+                        caption: "Advanced: connect to your own Hermes gateway (another Mac, or your own profile) "
+                            + "instead of the one Lasso manages.") {
+                SettingsSwitch(title: "Use a Hermes I run", isOn: $draft.hermesUseOwn)
+            }
+            if draft.hermesUseOwn { ownHermesRows }
+        }
+        .onAppear { HermesRuntime.shared.refresh() }
+    }
+
+    private var agentStatusCaption: String {
+        switch HermesRuntime.shared.state {
+        case .notInstalled: "Install Hermes Agent first: run `brew install hermes-agent` in Terminal, then Check again."
+        case .notSetUp: "Hermes Agent is installed. Set up creates a Lasso profile from your Hermes settings; your own profiles aren't changed."
+        case .settingUp: "Setting up…"
+        case .stopped: "Ready. Turn on Agent in the chat to use it."
+        case .starting: "Starting…"
+        case .running: "Running."
+        case .failed(let message): message
+        }
+    }
+
+    @ViewBuilder
+    private var agentStatusControl: some View {
+        let runtime = HermesRuntime.shared
+        switch runtime.state {
+        case .notInstalled:
+            Button("Check again") { runtime.refresh() }.buttonStyle(.bordered)
+        case .notSetUp, .failed:
+            Button(runtime.isSetUp ? "Repair" : "Set up") {
+                Task { try? await runtime.setUp() }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(draft.localOnly || PrivacyMode.localOnly)
+        case .settingUp, .starting:
+            ProgressView().controlSize(.small)
+        case .stopped, .running:
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        }
+    }
+
+    @ViewBuilder
+    private var ownHermesRows: some View {
             SettingsRow("Address") {
                 TextField("", text: $draft.hermesBaseURL, prompt: Text(HermesAgent.defaultBaseURL))
                     .textFieldStyle(.roundedBorder)
                     .settingsFieldWidth()
             }
-            SettingsRow("API key", caption: "API_SERVER_KEY from Hermes's .env") {
+            SettingsRow("API key", caption: "API_SERVER_KEY from that Hermes's .env") {
                 SettingsKeyField(text: $draft.hermesKey, placeholder: "API_SERVER_KEY",
                                  onClear: { draft.hermesKey = "" })
                     .settingsFieldWidth()
@@ -824,13 +880,6 @@ struct SettingsView: View {
                                 + "once approvals.mode: manual is set there; Lasso won't send turns until then.") {
                     SettingsSwitch(title: "Approvals are manual", isOn: $draft.hermesApprovalsConfirmed)
                 }
-            }
-            SettingsRow("Let Hermes approve risky commands itself",
-                        caption: "Not recommended. Lasso normally refuses a Hermes that isn't set to ask "
-                            + "(approvals.mode: manual). With this on, Hermes or its helper model decides on "
-                            + "commands like rm -r without asking you, while chat messages can include text "
-                            + "from your screen. Every Hermes reply says when this is on.") {
-                SettingsSwitch(title: "Let Hermes approve risky commands itself", isOn: $draft.hermesLetDecide)
             }
             SettingsRow("Connection", caption: hermesTestCaption) {
                 Button {
@@ -2299,6 +2348,7 @@ struct SettingsView: View {
         d.hermesKey = HermesAgent.apiKey
         d.hermesApprovalsConfirmed = HermesAgent.client().map { HermesAgent.approvalsConfirmed(for: $0.baseURL) } ?? false
         d.hermesLetDecide = HermesAgent.letHermesDecide
+        d.hermesUseOwn = HermesAgent.usesOwnHermes
         d.visionEngine = intelligence.visionEngine
         d.visionAnthropicBaseURL = intelligence.visionAnthropicBaseURL
         d.visionAnthropicModel = intelligence.visionAnthropicModel
@@ -2422,6 +2472,10 @@ struct SettingsView: View {
                                   forKey: HermesAgent.baseURLKey)
         HermesAgent.setAPIKey(draft.hermesKey)
         UserDefaults.standard.set(draft.hermesLetDecide, forKey: HermesAgent.letHermesDecideKey)
+        if draft.hermesUseOwn != HermesAgent.usesOwnHermes { HermesRuntime.shared.stop() }
+        UserDefaults.standard.set(draft.hermesUseOwn, forKey: HermesAgent.useOwnHermesKey)
+        // Local-only: Lasso's Hermes may not keep running (it reaches cloud models and the web).
+        if draft.localOnly { HermesRuntime.shared.stop() }
         // The confirmation belongs to the address it was given for, and only to one Lasso can't check.
         if draft.hermesApprovalsConfirmed, !hermesAddressIsLocal, let client = HermesAgent.client() {
             UserDefaults.standard.set(client.baseURL.absoluteString, forKey: HermesAgent.approvalsConfirmedKey)

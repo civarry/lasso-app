@@ -202,15 +202,7 @@ struct ChatView: View {
                     }
                 }
             }
-            if HermesAgent.isAvailable {
-                Section("Agent") {
-                    Button { chat.hermesSelected.toggle() } label: {
-                        Label("Hermes Agent", systemImage: chat.hermesActive ? "checkmark" : "point.3.connected.trianglepath.dotted")
-                    }
-                    .help("Hand chat turns to your Hermes Agent: it plans, uses its own tools, and asks before risky commands.")
-                }
-            }
-            if chat.imageInputAvailable, !chat.hermesActive {
+            if chat.imageInputAvailable {
                 Section("Image model") {
                     Text(Self.shortModel(intelligence.imageEngineLabel))   // read-only — change in Settings
                 }
@@ -221,9 +213,8 @@ struct ChatView: View {
             Button("Open Intelligence Settings…") { openSettings() }
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: chat.hermesActive ? "point.3.connected.trianglepath.dotted" : textIcon)
-                    .font(.system(size: 9))
-                Text(chat.hermesActive ? "Hermes Agent" : Self.friendlyModel(intelligence.textEngineLabel))
+                Image(systemName: textIcon).font(.system(size: 9))
+                Text(Self.friendlyModel(intelligence.textEngineLabel))
                     .font(.caption).lineLimit(1).truncationMode(.middle)
                 Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold))
             }
@@ -387,14 +378,27 @@ struct ChatView: View {
 
                 Button { chat.webSearchOn.toggle() } label: { Image(systemName: "globe") }
                     .buttonStyle(IconButtonStyle())
-                    .disabled(!chat.webConnectorsAvailable)
-                    .foregroundStyle(!chat.webConnectorsAvailable ? Color.secondary.opacity(0.4)
+                    .disabled(!chat.webConnectorsAvailable || chat.hermesActive)
+                    .foregroundStyle(!chat.webConnectorsAvailable || chat.hermesActive ? Color.secondary.opacity(0.4)
                                      : (chat.webSearchOn ? Color.accentColor : Color.secondary))
-                    .help(!chat.webConnectorsAvailable
+                    .help(chat.hermesActive
+                          ? "The agent searches the web itself while Agent is on"
+                          : !chat.webConnectorsAvailable
                           ? "No web connectors on — enable Web search under Settings ▸ Connectors to ground answers"
                           : (chat.webSearchOn
                              ? "Web grounding ON — answers use your connectors (Wikipedia, search, reverse-image)"
                              : "Web grounding OFF — tap to ground answers with your connectors"))
+
+                if chat.agentAvailable {
+                    Button { chat.toggleAgent() } label: {
+                        Image(systemName: "point.3.connected.trianglepath.dotted")
+                    }
+                    .buttonStyle(IconButtonStyle())
+                    .foregroundStyle(chat.hermesActive ? Color.accentColor : Color.secondary)
+                    .help(chat.hermesActive
+                          ? "Agent on: the chat can use tools on your Mac (web, files, terminal) and asks before risky commands. Click to turn off."
+                          : "Agent: let the chat take actions (search, read files, run commands), asking before risky ones")
+                }
 
                 micButton
 

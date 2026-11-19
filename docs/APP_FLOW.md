@@ -579,41 +579,45 @@ flowchart LR
 
 ---
 
-### Hermes Agent (optional engine, `Intelligence/Hermes/HermesAgent.swift`, `Chat/HermesTurn.swift`)
+### Agent (optional, powered by Hermes Agent: `Intelligence/Hermes/`, `Chat/HermesTurn.swift`)
 
-An alternative to the chat's own loop: picked under **Agent** in the chat's model menu, it hands each
-turn to the user's own Hermes Agent gateway (API server on, address + key in Settings ▸ Intelligence ▸
-Hermes Agent). Lasso never starts Hermes; it speaks plain HTTP to `/v1/runs`. Chosen over the gateway's
-OpenAI-compatible chat endpoint and over ACP after measuring all three (Hermes 0.21, 2026-11-19):
-`/v1/runs` is where a flagged command waits for the person, Stop kills a running tool in
-~0.3 s (a disconnect alone doesn't; over ACP a cancel mid-tool wedged the session), and it needs no
-child process. Per turn Lasso sends its own text history (`ChatController.hermesHistory`, so Edit /
-Regenerate / Delete work as with any model), a `session_id` per conversation and first message (Hermes
-reloads a session's stored history when a run brings none, so `/clear` must get a new one), attachments as
-JPEG data URLs, and short `instructions` saying screen text is content, not commands. Lasso's
-grounding, memory retrieval and image description are skipped: the agent has its own tools.
-**Approvals depend on Hermes's config:** only `approvals.mode: manual` sends every flagged command to
-Lasso; in Hermes's default `smart` mode a helper model approved `rm -r` without asking (caught by
-`HermesAgentLiveTests`). The API can't change that per run, so **Lasso refuses to send a turn** unless
-`HermesAgent.gate` allows it, checked before every turn because Hermes re-reads its config live: the
-profile's config.yaml (found from the profile name the server reports, for a gateway on this Mac) must
-say `manual`, read the way Hermes reads it (direct child of `approvals:`, last wins, YAML booleans). A
-local gateway whose config can't be found is refused outright; a remote one needs "Approvals are manual"
-confirmed in Settings, stored for that address only. Not detectable: a gateway started with `--yolo` /
-`HERMES_YOLO_MODE`, or a loopback address tunnelled to another machine. The user can opt out ("Let
-Hermes approve risky commands itself", off by default, `HermesAgent.letHermesDecide`): the gate then
-returns `.unattended` for any non-manual mode, and every reply carries an orange notice in its bubble
-(`ChatMessage.notice`), not just a step inside the collapsible trace. "Always allow" is never offered
-from chat. A turn stays bound to the conversation it started in. Stop (or a dropped stream) sends
-`/stop` unless the run already ended, including a run created while Stop was pressed. Off in local-only
-mode (Hermes uses its own cloud models and web tools), enforced in `HermesClient` on every request and
-mid-stream, not just the menu.
+The **Agent** button in the message box (next to the web globe) hands each turn to Hermes Agent, which
+plans, uses its own tools and answers. It is a mode of the same chat, not another model: the header
+still shows the Lasso model, and the agent thinks with it.
+
+**Lasso's own Hermes** (`HermesRuntime`, the default). Hermes is the user's install (Homebrew; ~500 MB
+with Python and Node, so never bundled). Set up (Settings ▸ Intelligence ▸ Agent, or the first time
+Agent is turned on) runs `hermes profile create lasso --clone`, then Lasso owns two things in that
+profile: `.env` loses every messaging-platform credential (a second gateway on the user's bot would take
+their messages) and gets Lasso's own API key (Keychain `hermes.managedKey`); `config.yaml` gets a block
+at the end, between `HermesProfileFiles` markers, with the API server on loopback, `approvals.mode:
+manual`, every messaging platform off, and the model route. Hermes reads YAML with PyYAML, where a
+repeated top-level key replaces the earlier one, so the block wins over the cloned settings. The user's
+own profiles and running gateway are never touched (`--replace` acts on this profile's `gateway.pid`
+only; checked by `HermesRuntimeLiveTests`). Lasso starts the gateway when Agent is turned on (so the first
+turn doesn't wait) or at the first agent turn, restarts it when the Lasso model changes, and stops it
+when Agent is turned off, local-only is turned on, or Lasso quits. Stop targets the logging wrapper, its
+children and the recorded gateway, then waits for the port to close. Each start takes the first port in
+8653–8662 that can be bound now: Hermes binds without address reuse, and a port a gateway just closed
+stays unbindable for ~30 s (TIME_WAIT), which made an immediate restart on the same port fail.
+
+**Model route** (`HermesRoute.current`): Anthropic → `anthropic` + model (+ key); an OpenAI-compatible
+connection → `custom` + base URL + key; Gemini → `gemini`; Ollama → `custom` + its `/v1` endpoint.
+Written as `platforms.api_server.extra.model_routes.lasso` and selected per run with `"model": "lasso"`
+(verified in Hermes's session store: the routed turn ran on the routed model). Apple Intelligence and MLX
+run in-process, so there's no route: Hermes uses its own model and the trace says so. A model switch
+costs one restart (~1 s measured).
+
+**A Hermes the user runs** (Settings ▸ Agent ▸ "Use a Hermes I run"): address + key, as before.
 
 ```mermaid
 flowchart LR
-  Send["send()"] -->|"hermesActive"| HT["runHermesTurn"]
+  Send["send()"] -->|"Agent on"| HT["runHermesTurn"]
   Send -->|"otherwise"| RT["runTurn (Lasso's own loop)"]
-  HT --> Start["POST /v1/runs<br/>input + conversation_history + session_id + instructions"]
+  HT --> Route["HermesRoute.current<br/>Lasso's model → Hermes route (nil for Apple / MLX)"]
+  Route --> Runtime["HermesRuntime.ready(route)<br/>set up once · start · restart on model change<br/>(or the user's own Hermes)"]
+  Runtime --> Gate["gate: approvals.mode manual<br/>(or the user's opt-out → notice on every reply)"]
+  Gate --> Start["POST /v1/runs<br/>model: lasso + input + conversation_history + session_id + instructions"]
   Start --> SSE["GET /v1/runs/{id}/events"]
   SSE -->|"message.delta"| Text["answer text"]
   SSE -->|"tool.started / completed"| Steps["Activity steps"]
@@ -734,6 +738,9 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **The agent feels built in.** Agent is a button in the message box, not a model in the menu; Lasso
+  sets up its own Hermes profile from the user's Hermes, runs it on demand, stops it on quit, and has it
+  think with the model chosen in Lasso. Bundling Hermes was ruled out (~500 MB of Python and Node).
 - **Hermes Agent as an optional chat engine (experimental).** Instead of building the plan→act→check
   loop first, chat can hand turns to the user's own Hermes Agent through its API server's `/v1/runs`.
   Tool calls show as Activity steps, flagged commands get an approval card, Stop stops the run on the

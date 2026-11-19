@@ -63,6 +63,27 @@ final class ChatController {
     }
     /// Hermes is picked and can run (configured, and not in local-only mode).
     var hermesActive: Bool { hermesSelected && HermesAgent.isAvailable }
+    /// Whether to offer the Agent button at all: Hermes installed (or the user's own configured), and
+    /// local-only off.
+    var agentAvailable: Bool { HermesAgent.isAvailable }
+
+    /// The Agent button. On: start Lasso's Hermes in the background so the first turn doesn't wait for
+    /// it (it sets itself up on first use). Off: stop it and give back its memory.
+    func toggleAgent() {
+        // Turning it off mid-turn: end that turn cleanly before its gateway goes away.
+        if hermesSelected, isStreaming { cancelStreaming() }
+        hermesSelected.toggle()
+        guard !HermesAgent.usesOwnHermes else { return }
+        if hermesSelected {
+            Task {
+                let route = await HermesRoute.current(intelligence)
+                do { _ = try await HermesRuntime.shared.ready(route: route) }
+                catch { Log.chat.notice("hermes · warm-up failed: \(error.localizedDescription, privacy: .public)") }
+            }
+        } else {
+            HermesRuntime.shared.stop()
+        }
+    }
     /// Approval requests the user already answered, so a late repaint can't bring the card back.
     private var answeredApprovals: Set<String> = []
 
@@ -521,7 +542,6 @@ final class ChatController {
     /// Switch the active text engine/model globally — persists exactly like Settings would, so it
     /// affects capture actions too. Cloud switches keep whatever model is configured in Settings.
     func selectTextModel(_ provider: ProviderKind, model: String = "") {
-        hermesSelected = false
         intelligence.preferred = provider
         switch provider {
         case .ollama: if !model.isEmpty { intelligence.ollamaModel = model }
@@ -533,7 +553,7 @@ final class ChatController {
 
     /// Whether `provider` (+`model`) is the active text engine — drives the menu checkmarks.
     func isCurrentTextModel(_ provider: ProviderKind, model: String = "") -> Bool {
-        guard !hermesActive, intelligence.effectivePreferred == provider else { return false }
+        guard intelligence.effectivePreferred == provider else { return false }
         switch provider {
         case .ollama: return model.isEmpty || intelligence.ollamaModel == model
         case .mlx: return model.isEmpty
@@ -544,12 +564,11 @@ final class ChatController {
 
     /// Switch to a model served by a specific connection — global, persists, matches Settings.
     func selectRegistryModel(keyID: String, model: String) {
-        hermesSelected = false
         intelligence.selectRegistryModel(keyID: keyID, model: model)
         Task { await refreshCapabilities() }
     }
     func isCurrentRegistryModel(keyID: String, model: String) -> Bool {
-        !hermesActive && intelligence.isCurrentRegistryModel(keyID: keyID, model: model)
+        intelligence.isCurrentRegistryModel(keyID: keyID, model: model)
     }
 
     /// OCR the attached image locally; nil if there's no readable text.
@@ -2449,11 +2468,37 @@ final class ChatController {
         }
 
         guard !PrivacyMode.localOnly else { end(error: HermesError.localOnly.localizedDescription); return }
-        guard let client = HermesAgent.client() else {
-            end(error: "Hermes Agent isn't set up. Add its address and API key in Settings ▸ Intelligence ▸ Hermes Agent.")
-            return
-        }
         let t0 = Date()
+        // Lasso's own Hermes, thinking with the model chosen in Lasso when Hermes can reach it; or, in
+        // Settings' advanced mode, a Hermes the user runs.
+        var route: HermesRoute?
+        var leadSteps: [ActivityStep] = []
+        let client: HermesClient
+        if HermesAgent.usesOwnHermes {
+            guard let own = HermesAgent.client() else {
+                end(error: "Add your Hermes's address and API key in Settings ▸ Intelligence ▸ Agent.")
+                return
+            }
+            client = own
+        } else {
+            route = await HermesRoute.current(intelligence)
+            if route == nil {
+                leadSteps.append(ActivityStep(
+                    icon: "cpu", text: "Using Hermes's own model: \(intelligence.textEngineLabel) runs only inside Lasso",
+                    done: true))
+            }
+            let runtime = HermesRuntime.shared
+            if runtime.state != .running || runtime.activeRoute != route {
+                edit(assistantID) { $0.steps = leadSteps + [ActivityStep(icon: "bolt", text: "Starting the agent…")] }
+            }
+            do {
+                client = try await runtime.ready(route: route)
+            } catch {
+                if wasStopped(error) { end(stopped: true) } else { end(error: error.localizedDescription) }
+                return
+            }
+            edit(assistantID) { $0.steps = leadSteps }
+        }
         var userText = typed.isEmpty ? (attachments.count > 1 ? "What are these?" : "What is this?") : typed
         if let context, !context.isEmpty {
             userText = "Context — text I selected on screen:\n\(context)\n\n"
@@ -2466,6 +2511,7 @@ final class ChatController {
 
         let earlier = session.messages.firstIndex(where: { $0.id == userID }).map { session.messages[..<$0] } ?? []
         let turnRequest = HermesClient.Turn(
+            model: route == nil ? nil : "lasso",
             text: userText, imageJPEGBase64s: images, history: Self.hermesHistory(from: earlier),
             sessionID: HermesAgent.sessionID(conversation: session.id,
                                              firstMessage: session.messages.first?.id ?? userID),
@@ -2496,7 +2542,8 @@ final class ChatController {
         intelligence.noteOffDeviceUse()
         Log.chat.notice("hermes ▶ start: chars=\(userText.count, privacy: .public) images=\(images.count, privacy: .public) history=\(turnRequest.history.count, privacy: .public)")
 
-        var turn = HermesTurn()
+        let answerLabel = route?.label ?? "Hermes's model"
+        var turn = HermesTurn(answerLabel: answerLabel, steps: leadSteps)
         var seenApprovals: Set<String> = []
         var lastPaint = Date.distantPast
         func paint(force: Bool) {
@@ -2516,7 +2563,7 @@ final class ChatController {
                 Task.detached { await client.stop(runID: runID) }
                 throw CancellationError()
             }
-            turn = HermesTurn(runID: runID)
+            turn = HermesTurn(runID: runID, answerLabel: answerLabel, steps: leadSteps)
             Log.chat.notice("hermes · run \(runID, privacy: .public) (+\(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public)ms)")
             for try await event in client.events(runID: runID) {
                 turn.apply(event)

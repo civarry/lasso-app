@@ -5,7 +5,13 @@ import ServiceManagement
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var registry: ActionRegistry?
 
+    /// Lasso's own Hermes (`HermesRuntime`) goes with it: nothing is left running after quit.
+    func applicationWillTerminate(_ notification: Notification) {
+        HermesRuntime.shared.stopForQuit()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        HermesRuntime.shared.cleanUpAfterCrash()
         // Defaults for user settings that should start enabled.
         UserDefaults.standard.register(defaults: ["translation.pretranslate": true])
 

@@ -66,21 +66,26 @@ confidence rating. Repeat lookups are instant.
 A persistent chat panel that remembers the thread, takes a dropped image, and
 grounds its answers with real sources when you want. Click the mic to talk
 instead of typing: English speech recognition on your Mac, with words appearing
-as you speak.
+at the cursor as you speak. When you stop, Lasso tidies what you said on your
+Mac (ums, filler words, repeats, small grammar fixes) without changing your
+words, and one Undo brings back exactly what you said. You can turn the
+cleanup off in Settings.
 
-**Hermes Agent (optional, experimental).** If you run
-[Hermes Agent](https://github.com/NousResearch/hermes-agent), the chat can hand
-turns to it instead of a model: pick **Hermes Agent** in the chat's model menu.
-It plans, uses its own tools (web, files, terminal) and shows each step as it
-goes. When Hermes flags a risky command, Lasso shows it and waits for you to
-allow or deny it. Lasso only sends turns to a Hermes whose `approvals.mode` is
-`manual`, since in any other mode Hermes decides risky commands by itself (a
-Hermes started with `--yolo` skips approvals whatever its config says, so don't
-use it with Lasso). If you'd rather let Hermes decide those itself, Settings
-has a switch for that; every Hermes reply then says it's on. Turn on its API server (`API_SERVER_ENABLED`
-and `API_SERVER_KEY` in the Hermes profile's `.env`, then `hermes gateway`), and
-enter the address and key in Settings ▸ Intelligence ▸ Hermes Agent. Hermes uses
-its own models and tools, so it's unavailable in Local-only mode.
+**Agent (optional, experimental).** Turn on **Agent** in the chat's message
+box and the chat can take actions: search the web, read files, run commands,
+showing each step as it goes. It's powered by
+[Hermes Agent](https://github.com/NousResearch/hermes-agent), which you install
+once (`brew install hermes-agent`). Lasso sets it up in a separate Hermes
+profile from your existing Hermes settings (your own profiles and any running
+gateway stay untouched), starts it when you use Agent, and stops it when Lasso
+quits. The agent thinks with the model you picked in Lasso; Apple Intelligence
+and MLX models run only inside Lasso, so for those it uses Hermes's own. When
+Hermes flags a risky command, Lasso shows it and waits for you to allow or deny
+it. Settings ▸ Intelligence ▸ Agent has a switch to let Hermes decide those
+itself instead (every reply then says it's on), and an advanced option to use
+a Hermes you run yourself, which Lasso only accepts with `approvals.mode:
+manual`. The agent uses cloud models and the web, so it's unavailable in
+Local-only mode.
 
 ## Privacy
 

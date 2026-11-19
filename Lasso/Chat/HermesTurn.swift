@@ -26,7 +26,14 @@ struct HermesTurn {
     /// Each waiting approval's step, by `HermesApproval.key`.
     private var approvalSteps: [String: UUID] = [:]
 
-    init(runID: String = "") { self.runID = runID }
+    /// Names the model in the answer step ("Answering · Claude Sonnet").
+    let answerLabel: String
+
+    init(runID: String = "", answerLabel: String = "Hermes Agent", steps: [ActivityStep] = []) {
+        self.runID = runID
+        self.answerLabel = answerLabel
+        self.steps = steps
+    }
 
     var approval: HermesApproval? { pendingApprovals.first }
 
@@ -36,7 +43,7 @@ struct HermesTurn {
         case .delta(let piece):
             guard !piece.isEmpty else { return }
             if answerStepID == nil {
-                let step = ActivityStep(icon: "sparkles", text: "Answering · Hermes Agent")
+                let step = ActivityStep(icon: "sparkles", text: "Answering · \(answerLabel)")
                 steps.append(step)
                 answerStepID = step.id
             }

@@ -30,7 +30,7 @@ enum HermesAgent {
     static var letHermesDecide: Bool { UserDefaults.standard.bool(forKey: letHermesDecideKey) }
 
     /// Shown under every Hermes reply while `letHermesDecide` lets a non-manual Hermes through.
-    static let unattendedNotice = "Hermes approves risky commands itself. Change this in Settings ▸ Intelligence ▸ Hermes Agent."
+    static let unattendedNotice = "Hermes approves risky commands itself. Change this in Settings ▸ Intelligence ▸ Agent."
 
     static func isLoopback(_ url: URL) -> Bool {
         ["127.0.0.1", "localhost", "::1"].contains((url.host ?? "").lowercased())
@@ -62,15 +62,34 @@ enum HermesAgent {
         keyLock.lock(); cachedKey = trimmed; keyLock.unlock()
     }
 
-    static var isConfigured: Bool { client() != nil }
+    /// The API key of Lasso's own Hermes (`HermesRuntime`), generated at setup.
+    static let managedKeychainAccount = "hermes.managedKey"
+    nonisolated(unsafe) private static var cachedManagedKey: String?
 
-    /// Configured, and allowed by the privacy setting.
+    static var managedKey: String {
+        keyLock.lock(); defer { keyLock.unlock() }
+        if let cachedManagedKey { return cachedManagedKey }
+        let key = Keychain.get(managedKeychainAccount) ?? ""
+        cachedManagedKey = key
+        return key
+    }
+
+    static func setManagedKey(_ key: String) {
+        Keychain.set(key, for: managedKeychainAccount)
+        keyLock.lock(); cachedManagedKey = key; keyLock.unlock()
+    }
+
+    /// Advanced: talk to a Hermes the user runs (another machine, or their own gateway) instead of the
+    /// one Lasso manages. Address and key come from Settings.
+    static let useOwnHermesKey = "hermes.useOwn"
+    static var usesOwnHermes: Bool { UserDefaults.standard.bool(forKey: useOwnHermesKey) }
+
+    static var isConfigured: Bool { usesOwnHermes ? client() != nil : HermesRuntime.hermesExecutable() != nil }
+
+    /// Can run here: configured (or installed, for Lasso's own), and allowed by the privacy setting.
     static var isAvailable: Bool { isConfigured && !PrivacyMode.localOnly }
 
-    /// The user turned Hermes on for chat, and it can run.
-    static var isActive: Bool { UserDefaults.standard.bool(forKey: enabledKey) && isAvailable }
-
-    /// A client for the saved address and key; nil when either is missing or the address is unusable.
+    /// A client for the user's own Hermes (address and key from Settings); nil when either is missing.
     static func client() -> HermesClient? {
         HermesClient(baseURLString: baseURLString, apiKey: apiKey)
     }
@@ -197,7 +216,7 @@ enum HermesAgent {
             return confirmed ? .allowed
                 : .blocked("Lasso can't read the approval setting of a Hermes on another machine. Set "
                     + "approvals.mode: manual there, then turn on \"Approvals are manual\" in "
-                    + "Settings ▸ Intelligence ▸ Hermes Agent.")
+                    + "Settings ▸ Intelligence ▸ Agent.")
         }
     }
 }
@@ -326,7 +345,7 @@ enum HermesError: LocalizedError {
         case .localOnly:
             "Hermes Agent is off in local-only mode: it uses its own cloud models and web tools."
         case .notReachable(let address):
-            "Hermes isn't answering at \(address). Start it with `hermes gateway` (API server on), or check the address in Settings ▸ Intelligence ▸ Hermes Agent."
+            "Hermes isn't answering at \(address). Start it with `hermes gateway` (API server on), or check the address in Settings ▸ Intelligence ▸ Agent."
         case .unauthorized:
             "Hermes refused the API key. Use the API_SERVER_KEY from your Hermes profile's .env."
         case .missingFeatures(let names):
@@ -370,8 +389,10 @@ struct HermesClient: Sendable {
         return o["model"] as? String ?? "hermes-agent"
     }
 
-    /// One user turn. `history` is the earlier conversation as plain text, oldest first.
+    /// One user turn. `history` is the earlier conversation as plain text, oldest first. `model`: a
+    /// `model_routes` alias on the server (Lasso's own Hermes routes `lasso` to Lasso's chosen model).
     struct Turn: Sendable {
+        var model: String? = nil
         var text: String
         var imageJPEGBase64s: [String] = []
         var history: [(role: String, content: String)] = []
@@ -382,6 +403,7 @@ struct HermesClient: Sendable {
     /// Starts a run and returns its id. The run executes on the server whether or not anyone reads it.
     func start(_ turn: Turn) async throws -> String {
         var body: [String: Any] = ["session_id": turn.sessionID]
+        if let model = turn.model { body["model"] = model }
         if let instructions = turn.instructions { body["instructions"] = instructions }
         if !turn.history.isEmpty {
             body["conversation_history"] = turn.history.map { ["role": $0.role, "content": $0.content] }

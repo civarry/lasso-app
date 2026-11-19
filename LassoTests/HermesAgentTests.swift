@@ -145,6 +145,75 @@ struct HermesAgentTests {
         #expect(capped.map(\.content) == ["second", "answer two"])
     }
 
+    // MARK: Lasso's own Hermes profile
+
+    @Test func envKeepsProviderKeysAndDropsMessaging() {
+        let env = "ANTHROPIC_API_KEY=sk-a\nTELEGRAM_BOT_TOKEN=123:abc\nexport DISCORD_TOKEN=x\nOPENROUTER_API_KEY=or\nAPI_SERVER_KEY=old\nHERMES_YOLO_MODE=1\n\n"
+        let out = HermesProfileFiles.filteredEnv(env + "NEWCHAT_BOT_TOKEN=b\nFOO_WEBHOOK_URL=w\n", apiKey: "lasso-k", port: 8655)
+        #expect(out == "ANTHROPIC_API_KEY=sk-a\nOPENROUTER_API_KEY=or\nAPI_SERVER_KEY=lasso-k\nAPI_SERVER_HOST=127.0.0.1\nAPI_SERVER_PORT=8655\n")
+    }
+
+    @Test func managedBlockIsRewrittenNotStacked() {
+        let user = "model:\n  default: claude-opus-4-8\napprovals:\n  mode: smart\n"
+        let route = HermesRoute(provider: "custom", model: "qwen3:30b", baseURL: "http://127.0.0.1:11434/v1",
+                                apiKey: "ollama", label: "Ollama")
+        let once = HermesProfileFiles.withManagedBlock(user, port: 8653, route: route)
+        let twice = HermesProfileFiles.withManagedBlock(once, port: 8653, route: route)
+        #expect(once == twice)
+        #expect(once.hasPrefix(user))
+        #expect(once.components(separatedBy: HermesProfileFiles.beginMarker).count == 2)
+        // The appended block wins over the user's earlier `smart`, as it does in PyYAML.
+        #expect(HermesAgent.approvalMode(inConfig: once) == .manual)
+        #expect(once.contains("      port: 8653"))
+        #expect(once.contains("          base_url: \"http://127.0.0.1:11434/v1\""))
+        #expect(once.contains("  telegram:\n    enabled: false"))
+        // A model switch replaces the route; no route leaves Hermes's own model.
+        // The user's opt-out turns Lasso's own profile to Hermes's smart mode (the gate then warns).
+        let smart = HermesProfileFiles.withManagedBlock(once, port: 8653, route: route, letHermesDecide: true)
+        #expect(HermesAgent.approvalMode(inConfig: smart) == .other("smart"))
+        let none = HermesProfileFiles.withManagedBlock(once, port: 8653, route: nil)
+        #expect(!none.contains("model_routes"))
+        #expect(none.hasPrefix(user))
+    }
+
+    @Test func routeValuesAreQuotedSafely() {
+        #expect(HermesProfileFiles.quoted("a\"b: c # d") == #""a\"b: c # d""#)
+        #expect(HermesProfileFiles.quoted("https://x.example/v1") == #""https://x.example/v1""#)
+        let key = HermesProfileFiles.newKey()
+        #expect(key.hasPrefix("lasso-") && key.count == 54)
+    }
+
+    @Test func routeEqualityIgnoresTheLabel() {
+        let a = HermesRoute(provider: "anthropic", model: "m", baseURL: nil, apiKey: "k", label: "Anthropic · m")
+        var b = a
+        b.label = "Claude"
+        #expect(a == b)
+        b.apiKey = "other"
+        #expect(a != b)
+    }
+
+    /// Lasso's gateway gets only what Hermes needs, so an inherited API_SERVER_HOST=0.0.0.0 (Lasso run
+    /// from a shell) can't expose it beyond loopback.
+    @Test func gatewayEnvironmentIsMinimal() {
+        let env = HermesRuntime.childEnvironment(home: URL(fileURLWithPath: "/tmp/h"))
+        #expect(env["HERMES_HOME"] == "/tmp/h")
+        #expect(env.keys.allSatisfy { ["HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "SHELL", "PATH", "HERMES_HOME"].contains($0) })
+    }
+
+    @Test func privateFilesAreOwnerOnlyAndNeverFollowLinks() throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "hermes-write-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appending(path: ".env")
+        try HermesRuntime.writePrivate("A=1\n", to: file)
+        try HermesRuntime.writePrivate("A=2\n", to: file)
+        #expect(try String(contentsOf: file, encoding: .utf8) == "A=2\n")
+        #expect((try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int) == 0o600)
+        let link = dir.appending(path: "config.yaml")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
+        #expect(throws: (any Error).self) { try HermesRuntime.writePrivate("x", to: link) }
+        #expect(try String(contentsOf: file, encoding: .utf8) == "A=2\n")
+    }
+
     @Test func clientNormalizesTheAddress() {
         #expect(HermesClient(baseURLString: "http://127.0.0.1:8642/v1/", apiKey: "k")?.baseURL.absoluteString == "http://127.0.0.1:8642")
         #expect(HermesClient(baseURLString: " http://localhost:8642 ", apiKey: " k ")?.apiKey == "k")
