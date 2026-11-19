@@ -230,7 +230,11 @@ struct ChatView: View {
             Divider()
             Label(intelligence.privacyNote,
                   systemImage: intelligence.usedOffDeviceThisSession ? "cloud" : "lock.fill")
-            Button("Open Intelligence Settings…") { openSettings() }
+            Button("Open Model Settings…") {
+                UserDefaults.standard.set(SettingsView.Pane.models.rawValue, forKey: SettingsView.paneKey)
+                UserDefaults.standard.set(SettingsRoute.languageModel.rawValue, forKey: SettingsView.routeKey)
+                openSettings()
+            }
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: agentUsesOwnHermes ? "point.3.connected.trianglepath.dotted" : textIcon)
@@ -252,7 +256,7 @@ struct ChatView: View {
         .help(agentUsesOwnHermes ? "Agent replies come from your Hermes and its model" : "Switch model")
     }
 
-    /// Agent is on and pointed at the user's own Hermes (Settings ▸ Intelligence ▸ Agent).
+    /// Agent is on and pointed at the user's own Hermes (Settings ▸ Agent).
     private var agentUsesOwnHermes: Bool { chat.hermesActive && useOwnHermes }
 
     /// "Groq · openai/gpt-oss-20b" → "gpt-oss-20b" for the compact chip.
@@ -372,6 +376,9 @@ struct ChatView: View {
                             .resizable().scaledToFill()
                             .frame(width: 44, height: 44)
                             .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .contentShape(Rectangle())
+                            .onTapGesture { ImageViewer.shared.show(att.image) }
+                            .help("Click to view")
                             .overlay(alignment: .topTrailing) {
                                 Button { chat.removeAttachment(att.id) } label: {
                                     Image(systemName: "xmark.circle.fill")
@@ -408,7 +415,7 @@ struct ChatView: View {
                     .help(chat.hermesActive
                           ? "The agent searches the web itself while Agent is on"
                           : !chat.webConnectorsAvailable
-                          ? "No web connectors on — enable Web search under Settings ▸ Connectors to ground answers"
+                          ? "No web connectors on — enable Web search under Settings ▸ Privacy ▸ Web to ground answers"
                           : (chat.webSearchOn
                              ? "Web grounding ON — answers use your connectors (Wikipedia, search, reverse-image)"
                              : "Web grounding OFF — tap to ground answers with your connectors"))
@@ -848,7 +855,7 @@ struct MessageBubble: View {
             style: .continuous)
     }
 
-    /// An image in a reply, at reading size; a click opens the file it came from (if it's still there).
+    /// An image in a reply, at reading size; a click shows it full size.
     private func replyImage(_ att: Attachment) -> some View {
         let file = att.sourcePath.flatMap { FileManager.default.fileExists(atPath: $0) ? URL(fileURLWithPath: $0) : nil }
         return Image(decorative: att.image, scale: 1)
@@ -856,8 +863,9 @@ struct MessageBubble: View {
             .frame(maxWidth: .infinity, maxHeight: 280, alignment: .leading)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.10)))
-            .onTapGesture { if let file { NSWorkspace.shared.open(file) } }
-            .help(file.map { "Open \($0.lastPathComponent)" } ?? "")
+            .contentShape(Rectangle())
+            .onTapGesture { ImageViewer.shared.show(att.image, title: file?.lastPathComponent ?? "Image", file: file) }
+            .help("Click to view")
             .accessibilityLabel(Text("Image"))
     }
 
@@ -881,6 +889,9 @@ struct MessageBubble: View {
         .frame(maxWidth: 220, alignment: .leading)
         .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.10)))
+        .contentShape(Rectangle())
+        .onTapGesture { ImageViewer.shared.show(att.image) }
+        .help("Click to view")
     }
 
     var body: some View {

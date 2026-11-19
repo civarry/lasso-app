@@ -30,7 +30,7 @@ enum HermesAgent {
     static var letHermesDecide: Bool { UserDefaults.standard.bool(forKey: letHermesDecideKey) }
 
     /// Shown under every Hermes reply while `letHermesDecide` lets a non-manual Hermes through.
-    static let unattendedNotice = "The agent approves risky commands without asking you (Settings ▸ Intelligence ▸ Agent)."
+    static let unattendedNotice = "The agent approves risky commands without asking you (Settings ▸ Agent)."
 
     static func isLoopback(_ url: URL) -> Bool {
         ["127.0.0.1", "localhost", "::1"].contains((url.host ?? "").lowercased())
@@ -256,7 +256,7 @@ enum HermesAgent {
             return confirmed ? .allowed
                 : .blocked("Lasso can't read the approval setting of a Hermes on another machine. Set "
                     + "approvals.mode: manual there, then turn on \"Approvals are manual\" in "
-                    + "Settings ▸ Intelligence ▸ Agent.")
+                    + "Settings ▸ Agent.")
         }
     }
 }
@@ -385,7 +385,7 @@ enum HermesError: LocalizedError {
         case .localOnly:
             "Hermes Agent is off in local-only mode: it uses its own cloud models and web tools."
         case .notReachable(let address):
-            "Hermes isn't answering at \(address). Start it with `hermes gateway` (API server on), or check the address in Settings ▸ Intelligence ▸ Agent."
+            "Hermes isn't answering at \(address). Start it with `hermes gateway` (API server on), or check the address in Settings ▸ Agent."
         case .unauthorized:
             "Hermes refused the API key. Use the API_SERVER_KEY from your Hermes profile's .env."
         case .missingFeatures(let names):

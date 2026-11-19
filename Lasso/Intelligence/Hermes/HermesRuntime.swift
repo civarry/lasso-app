@@ -455,7 +455,7 @@ enum HermesRuntimeError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notInstalled: "Hermes Agent isn't installed. Install it with `brew install hermes-agent`, then try again."
-        case .notSetUp: "The Agent isn't set up yet. Set it up in Settings ▸ Intelligence ▸ Agent."
+        case .notSetUp: "The Agent isn't set up yet. Set it up in Settings ▸ Agent."
         case .profileTaken(let path): "A Hermes profile Lasso didn't create already exists at \(path), so Lasso won't change it. Rename or remove it, then set up the Agent again."
         case .commandFailed(let detail): "Setting up the Agent failed: \(detail)"
         case .startFailed(let message): message
@@ -525,9 +525,9 @@ struct HermesRoute: Equatable, Sendable {
         case .onDevice:
             "Agent can't use Apple Intelligence: it only runs inside Lasso. Pick an MLX, Ollama or cloud model."
         case .mlx:
-            "Agent couldn't start your MLX model. Check it's downloaded in Settings ▸ Intelligence."
+            "Agent couldn't start your MLX model. Check it's downloaded in Settings ▸ Models."
         default:
-            "Agent needs a model: choose one in Settings ▸ Intelligence."
+            "Agent needs a model: choose one in Settings ▸ Models."
         }
     }
 }

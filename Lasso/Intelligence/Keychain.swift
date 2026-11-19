@@ -14,8 +14,17 @@ import Security
 enum Keychain {
     private static var service: String { Bundle.main.bundleIdentifier ?? "com.cjcarito.Lasso" }
 
+    /// Inside the unit-test host a Keychain dialog would hang the run (no one answers it), and a test
+    /// build is a different app to macOS, so older items would ask. Tests never prompt: a read fails.
+    private static let noPromptsUnderTests: Void = {
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            SecKeychainSetUserInteractionAllowed(false)
+        }
+    }()
+
     private static func query(_ account: String) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
+        _ = noPromptsUnderTests
+        return [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: service,
          kSecAttrAccount as String: account]
     }
@@ -35,6 +44,11 @@ enum Keychain {
     static func set(_ value: String, for account: String) {
         guard !value.isEmpty else { delete(account); return }
         add(value, for: account)
+    }
+
+    /// Writes only when the value differs from `current` (Settings applies on every change).
+    static func set(_ value: String, for account: String, ifChangedFrom current: String?) {
+        if value != (current ?? "") { set(value, for: account) }
     }
 
     static func delete(_ account: String) {

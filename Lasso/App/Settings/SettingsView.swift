@@ -24,8 +24,8 @@ enum ModelSelection: Equatable, Sendable {
 struct SettingsView: View {
     @Bindable var intelligence: IntelligenceCoordinator
 
-    /// All editable settings are staged here and committed together via "Save & Apply" — one place
-    /// to save, instead of a Save button per field.
+    /// All editable settings are staged here and applied a moment after each change (`scheduleApply`);
+    /// `saved` is what's applied, so `apply()` writes only what differs.
     private struct Draft: Equatable {
         var provider: ProviderKind = .onDevice
         var ollamaModel = ""
@@ -78,13 +78,13 @@ struct SettingsView: View {
         var autoUpdateChecks = true
         var autoUpdateInstall = true
         // Appearance — staged like everything else so changing them flips "Unsaved changes" and
-        // applies on Save & Apply (not instantly), for a consistent Settings experience.
+        // applies with the rest of the panel, a moment after the change.
         var actionBarStyle = ActionBarStyle.compact.rawValue
         var hideUnavailable = false
         var colorfulActions = false
         // Toolbar order + visibility. `actionOrder` empty means "the shipped order"; a reset writes
         // it back to empty rather than freezing today's order, so a later version's new action still
-        // lands where it was meant to. Both are staged here so Save & Apply and Revert work on them
+        // lands where it was meant to. Both are staged here so they apply with the rest of the panel
         // like every other setting. Hotkeys are not staged: KeyboardShortcuts.Recorder commits its
         // own binding immediately, which is already how the existing recorders behave.
         var actionOrder: [String] = []
@@ -94,9 +94,23 @@ struct SettingsView: View {
         var actionHidden: Set<String> = []
     }
 
-    private enum Tab: Hashable { case general, intelligence, connectors, about }
+    typealias Pane = SettingsPane
+    /// Which pane is showing; others (the chat's model menu) set it to open a specific one.
+    static let paneKey = "settings.pane"
+    /// A page to open in that pane (set together with `paneKey`; consumed when Settings shows it).
+    static let routeKey = "settings.route"
 
-    @State private var tab: Tab = .general
+    @AppStorage(SettingsView.paneKey) private var paneRaw = Pane.general.rawValue
+    private var pane: Pane { Pane(rawValue: paneRaw) ?? .general }
+    /// Changes apply as you make them, a moment after the last one (so typing a key doesn't write it
+    /// on every keystroke); nothing waits for a Save button.
+    @State private var applyTask: Task<Void, Never>?
+    @State private var loaded = false
+    /// The pages opened in the current pane (back/forward in the toolbar).
+    @State private var path: [SettingsRoute] = []
+    /// Observed, so a request arriving while Settings is already open (on any pane) is honored.
+    @AppStorage(SettingsView.routeKey) private var requestedRoute = ""
+    @State private var searchText = ""
     @State private var showClearHistoryConfirm = false
     @State private var embeddingStatus: (ok: Bool, text: String)?
     @State private var embeddingStatusTask: Task<Void, Never>?
@@ -144,8 +158,8 @@ struct SettingsView: View {
 
     enum MLXDownloadState: Equatable { case idle, downloading, ready, failed(String) }
 
-    // Appearance prefs are staged in `draft` (not bound to @AppStorage here) so they apply on
-    // Save & Apply like the rest. The keys they persist to:
+    // Appearance prefs are staged in `draft` (not bound to @AppStorage here) so they apply like the
+    // rest. The keys they persist to:
     private static let actionBarStyleKey = "ui.actionBarStyle"
     private static let hideUnavailableKey = "ui.actionBarHideUnavailable"
     private static let colorfulKey = "ui.actionBarColorful"
@@ -164,48 +178,185 @@ struct SettingsView: View {
     private var isDirty: Bool { draft != saved || registryKeyValues != savedRegistryKeyValues }
 
     var body: some View {
-        VStack(spacing: 0) {
-            TabView(selection: $tab) {
-                general.tabItem { Label("General", systemImage: "gearshape") }.tag(Tab.general)
-                intelligenceTab.tabItem { Label("Intelligence", systemImage: "sparkles") }.tag(Tab.intelligence)
-                connectorsTab.tabItem { Label("Connectors", systemImage: "puzzlepiece.extension") }.tag(Tab.connectors)
-                about.tabItem { Label("About", systemImage: "info.circle") }.tag(Tab.about)
+        NavigationSplitView {
+            sidebar
+                .navigationSplitViewColumnWidth(200)
+        } detail: {
+            NavigationStack(path: $path) {
+                paneRoot(pane)
+                    .navigationTitle(pane.title)
+                    .navigationDestination(for: SettingsRoute.self) { route in
+                        page(route).navigationTitle(route.title)
+                    }
             }
-            // The save bar is only meaningful for the editable tabs — About has nothing to apply.
-            if tab != .about { actionBar }
         }
-        .frame(width: 560, height: 620)
-        .task { await load() }
+        .frame(width: 740)
+        .frame(minHeight: 560, idealHeight: 640)
+        .task { await load(); loaded = true; consumeRequestedRoute() }
+        .onChange(of: paneRaw) { _, _ in path = []; consumeRequestedRoute() }
+        .onChange(of: requestedRoute) { _, _ in consumeRequestedRoute() }
+        .onChange(of: draft) { _, _ in scheduleApply() }
+        .onChange(of: registryKeyValues) { _, _ in scheduleApply() }
+        .onDisappear { flushApply() }
     }
 
-    // MARK: - Save & Apply bar
-
-    private var actionBar: some View {
-        HStack(spacing: 12) {
-            Image(systemName: draft.localOnly ? "lock.shield.fill" : "lock.shield")
-                .foregroundStyle(draft.localOnly ? AnyShapeStyle(Color.green) : AnyShapeStyle(.tertiary))
-            Text(isDirty ? "Unsaved changes" : "All changes saved")
-                .font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            if isDirty {
-                Button("Revert") { draft = saved; registryKeyValues = savedRegistryKeyValues }
-                    .buttonStyle(.bordered)
+    /// Search results replace the pane list while there's a query; picking one opens its page.
+    private var sidebar: some View {
+        List(selection: Binding(get: { searchText.isEmpty ? pane : nil },
+                                set: { if let p = $0 { paneRaw = p.rawValue } })) {
+            if searchText.isEmpty {
+                ForEach(Pane.allCases) { item in
+                    HStack(spacing: 8) {
+                        SettingsTile(symbol: item.symbol, color: item.color)
+                        Text(item.title)
+                        Spacer()
+                        if draft.localOnly, item.pausedByLocalOnly {
+                            Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary)
+                                .help("Paused in local-only mode")
+                        }
+                    }
+                    .tag(item)
+                }
+            } else {
+                let results = SettingsSearchEntry.results(for: searchText)
+                if results.isEmpty {
+                    Text("No results").foregroundStyle(.secondary)
+                }
+                ForEach(results) { entry in
+                    Button {
+                        searchText = ""
+                        paneRaw = entry.pane.rawValue
+                        DispatchQueue.main.async { path = entry.route.map { [$0] } ?? [] }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(entry.label)
+                            Text(entry.location).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            Button("Save & Apply") { apply() }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.return, modifiers: .command)
-                .disabled(!isDirty)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(.bar)
+        .searchable(text: $searchText, placement: .sidebar, prompt: "Search")
+    }
+
+    /// A page another part of Lasso asked for (the chat's model menu opens Models › Language Model).
+    private func consumeRequestedRoute() {
+        guard loaded, let route = SettingsRoute(rawValue: requestedRoute) else { return }
+        requestedRoute = ""
+        if route.pane != pane { paneRaw = route.pane.rawValue }
+        DispatchQueue.main.async { path = [route] }
+    }
+
+    @ViewBuilder private func paneRoot(_ pane: Pane) -> some View {
+        switch pane {
+        case .general: generalHub
+        case .toolbar: toolbarPane
+        case .models: intelligenceTab
+        case .agent: agentPane
+        case .privacy: privacyPane
+        }
+    }
+
+    @ViewBuilder private func page(_ route: SettingsRoute) -> some View {
+        switch route {
+        case .about: about
+        case .softwareUpdate: softwareUpdatePage
+        case .shortcuts: shortcutsPage
+        case .translation: translationPage
+        case .languageModel: SettingsPage { languageSection }
+        case .imageModel: SettingsPage { imageSection }
+        case .embeddingModel: SettingsPage { embeddingSection }
+        case .ollama: SettingsPage { ollamaSection }
+        case .ownHermes: ownHermesPage
+        case .searchKeys: searchKeysPage
+        }
+    }
+
+    // MARK: - Applying
+
+    /// A moment after the last change (a toggle applies at once to the eye; a typed key or URL waits
+    /// for a pause instead of being written per keystroke).
+    private func scheduleApply() {
+        guard loaded, isDirty else { return }
+        applyTask?.cancel()
+        applyTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            apply()
+        }
+    }
+
+    private func flushApply() {
+        applyTask?.cancel()
+        if loaded, isDirty { apply() }
     }
 
     // MARK: - General
 
-    private var general: some View {
+    /// General is a hub: About and Software Update, Keyboard Shortcuts and Translation, then Open at
+    /// login as a switch right on the page (a page holding one switch would be wasted).
+    private var generalHub: some View {
+        SettingsPage {
+            SettingsHubHeader(pane: .general)
+            SettingsCard(title: "") {
+                SettingsLinkRow(route: .about, value: appVersion)
+                SettingsLinkRow(route: .softwareUpdate, value: softwareUpdateValue, locked: draft.localOnly)
+            }
+            SettingsCard(title: "") {
+                SettingsLinkRow(route: .shortcuts)
+                SettingsLinkRow(route: .translation,
+                                value: LLMTranslation.Mode(rawValue: draft.betterTranslation)?.label)
+            }
+            SettingsCard(title: "") {
+                SettingsRow("Open at login") { SettingsSwitch(title: "", isOn: $draft.launchAtLogin) }
+            }
+        }
+    }
+
+    private var softwareUpdateValue: String {
+        if draft.localOnly { return "Paused" }
+        if !draft.autoUpdateChecks { return "Off" }
+        return draft.autoUpdateInstall ? "Automatic" : "Check only"
+    }
+
+    private var softwareUpdatePage: some View {
         Form {
-            Section("Shortcuts") {
+            Section {
+                Toggle("Automatically check for updates", isOn: $draft.autoUpdateChecks)
+                    .disabled(draft.localOnly)
+                Toggle("Install updates automatically", isOn: $draft.autoUpdateInstall)
+                    .disabled(draft.localOnly || !draft.autoUpdateChecks)
+                caption(draft.localOnly ? "Paused in local-only mode." : "Installs when Lasso isn't busy, then relaunches.")
+            }
+            Section {
+                LabeledContent("Lasso \(appVersion)") {
+                    Button("Check for Updates Now") { AppUpdater.shared.checkForUpdates() }
+                        .disabled(draft.localOnly || !AppUpdater.shared.canCheck)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var translationPage: some View {
+        Form {
+            Section {
+                Toggle("Pre-translate selections", isOn: $draft.pretranslate)
+                caption("Makes Translate instant.")
+                Picker("Better translation", selection: $draft.betterTranslation) {
+                    ForEach(LLMTranslation.Mode.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+                caption(betterTranslationCaption)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    /// Every hotkey in one place: Lasso's own, then one per toolbar action.
+    private var shortcutsPage: some View {
+        Form {
+            Section("Global") {
                 LabeledContent("Capture") { recorder(.capture) }
                 LabeledContent("Chat") { recorder(.chat) }
                 // Proofreads text you've already highlighted, in place — no screenshot, no box to
@@ -227,57 +378,73 @@ struct SettingsView: View {
                         if draft.lensSearch { directHeader("Lens") }
                     }
                 }
-                caption("Identify and Lens can also grab the whole display, with no box to drag. "
-                    + "Turn on Lens in Privacy to assign its shortcut. Every toolbar action has its "
-                    + "own selection hotkey under Toolbar actions.")
             }
-            Section("Startup") {
-                Toggle("Launch at login", isOn: $draft.launchAtLogin)
+            Section("Toolbar actions") {
+                ForEach(orderedToolbarActions, id: \.id) { entry in
+                    // `LabeledContent`, like every row here that holds a recorder (see
+                    // `toolbarActionRow`): a hand-rolled row stopped the recorder from recording.
+                    LabeledContent {
+                        if let name = entry.shortcut {
+                            recorder(name)
+                        } else {
+                            Text("Toolbar only")
+                                .foregroundStyle(.tertiary)
+                                .frame(width: directRecorderWidth, alignment: .center)
+                        }
+                    } label: {
+                        Label(entry.title, systemImage: entry.systemImage)
+                    }
+                }
+                caption("A hotkey starts a capture and runs that action directly.")
             }
-            Section("Updates") {
-                Toggle("Automatically check for updates", isOn: $draft.autoUpdateChecks)
-                    .disabled(draft.localOnly)
-                Toggle("Install updates automatically", isOn: $draft.autoUpdateInstall)
-                    .disabled(draft.localOnly || !draft.autoUpdateChecks)
-                caption("Installs when Lasso isn't busy, then relaunches it.")
-                Button("Check for Updates Now") { AppUpdater.shared.checkForUpdates() }
-                    .disabled(draft.localOnly || !AppUpdater.shared.canCheck)
-                if draft.localOnly { caption("Off in local-only mode.") }
-            }
+        }
+        .formStyle(.grouped)
+    }
+
+    // MARK: - Toolbar
+
+    private var toolbarPane: some View {
+        Form {
             Section("Appearance") {
                 Picker("Toolbar", selection: $draft.actionBarStyle) {
                     ForEach(ActionBarStyle.allCases) { Text($0.label).tag($0.rawValue) }
                 }
                 .pickerStyle(.segmented)
-                caption("Compact shows icons only; Comfortable shows icons with names.")
                 Toggle("Hide unavailable actions", isOn: $draft.hideUnavailable)
-                caption("When off, unavailable actions stay visible but greyed out.")
                 Toggle("Color-code actions", isOn: $draft.colorfulActions)
-                caption("Tints each toolbar action a distinct color so features are easier to "
-                    + "recognize. Off by default.")
             }
             toolbarActionsSection
-            Section("Privacy") {
+        }
+        .formStyle(.grouped)
+    }
+
+    // MARK: - Privacy
+
+    private var privacyPane: some View {
+        Form {
+            Section("Network") {
                 Toggle("Local-only mode", isOn: $draft.localOnly)
-                caption("Blocks all network calls except your chosen model. Best for work Macs.")
+                caption("Blocks every network call except your model.")
+            }
+            Section {
+                connectorList([Connectors.webSearch])
                 Toggle("Search with Lens", isOn: $draft.lensSearch)
                     .disabled(draft.localOnly)
-                caption("Adds a Lens action that uploads the selection to Google and shows the "
-                    + "visual matches in a panel next to it. Off by default — it leaves your Mac, and "
-                    + "is paused in local-only mode.")
-            }
-            Section("Translation") {
-                Toggle("Pre-translate selections", isOn: $draft.pretranslate)
-                caption("Translates in the background so Translate is instant.")
-                Picker("Better translation", selection: $draft.betterTranslation) {
-                    ForEach(LLMTranslation.Mode.allCases) { Text($0.label).tag($0.rawValue) }
+                caption("Sends the selection to Google.")
+                NavigationLink(value: SettingsRoute.searchKeys) {
+                    Text("Search API Keys")
                 }
-                caption(betterTranslationCaption)
+            } header: {
+                HStack {
+                    Text("Web")
+                    if draft.localOnly {
+                        Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
             }
-            Section("Chat history") {
+            Section("Data") {
                 Button("Clear chat history…", role: .destructive) { showClearHistoryConfirm = true }
-                caption("Conversations are saved on this Mac (in Application Support) so they survive "
-                    + "app updates. They never leave your device. This deletes them all.")
+                caption("Saved only on this Mac.")
             }
         }
         .formStyle(.grouped)
@@ -293,12 +460,14 @@ struct SettingsView: View {
     /// Which model the better-translation pass would use, and whether the text leaves the Mac.
     private var betterTranslationCaption: String {
         let intelligence = IntelligenceCoordinator.shared
-        let where_ = LLMTranslation.engineLeavesMac(intelligence)
-            ? "a cloud model, so the text on screen leaves your Mac"
-            : "which runs on this Mac"
-        return "After the on-device translation appears, retranslates the whole selection with "
-            + "\(intelligence.textEngineLabel) (\(where_)) for sentences, idioms and OCR errors. "
-            + "Local-only mode keeps it on this Mac."
+        let model = SettingsView.shortModelName(intelligence.textEngineLabel)
+        return LLMTranslation.engineLeavesMac(intelligence) ? "Uses \(model); leaves your Mac." : "Uses \(model)."
+    }
+
+    /// "MLX · TheCluster/Qwen3.5-9B-…" → "Qwen3.5-9B-…".
+    static func shortModelName(_ label: String) -> String {
+        let afterDot = label.components(separatedBy: " · ").last ?? label
+        return afterDot.components(separatedBy: "/").last ?? afterDot
     }
 
     // MARK: - Toolbar actions
@@ -321,10 +490,7 @@ struct SettingsView: View {
                 Button("Show all") { draft.actionHidden = [] }
                     .disabled(draft.actionHidden.isEmpty)
             }
-            caption("The toolbar follows this order. Switch an action off to move it into the "
-                + "toolbar's \"…\" menu: it stays one click away rather than disappearing. Hotkeys "
-                + "start a capture and run that one action, skipping the toolbar, and take effect "
-                + "when you save. Copy image and Save image run from the toolbar only.")
+            caption("Off moves an action into the toolbar's \"…\" menu.")
         }
     }
 
@@ -355,14 +521,6 @@ struct SettingsView: View {
 
     private func toolbarActionControls(_ entry: ActionBarCatalogEntry, index: Int, count: Int) -> some View {
         HStack(spacing: 10) {
-            if let name = entry.shortcut {
-                recorder(name)
-            } else {
-                Text("—")
-                    .foregroundStyle(.tertiary)
-                    .frame(width: directRecorderWidth, alignment: .center)
-                    .help("Copy image and Save image run from the toolbar only.")
-            }
             Toggle("", isOn: visibilityBinding(for: entry.id))
                 .labelsHidden()
                 .toggleStyle(.switch)
@@ -479,20 +637,20 @@ struct SettingsView: View {
     /// Three instances of one template, plus the Ollama plumbing card. Nothing here declares a row
     /// order, a label width, a control width or a spacing value — those live in `ModelProviderSection`
     /// and `SettingsMetrics`, so a layout fix is one edit for all three (and for the next one).
+    /// Models is a hub: each model has its own page; the row shows what it's set to now.
     private var intelligenceTab: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: SettingsMetrics.sectionSpacing) {
-                languageSection
-                imageSection
-                embeddingSection
-                // Ollama plumbing shown once, only when text OR image actually uses Ollama.
-                if usesOllama { ollamaSection }
-                hermesSection
+        SettingsPage {
+            SettingsHubHeader(pane: .models)
+            SettingsCard(title: "") {
+                SettingsLinkRow(route: .languageModel, value: SettingsView.shortModelName(intelligence.textEngineLabel))
+                SettingsLinkRow(route: .imageModel, value: SettingsView.shortModelName(intelligence.imageEngineLabel))
+                SettingsLinkRow(route: .embeddingModel, value: SettingsView.shortModelName(intelligence.embeddingEngineLabel))
             }
-            .padding(SettingsMetrics.pagePadding)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // Ollama plumbing, only when text OR image actually uses Ollama.
+            if usesOllama {
+                SettingsCard(title: "") { SettingsLinkRow(route: .ollama) }
+            }
         }
-        .background(SettingsPalette.pageFill)
         // Anthropic catalogs load when switching to those cloud engines (Ollama loads in `load()`;
         // the OpenAI-compatible connections load their models on add/edit/refresh).
         .onChange(of: draft.provider) { _, _ in Task { await loadCloudModels() } }
@@ -514,6 +672,37 @@ struct SettingsView: View {
                  + "connection needs to be re-added under Language model — add it again as a "
                  + "connection to restore it.")
         }
+    }
+
+    // MARK: - Agent
+
+    private var agentPane: some View {
+        SettingsPage {
+            SettingsHubHeader(pane: .agent)
+            hermesSection
+        }
+    }
+
+    private var ownHermesPage: some View {
+        SettingsPage {
+            SettingsCard(title: "", footnote: "Agent replies then come from your Hermes and its own model.") {
+                SettingsRow("Use my own Hermes", caption: "Connect to a Hermes gateway you run") {
+                    SettingsSwitch(title: "", isOn: $draft.hermesUseOwn)
+                }
+                if draft.hermesUseOwn { ownHermesRows }
+            }
+        }
+    }
+
+    private var searchKeysPage: some View {
+        Form {
+            Section {
+                connectorList(Connectors.advanced)
+            } footer: {
+                caption("Optional. Stronger, ranked results for web search.")
+            }
+        }
+        .formStyle(.grouped)
     }
 
     private var connectionsSheet: some View {
@@ -807,11 +996,12 @@ struct SettingsView: View {
     /// The chat's Agent, powered by Hermes Agent. By default Lasso sets up and runs its own Hermes
     /// (`HermesRuntime`); advanced users can point it at a Hermes they run instead.
     private var hermesSection: some View {
-        SettingsCard(title: "Agent",
+        SettingsCard(title: "",
                      footnote: draft.localOnly
-                         ? "Off in local-only mode."
-                         : "Lets the chat search the web, read files and run commands with Hermes Agent, "
-                           + "using the model you pick above.") {
+                         ? "Paused in local-only mode."
+                         : draft.hermesUseOwn
+                         ? "Web, files and commands, through your Hermes and its own model."
+                         : "Web, files and commands, using the model chosen in Models.") {
             if !draft.hermesUseOwn {
                 SettingsRow("Status", caption: agentStatusCaption) { agentStatusControl }
             }
@@ -819,10 +1009,7 @@ struct SettingsView: View {
                 SettingsSwitch(title: "", isOn: Binding(get: { !draft.hermesLetDecide },
                                                         set: { draft.hermesLetDecide = !$0 }))
             }
-            SettingsRow("Use my own Hermes", caption: "Connect to a Hermes gateway you run") {
-                SettingsSwitch(title: "", isOn: $draft.hermesUseOwn)
-            }
-            if draft.hermesUseOwn { ownHermesRows }
+            SettingsLinkRow(route: .ownHermes, value: draft.hermesUseOwn ? "On" : "Off")
         }
         .onAppear { HermesRuntime.shared.refresh() }
     }
@@ -1120,7 +1307,7 @@ struct SettingsView: View {
     }
 
     /// Image providers offered — cloud hidden in local-only mode (keyed to the saved setting, like the
-    /// text engine list, so it only changes after Save & Apply).
+    /// text engine list, so it only changes once applied).
     private var availableVisionEngines: [VisionEngine] {
         saved.localOnly ? [.matchText, .ollama, .mlx] : VisionEngine.allCases
     }
@@ -1132,7 +1319,7 @@ struct SettingsView: View {
     }
 
     /// Embedding backends offered — cloud hidden in local-only mode (keyed to the saved setting, like
-    /// the text/image lists, so it only changes after Save & Apply).
+    /// the text/image lists, so it only changes once applied).
     private var availableEmbeddingProviders: [EmbeddingProviderKind] {
         saved.localOnly ? [.automatic, .apple, .ollama, .mlx] : EmbeddingProviderKind.allCases
     }
@@ -1202,47 +1389,6 @@ struct SettingsView: View {
 
     // MARK: - Connectors (the "bring your own tool" store)
 
-    private var connectorsTab: some View {
-        Form {
-            if draft.localOnly {
-                Section {
-                    Label("Connectors are paused in local-only mode. Turn it off in General to use them.",
-                          systemImage: "lock.shield.fill")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            Section {
-                connectorList([Connectors.webSearch])
-            } header: {
-                Text("Web context (on by default, no setup)")
-            } footer: {
-                caption("Free public text search (Wikipedia, DuckDuckGo, Reddit) over plain HTTP — used to "
-                        + "ground Identify and Chat. No account, no key.")
-            }
-
-            Section {
-                DisclosureGroup("Advanced — bring your own search key") {
-                    connectorList(Connectors.advanced)
-                }
-            } footer: {
-                caption("Optional: paste a Tavily or SerpApi key for stronger, ranked web results. "
-                        + "Most people never need these — the free web search above already grounds answers.")
-            }
-
-            Section {
-                Label("To identify what's in a photo, use Search with Google Lens (a one-tap button in "
-                      + "the Identify card). Turn it on under General ▸ Privacy — it's opt-in because it "
-                      + "uploads the image to Google.",
-                      systemImage: "photo.badge.magnifyingglass")
-                    .font(.caption).foregroundStyle(.secondary)
-                caption("Everything here is optional — Lasso works with nothing connected: Apple "
-                        + "Intelligence, OCR and Translate run on-device. Your AI model is chosen on the "
-                        + "Intelligence tab; keys are stored in the Keychain.")
-            }
-        }
-        .formStyle(.grouped)
-    }
-
     private func connectorList(_ connectors: [Connector]) -> some View {
         ForEach(connectors) { connector in
             ConnectorCard(connector: connector,
@@ -1263,7 +1409,7 @@ struct SettingsView: View {
     }
 
     /// Engines offered in the picker — cloud options are hidden in local-only mode (Apple/Ollama
-    /// only). Keyed to the *saved* setting so it only changes after Save & Apply, not while editing.
+    /// only). Keyed to the *saved* (applied) setting.
     private var availableProviders: [ProviderKind] {
         saved.localOnly ? [.onDevice, .ollama, .mlx] : ProviderKind.allCases
     }
@@ -2289,30 +2435,30 @@ struct SettingsView: View {
     // MARK: - About
 
     private var about: some View {
-        VStack(spacing: 14) {
-            Spacer(minLength: 0)
-            Image(systemName: "lasso")
-                .font(.system(size: 46, weight: .regular))
-                .foregroundStyle(.tint)
-            VStack(spacing: 4) {
-                Text("Lasso").font(.title.bold())
-                Text("Version \(appVersion)").font(.caption).foregroundStyle(.secondary)
+        Form {
+            Section {
+                VStack(spacing: 10) {
+                    Image(systemName: "lasso")
+                        .font(.system(size: 46, weight: .regular))
+                        .foregroundStyle(.tint)
+                    VStack(spacing: 4) {
+                        Text("Lasso").font(.title.bold())
+                        Text("Version \(appVersion)").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text("On-device screen intelligence for Apple Silicon.")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Label(intelligence.privacyNote,
+                          systemImage: intelligence.usedOffDeviceThisSession ? "cloud" : "lock.shield")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(.quaternary, in: Capsule())
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
             }
-            Text("On-device screen intelligence for Apple Silicon.")
-                .font(.callout).foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Label(intelligence.privacyNote,
-                  systemImage: intelligence.usedOffDeviceThisSession ? "cloud" : "lock.shield")
-                .font(.caption).foregroundStyle(.secondary)
-                .padding(.horizontal, 12).padding(.vertical, 6)
-                .background(.quaternary, in: Capsule())
-            Spacer(minLength: 0)
-            Text("Runs locally by default · your keys stay in the Keychain")
-                .font(.caption2).foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(28)
+        .formStyle(.grouped)
     }
 
     private var appVersion: String {
@@ -2465,20 +2611,27 @@ struct SettingsView: View {
         intelligence.mlxModel = draft.mlxModel.trimmingCharacters(in: .whitespacesAndNewlines)
         OllamaEndpoint.customURLString = draft.ollamaBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         UserDefaults.standard.set(draft.ollamaAutoStart, forKey: "ollama.autoStart")
-        Task { await OllamaEndpoint.autodetect() }   // re-resolve the effective server after a change
+        if draft.ollamaBaseURL != saved.ollamaBaseURL {
+            Task { await OllamaEndpoint.autodetect() }   // re-resolve the effective server after a change
+        }
+        // Applied on every change now, so each secret is written only when it changed: a toggle must
+        // not rewrite every Keychain item.
+        func key(_ new: String, _ old: String, _ account: String) {
+            if new != old { Keychain.set(new, for: account) }
+        }
         intelligence.visionModel = draft.visionModel
         intelligence.visionMLXModel = draft.visionMLXModel.trimmingCharacters(in: .whitespacesAndNewlines)
         intelligence.anthropicBaseURL = draft.anthropicBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         intelligence.anthropicModel = draft.anthropicModel
-        Keychain.set(draft.anthropicKey, for: "anthropic.apiKey")
+        key(draft.anthropicKey, saved.anthropicKey, "anthropic.apiKey")
         UserDefaults.standard.set(draft.hermesBaseURL.trimmingCharacters(in: .whitespacesAndNewlines),
                                   forKey: HermesAgent.baseURLKey)
-        HermesAgent.setAPIKey(draft.hermesKey)
+        if draft.hermesKey != saved.hermesKey { HermesAgent.setAPIKey(draft.hermesKey) }
         UserDefaults.standard.set(draft.hermesLetDecide, forKey: HermesAgent.letHermesDecideKey)
         if draft.hermesUseOwn != HermesAgent.usesOwnHermes { HermesRuntime.shared.stop() }
         UserDefaults.standard.set(draft.hermesUseOwn, forKey: HermesAgent.useOwnHermesKey)
         // Local-only: Lasso's Hermes may not keep running (it reaches cloud models and the web).
-        if draft.localOnly { HermesRuntime.shared.stop() }
+        if draft.localOnly, !saved.localOnly { HermesRuntime.shared.stop() }
         // The confirmation belongs to the address it was given for, and only to one Lasso can't check.
         if draft.hermesApprovalsConfirmed, !hermesAddressIsLocal, let client = HermesAgent.client() {
             UserDefaults.standard.set(client.baseURL.absoluteString, forKey: HermesAgent.approvalsConfirmedKey)
@@ -2488,14 +2641,14 @@ struct SettingsView: View {
         intelligence.visionEngine = draft.visionEngine
         intelligence.visionAnthropicBaseURL = draft.visionAnthropicBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         intelligence.visionAnthropicModel = draft.visionAnthropicModel
-        Keychain.set(draft.visionAnthropicKey, for: "vision.anthropic.apiKey")
+        key(draft.visionAnthropicKey, saved.visionAnthropicKey, "vision.anthropic.apiKey")
 
         // OpenAI-compatible omni-router: persist the shared registry (JSON) + each key's secret, and
         // each card's selection. Then commit the effective per-role config the coordinator consumes,
         // resolving each card's selection to its backing key (URL + model + key).
-        draft.registry.save()
+        if draft.registry != saved.registry { draft.registry.save() }
         for entry in draft.registry.entries {
-            Keychain.set(registryKeyValues[entry.id] ?? "", for: entry.keychainAccount)
+            key(registryKeyValues[entry.id] ?? "", savedRegistryKeyValues[entry.id] ?? "", entry.keychainAccount)
         }
         UserDefaults.standard.set(encodeSelection(draft.langSelection), forKey: "intelligence.keys.selection.language")
         UserDefaults.standard.set(encodeSelection(draft.visionSelection), forKey: "intelligence.keys.selection.vision")
@@ -2503,7 +2656,7 @@ struct SettingsView: View {
         UserDefaults.standard.set(draft.langContext, forKey: "intelligence.keys.language.context")
         intelligence.autoFallbackEnabled = draft.autoFallback
         intelligence.fallbackRaceAfterSeconds = draft.fallbackRaceAfter
-        // Shortcuts reach storage (and the global hotkey) only here, on Save & Apply.
+        // Shortcuts reach storage (and the global hotkey) here; only the ones that changed.
         for change in ShortcutStaging.changes(staged: draft.shortcuts,
                                               names: ActionShortcuts.titlesByName.keys,
                                               stored: { KeyboardShortcuts.getShortcut(for: $0) }) {
@@ -2521,7 +2674,7 @@ struct SettingsView: View {
                 // The connection's protocol travels with the flattened config, because that's what
                 // decides which transport `buildProvider()` constructs.
                 intelligence.openAIConnectionKind = key.kind
-                Keychain.set(registryKeyValues[key.id] ?? "", for: "openai.apiKey")
+                Keychain.set(registryKeyValues[key.id] ?? "", for: "openai.apiKey", ifChangedFrom: Keychain.get("openai.apiKey"))
             }
         }
         // Effective image config (resolving "same as language" against the language selection).
@@ -2530,7 +2683,7 @@ struct SettingsView: View {
             if let key = vis.key {
                 intelligence.visionOpenAIBaseURL = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
                 intelligence.visionOpenAIConnectionKind = key.kind
-                Keychain.set(registryKeyValues[key.id] ?? "", for: "vision.openai.apiKey")
+                Keychain.set(registryKeyValues[key.id] ?? "", for: "vision.openai.apiKey", ifChangedFrom: Keychain.get("vision.openai.apiKey"))
             }
         }
 
@@ -2538,7 +2691,7 @@ struct SettingsView: View {
             UserDefaults.standard.set(draft.connectorEnabled[connector.id] ?? connector.defaultEnabled,
                                       forKey: connector.enabledKey)
             if let account = connector.keyAccount {
-                Keychain.set(draft.connectorKeys[connector.id] ?? "", for: account)
+                key(draft.connectorKeys[connector.id] ?? "", saved.connectorKeys[connector.id] ?? "", account)
             }
         }
         UserDefaults.standard.set(draft.localOnly, forKey: "privacy.localOnly")
@@ -2548,7 +2701,9 @@ struct SettingsView: View {
         UserDefaults.standard.set(draft.actionBarStyle, forKey: Self.actionBarStyleKey)
         UserDefaults.standard.set(draft.hideUnavailable, forKey: Self.hideUnavailableKey)
         UserDefaults.standard.set(draft.colorfulActions, forKey: Self.colorfulKey)
-        ActionBarPreferences.save(order: draft.actionOrder, hidden: draft.actionHidden)
+        if draft.actionOrder != saved.actionOrder || draft.actionHidden != saved.actionHidden {
+            ActionBarPreferences.save(order: draft.actionOrder, hidden: draft.actionHidden)
+        }
         if draft.launchAtLogin != saved.launchAtLogin { LoginItem.set(draft.launchAtLogin) }
         if draft.autoUpdateChecks != saved.autoUpdateChecks { AppUpdater.shared.automaticallyChecks = draft.autoUpdateChecks }
         if draft.autoUpdateInstall != saved.autoUpdateInstall { AppUpdater.shared.automaticallyInstalls = draft.autoUpdateInstall }
@@ -2570,7 +2725,7 @@ struct SettingsView: View {
             if let key = emb.key {
                 intelligence.embeddingOpenAIBaseURL = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
                 intelligence.embeddingOpenAIConnectionKind = key.kind
-                Keychain.set(registryKeyValues[key.id] ?? "", for: "embedding.openai.apiKey")
+                Keychain.set(registryKeyValues[key.id] ?? "", for: "embedding.openai.apiKey", ifChangedFrom: Keychain.get("embedding.openai.apiKey"))
             }
         }
         if embeddingChanged { ChatController.shared.embeddingConfigChanged() }

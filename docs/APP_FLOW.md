@@ -788,6 +788,23 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Click any image in the chat to see it full size.** A pending attachment (44 pt), a sent one (40 pt) or
+  a picture in a reply couldn't be enlarged. `ImageViewer` opens it in its own window sized to the image
+  (up to 85% of the screen), with Copy, Open in Preview and, for a file on this Mac, Show in Finder;
+  Esc or ⌘W closes it. Also: inside the unit-test host Keychain dialogs are switched off
+  (`SecKeychainSetUserInteractionAllowed(false)`), after one hung a whole test run.
+- **Settings works like System Settings, and changes apply as you make them.** The four tabs had become
+  long scrolls (General held eight sections) and one "Unsaved changes" bar covered all of them, so a
+  change on one tab was easy to lose. Designed with a separate UI/UX review over three rounds (the owner
+  then clarified "grouped" meant System Settings' drill-down): a sidebar of five panes with colored icon
+  tiles and search. General and Models are hubs (a header card, then grouped rows with the current value
+  and a chevron that open a page: About, Software Update, Keyboard Shortcuts with every hotkey,
+  Translation; Language, Image and Embedding Model, Ollama), with Open at login as a switch on the hub.
+  Toolbar, Agent and Privacy show their controls directly (Use My Own Hermes and Search API Keys open
+  pages). Save & Apply is gone: a change applies 0.4 s after the last edit, `apply()` writes only what
+  changed (it used to rewrite every Keychain item), closing the window flushes. Search is a hand-written
+  index (`SettingsSearchEntry`) tested so every entry leads to its pane. The chat's model menu opens
+  Models › Language Model. Every pane and page is rendered in `SettingsSnapshotTests` (opt-in).
 - **Attach anything; the type decides what the model gets.** The attach button was greyed out unless
   Lasso's model could see images, and only images were allowed, even in Agent mode where Hermes reads
   files itself. Now any file attaches (button, drag, ⌘V) and nothing is refused for the model:

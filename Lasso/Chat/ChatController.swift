@@ -139,7 +139,7 @@ final class ChatController {
         scheduleIndex()
     }
 
-    /// The user changed the embedding backend (Settings ▸ Intelligence ▸ Embedding model). Vectors from
+    /// The user changed the embedding backend (Settings ▸ Models ▸ Embedding model). Vectors from
     /// a different embedder aren't comparable, so every session's index is fully reset + its cached
     /// embedder cleared; the active one re-embeds now, the rest lazily when next viewed.
     func embeddingConfigChanged() {
@@ -1111,9 +1111,9 @@ final class ChatController {
                     finishError(assistantID, ordered.compactMap(\.error).first.map {
                         "The image model (\(label)) couldn't read \(multi ? "these images" : "this image"): "
                         + "\($0) It may be slow, rate-limited, or offline — try again, "
-                        + "or switch image models in Settings ▸ Intelligence ▸ Image model."
+                        + "or switch image models in Settings ▸ Models ▸ Image model."
                     } ?? "The image model (\(label)) returned no description. Try again, or switch models in "
-                        + "Settings ▸ Intelligence ▸ Image model.")
+                        + "Settings ▸ Models ▸ Image model.")
                     return
                 }
                 completeStep(assistantID, stepID,
@@ -2571,7 +2571,7 @@ final class ChatController {
         let client: HermesClient
         if HermesAgent.usesOwnHermes {
             guard let own = HermesAgent.client() else {
-                end(error: "Add your Hermes's address and API key in Settings ▸ Intelligence ▸ Agent.")
+                end(error: "Add your Hermes's address and API key in Settings ▸ Agent.")
                 return
             }
             client = own

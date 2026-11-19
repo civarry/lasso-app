@@ -163,7 +163,7 @@ final class ChatMemoryIndex {
         return resolved
     }
 
-    /// Resolve the embedder from the user's Embedding-model choice (Settings ▸ Intelligence). The
+    /// Resolve the embedder from the user's Embedding-model choice (Settings ▸ Models). The
     /// coordinator owns the ladder + local-only enforcement + cloud config, so this just delegates.
     private static func pickEmbedder() async -> ChatEmbedder? {
         await IntelligenceCoordinator.shared.makeEmbedder()

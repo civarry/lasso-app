@@ -48,8 +48,8 @@ struct MLXProvider: IntelligenceProvider {
                     guard Self.isDownloaded(modelID) else {
                         throw IntelligenceError.unavailable(
                             PrivacyMode.localOnly
-                            ? "This MLX model isn't downloaded, and Local-only mode blocks the download (it would leave your Mac). Download it once with Local-only off in Settings ▸ Intelligence."
-                            : "This MLX model isn't downloaded yet. Download it in Settings ▸ Intelligence (MLX), then try again.")
+                            ? "This MLX model isn't downloaded, and Local-only mode blocks the download (it would leave your Mac). Download it once with Local-only off in Settings ▸ Models."
+                            : "This MLX model isn't downloaded yet. Download it in Settings ▸ Models (MLX), then try again.")
                     }
                     let model = try await MLXModelCache.shared.container(for: modelID)
                     let history = Self.history(from: messages)
@@ -265,7 +265,7 @@ struct MLXVisionProvider: VisionProvider {
     func describe(_ image: CGImage, prompt: String) async throws -> String {
         guard MLXProvider.isDownloaded(modelID) else {
             throw IntelligenceError.unavailable(
-                "Download the MLX vision model first in Settings ▸ Intelligence ▸ Image model.")
+                "Download the MLX vision model first in Settings ▸ Models ▸ Image model.")
         }
         let container = try await MLXModelCache.shared.container(for: modelID)
         let session = ChatSession(

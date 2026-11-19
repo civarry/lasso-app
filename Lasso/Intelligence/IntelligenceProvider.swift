@@ -354,7 +354,7 @@ final class IntelligenceCoordinator {
     }
 
     /// Switch the active language model to one served by a specific connection. Writes exactly what
-    /// Settings ▸ Save & Apply writes — effective endpoint, model, key, and the stored selection — so
+    /// Settings writes when it applies — effective endpoint, model, key, and the stored selection — so
     /// switching from the chat header is indistinguishable from switching in Settings.
     ///
     /// `keyID` is "" for a hand-typed model in the "Manually added" group; its endpoint is then
@@ -1126,7 +1126,7 @@ final class IntelligenceCoordinator {
                     let names = OnDeviceProvider.unsupportedNames(needs.languages)
                     Log.intelligence.notice("\(label, privacy: .public) · on-device refused: doesn't support \(names, privacy: .public)")
                     continuation.finish(throwing: IntelligenceError.unavailable(
-                        "Apple Intelligence doesn't support \(names). Choose a cloud or Ollama model in Settings ▸ Intelligence."))
+                        "Apple Intelligence doesn't support \(names). Choose a cloud or Ollama model in Settings ▸ Models."))
                     return
                 }
 

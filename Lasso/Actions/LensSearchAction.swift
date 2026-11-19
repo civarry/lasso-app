@@ -5,7 +5,7 @@ import SwiftUI
 /// visual matches, the same flow Findit uses.
 ///
 /// It leaves the Mac, so it's off by default, hidden in local-only mode, and only appears once the
-/// user enables it in Settings ▸ General ▸ Privacy.
+/// user enables it in Settings ▸ Privacy.
 struct LensSearchAction: CaptureAction {
     let id = "lens.search"
     let title = "Lens"

@@ -217,7 +217,7 @@ struct OnDeviceProvider: IntelligenceProvider {
         if description.contains("context") && description.contains("exceed") {
             return IntelligenceError.server(
                 "The selection is too large for Apple's on-device model. Try a smaller selection, or "
-                + "switch the model in Settings ▸ Intelligence.")
+                + "switch the model in Settings ▸ Models.")
         }
         return error
     }
