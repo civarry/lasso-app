@@ -22,6 +22,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Drop a pre-IPv4 cached "localhost" Ollama URL so we don't re-hit the refused ::1 socket.
         OllamaEndpoint.migrateDetectedLocalhostToIPv4()
 
+        // Tavily and SerpApi became packages: move a saved key over, once. Not in the test host,
+        // which shares this Mac's settings and Keychain.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil { PackageMigration.run() }
+
         let registry = ActionRegistry.makeDefault(intelligence: .shared)
         self.registry = registry
         CaptureCoordinator.shared.configure(registry: registry, intelligence: .shared)

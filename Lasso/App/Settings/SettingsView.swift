@@ -108,12 +108,12 @@ struct SettingsView: View {
     @State private var applyTask: Task<Void, Never>?
     @State private var loaded = false
     /// The pages opened in the current pane (back/forward in the toolbar).
-    @State private var path: [SettingsRoute] = []
+    @State private var path: [SettingsDestination] = []
     /// Always both columns. With the toggle removed, dragging the divider all the way left still hid
     /// the sidebar, and nothing brought it back (the window remembered it).
     @State private var columns: NavigationSplitViewVisibility = .all
     /// Pages left with Back, for Forward (cleared by opening a different page).
-    @State private var forwardPath: [SettingsRoute] = []
+    @State private var forwardPath: [SettingsDestination] = []
     @State private var goingForward = false
     /// Observed, so a request arriving while Settings is already open (on any pane) is honored.
     @AppStorage(SettingsView.routeKey) private var requestedRoute = ""
@@ -195,9 +195,9 @@ struct SettingsView: View {
                 paneRoot(pane)
                     .navigationTitle(pane.title)
                     .toolbar { backForward }
-                    .navigationDestination(for: SettingsRoute.self) { route in
-                        page(route)
-                            .navigationTitle(route.title)
+                    .navigationDestination(for: SettingsDestination.self) { destination in
+                        destinationView(destination)
+                            .navigationTitle(destinationTitle(destination))
                             // Back is the ‹ › pair at the leading edge like System Settings; the
                             // stack's own button sat centred on a row of its own.
                             .navigationBarBackButtonHidden(true)
@@ -256,7 +256,7 @@ struct SettingsView: View {
                         SettingsTile(symbol: item.symbol, color: item.color)
                         Text(item.title)
                         Spacer()
-                        if draft.localOnly, item.pausedByLocalOnly {
+                        if draft.localOnly, item.pausedByLocalOnly || (item == .packages && packagesReachOffMac) {
                             Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary)
                                 .help("Paused in local-only mode")
                         }
@@ -272,7 +272,7 @@ struct SettingsView: View {
                     Button {
                         searchText = ""
                         paneRaw = entry.pane.rawValue
-                        DispatchQueue.main.async { path = entry.route.map { [$0] } ?? [] }
+                        DispatchQueue.main.async { path = entry.route.map { [.route($0)] } ?? [] }
                     } label: {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(entry.label)
@@ -291,7 +291,7 @@ struct SettingsView: View {
         guard loaded, let route = SettingsRoute(rawValue: requestedRoute) else { return }
         requestedRoute = ""
         if route.pane != pane { paneRaw = route.pane.rawValue }
-        DispatchQueue.main.async { path = [route] }
+        DispatchQueue.main.async { path = [.route(route)] }
     }
 
     @ViewBuilder private func paneRoot(_ pane: Pane) -> some View {
@@ -300,8 +300,41 @@ struct SettingsView: View {
         case .toolbar: toolbarPane
         case .models: intelligenceTab
         case .agent: agentPane
+        case .packages:
+            PackagesHub(webSearchOn: enabledBinding(Connectors.webSearch.id), localOnly: draft.localOnly,
+                        openPackage: { path.append(.package($0)) })
         case .privacy: privacyPane
         }
+    }
+
+    @ViewBuilder private func destinationView(_ destination: SettingsDestination) -> some View {
+        switch destination {
+        case .route(let route): page(route)
+        case .package(let id):
+            PackagePage(id: id, localOnly: draft.localOnly, removed: { if path.last == .package(id) { path.removeLast() } })
+        }
+    }
+
+    private func destinationTitle(_ destination: SettingsDestination) -> String {
+        switch destination {
+        case .route(let route): route.title
+        case .package(let id): PackageStore.shared.installed.first { $0.id == id }?.package.name ?? id
+        }
+    }
+
+    /// Something under Packages would send data off the Mac (for the sidebar's local-only lock).
+    private var packagesReachOffMac: Bool {
+        (draft.connectorEnabled[Connectors.webSearch.id] ?? false)
+            || PackageStore.shared.installed.contains { item in
+                item.enabled && !PackageHTTP.allowedHosts(item.package, values: PackageStore.shared.settingValues(for: item.package).values)
+                    .allSatisfy(PackageValidator.isLoopback)
+            }
+    }
+
+    /// How many search sources are on (Privacy's pointer to Packages).
+    private var searchSourcesOn: Int {
+        ((draft.connectorEnabled[Connectors.webSearch.id] ?? false) ? 1 : 0)
+            + PackageStore.shared.installed.filter { $0.enabled && $0.package.commands.contains { $0.surfaces.contains(.search) } }.count
     }
 
     @ViewBuilder private func page(_ route: SettingsRoute) -> some View {
@@ -316,7 +349,6 @@ struct SettingsView: View {
         case .embeddingModel: SettingsPage { embeddingSection }
         case .ollama: SettingsPage { ollamaSection }
         case .ownHermes: ownHermesPage
-        case .searchKeys: searchKeysPage
         }
     }
 
@@ -485,13 +517,21 @@ struct SettingsView: View {
                 caption("Blocks every network call except your model.")
             }
             Section {
-                connectorList([Connectors.webSearch])
+                // Search sources live in Packages; people who turn on local-only look here for what
+                // leaves the Mac, so Privacy points there (one switch, one place).
+                Button { paneRaw = Pane.packages.rawValue } label: {
+                    LabeledContent("Search sources") {
+                        HStack(spacing: 6) {
+                            Text("\(searchSourcesOn) on").foregroundStyle(.secondary)
+                            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
                 Toggle("Search with Lens", isOn: $draft.lensSearch)
                     .disabled(draft.localOnly)
                 caption("Sends the selection to Google.")
-                NavigationLink(value: SettingsRoute.searchKeys) {
-                    Text("Search API Keys")
-                }
             } header: {
                 HStack {
                     Text("Web")
@@ -750,17 +790,6 @@ struct SettingsView: View {
                 if draft.hermesUseOwn { ownHermesRows }
             }
         }
-    }
-
-    private var searchKeysPage: some View {
-        Form {
-            Section {
-                connectorList(Connectors.advanced)
-            } footer: {
-                caption("Optional. Stronger, ranked results for web search.")
-            }
-        }
-        .formStyle(.grouped)
     }
 
     private var connectionsSheet: some View {
@@ -2945,18 +2974,8 @@ private struct ConnectorCard: View {
         }
     }
 
-    /// Monthly usage line for the budgeted search APIs.
-    private var usage: String? {
-        let source: String
-        switch connector.id {
-        case "tavily": source = "tavily"
-        case "serpApi": source = "serpapi"
-        default: return nil
-        }
-        guard !key.isEmpty else { return nil }
-        let cap = SearchQuota.caps[source]?.monthly ?? 0
-        return "This month — \(SearchQuota.usedMonth(source))/\(cap) used"
-    }
+    /// Usage lines belong to search packages now (their own page).
+    private var usage: String? { nil }
 
     private func runTest() {
         test = .testing

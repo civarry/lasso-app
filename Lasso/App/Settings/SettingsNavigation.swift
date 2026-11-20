@@ -6,7 +6,7 @@ import SwiftUI
 // MARK: - Panes and pages
 
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, toolbar, models, agent, privacy
+    case general, toolbar, models, agent, packages, privacy
     var id: String { rawValue }
 
     var title: String {
@@ -15,6 +15,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .toolbar: "Toolbar"
         case .models: "Models"
         case .agent: "Agent"
+        case .packages: "Packages"
         case .privacy: "Privacy"
         }
     }
@@ -25,6 +26,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .toolbar: "rectangle.3.group.fill"
         case .models: "cpu.fill"
         case .agent: "terminal.fill"
+        case .packages: "shippingbox.fill"
         case .privacy: "hand.raised.fill"
         }
     }
@@ -37,6 +39,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .toolbar: Color(white: 0.32)
         case .models: Color(nsColor: .systemIndigo)
         case .agent: Color(nsColor: .systemOrange)
+        case .packages: Color(nsColor: .systemGreen)
         case .privacy: Color(nsColor: .systemBlue)
         }
     }
@@ -48,6 +51,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .toolbar: "Choose which actions appear and in what order."
         case .models: "The AI models Lasso uses for text, images and memory."
         case .agent: "Lets chat search the web, read files and run commands."
+        case .packages: "Add search services to Lasso from a file or pasted code."
         case .privacy: "Control what leaves your Mac."
         }
     }
@@ -60,7 +64,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
 enum SettingsRoute: String, Hashable, CaseIterable {
     case about, softwareUpdate, shortcuts, translation, dictation
     case languageModel, imageModel, embeddingModel, ollama
-    case ownHermes, searchKeys
+    case ownHermes
 
     var title: String {
         switch self {
@@ -74,7 +78,6 @@ enum SettingsRoute: String, Hashable, CaseIterable {
         case .embeddingModel: "Embedding Model"
         case .ollama: "Ollama"
         case .ownHermes: "Use My Own Hermes"
-        case .searchKeys: "Search API Keys"
         }
     }
 
@@ -90,7 +93,6 @@ enum SettingsRoute: String, Hashable, CaseIterable {
         case .embeddingModel: "brain.fill"
         case .ollama: "server.rack"
         case .ownHermes: "network"
-        case .searchKeys: "key.fill"
         }
     }
 
@@ -106,7 +108,6 @@ enum SettingsRoute: String, Hashable, CaseIterable {
         case .embeddingModel: Color(nsColor: .systemPurple)
         case .ollama: Color(white: 0.32)
         case .ownHermes: Color(nsColor: .systemOrange)
-        case .searchKeys: Color(nsColor: .systemGray)
         }
     }
 
@@ -116,7 +117,6 @@ enum SettingsRoute: String, Hashable, CaseIterable {
         case .about, .softwareUpdate, .shortcuts, .translation, .dictation: .general
         case .languageModel, .imageModel, .embeddingModel, .ollama: .models
         case .ownHermes: .agent
-        case .searchKeys: .privacy
         }
     }
 }
@@ -168,9 +168,10 @@ struct SettingsSearchEntry: Identifiable, Hashable {
         .init(label: "Ask before risky commands", pane: .agent, route: nil, keywords: ["approval", "hermes"]),
         .init(label: "Use my own Hermes", pane: .agent, route: .ownHermes, keywords: ["gateway", "api key", "address"]),
         .init(label: "Local-only mode", pane: .privacy, route: nil, keywords: ["offline", "network", "privacy"]),
-        .init(label: "Web search", pane: .privacy, route: nil, keywords: ["internet", "grounding", "connector"]),
+        .init(label: "Web search", pane: .packages, route: nil, keywords: ["internet", "grounding", "connector", "wikipedia", "duckduckgo"]),
+        .init(label: "Add a package", pane: .packages, route: nil, keywords: ["plugin", "install", "extension", "connector", "tavily", "serpapi", "brave"]),
         .init(label: "Search with Lens", pane: .privacy, route: nil, keywords: ["google", "reverse image"]),
-        .init(label: "Search API keys", pane: .privacy, route: .searchKeys, keywords: ["tavily", "serpapi", "api key"]),
+        .init(label: "Search API keys", pane: .packages, route: nil, keywords: ["tavily", "serpapi", "api key"]),
         .init(label: "Clear chat history", pane: .privacy, route: nil, keywords: ["delete", "conversations"]),
     ]
 
@@ -220,7 +221,7 @@ struct SettingsLinkRow: View {
     var locked = false
 
     var body: some View {
-        NavigationLink(value: route) {
+        NavigationLink(value: SettingsDestination.route(route)) {
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
                     SettingsTile(symbol: route.symbol, color: route.color)

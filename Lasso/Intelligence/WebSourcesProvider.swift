@@ -9,7 +9,8 @@ enum PrivacyMode {
 }
 
 /// Free text-query web sources for the Identify pipeline: Wikipedia + DuckDuckGo (clean abstracts
-/// and links) and Reddit's public search.json (community discussion), plus keyed Tavily/SerpApi.
+/// and links) and Reddit's public search.json (community discussion), plus search packages
+/// (`docs/PACKAGES.md`; Tavily and SerpApi are two of them).
 /// Everything here is a plain in-process URLSession HTTP call — no WKWebView, no helper processes —
 /// so it behaves like any other network request. These leave the Mac, so
 /// they're gated by the "Web search" setting and suppressed entirely in local-only mode.
@@ -34,12 +35,11 @@ struct WebSourcesProvider {
         var hits: [Hit] = []       // related links (DDG + Reddit) for display + synthesis
     }
 
-    /// Managed search. Order of priority for *quality*: keyed APIs (Tavily primary, SerpApi reserve)
-    /// over free sources — but spent carefully:
-    ///   1. Cache-first (7-day TTL) — repeats cost zero quota.
+    /// Managed search. Search packages' results lead the free sources, spent carefully:
+    ///   1. Cache-first (7-day TTL): repeats cost zero quota.
     ///   2. Free baseline always (Wikipedia abstract + links, DuckDuckGo).
-    ///   3. Tavily proactively when daily+monthly budget allows (its results lead the list).
-    ///   4. SerpApi only as a reserve (Tavily empty / no Tavily budget), since its quota is tiny.
+    ///   3. `primary` packages on every search, within their limits; their results lead the list.
+    ///   4. `reserve` packages only when the rest came back thin (fewer than 5 results).
     /// Reddit (search.json) is fetched here too. Everything is embedding-ranked in IdentifyView.
     /// Time one source. Purely observational: the work is unchanged and still runs concurrently with
     /// its siblings, so this reports the real wall clock each connector contributes to a turn.
@@ -55,11 +55,13 @@ struct WebSourcesProvider {
         guard !PrivacyMode.localOnly else { return Result() }
 
         let freeOn = Connectors.webSearch.isActive()
-        let tavilyOn = Connectors.tavily.isActive()
-        let serpOn = Connectors.serpApi.isActive()
+        let packages = PackageRegistry.shared.searchCommands()
+        let primaries = packages.filter { $0.command.run.role == .primary }
+        let reserves = packages.filter { $0.command.run.role == .reserve }
 
         // Cache per active config — otherwise enabling/disabling a source would replay stale hits.
-        let cacheKey = "w\(freeOn ? 1 : 0)t\(tavilyOn ? 1 : 0)s\(serpOn ? 1 : 0)|\(query)"
+        let active = packages.map { "\($0.entry.package.id)@\($0.entry.package.version)/\($0.command.id)" }.joined(separator: ",")
+        let cacheKey = "w\(freeOn ? 1 : 0)p[\(active)]|\(query)"
         if let cached = SearchCache.get(cacheKey) {
             // Logged so a cached turn is never mistaken for a fast network (it was: a repeated query
             // returned in 264ms and a fresh one took 3.4s on the same connectors).
@@ -77,16 +79,21 @@ struct WebSourcesProvider {
         // numbers could not see. Everything below is on the critical path and now says so.
         let tStart = Date()
         func since(_ t: Date) -> Int { Int(Date().timeIntervalSince(t) * 1000) }
-        var freeMs = 0, dedupMs = 0, tavilyMs = 0, serpMs = 0
+        var freeMs = 0, dedupMs = 0, primaryMs = 0, reserveMs = 0
 
-        // Tavily reads none of the free results — its hits are simply merged in front of them — so it
-        // has no reason to wait for them. Measured on a real turn: the whole concurrent free block
-        // cost 1136ms and Tavily then added 2605ms of pure serial time after it. Started here, that
-        // cost overlaps instead of stacking. SerpApi genuinely depends on the deduped hit count
-        // (it only tops up a thin set), so that one stays where it is.
-        var tavilyTask: Task<[Hit], Never>?
-        if tavilyOn, SearchQuota.canUse("tavily") {
-            tavilyTask = Task { await tavily(query) }
+        // Primary packages read none of the free results (theirs are merged in front), so they start
+        // now and overlap the free block instead of stacking after it. Measured with Tavily: the free
+        // block cost 1136ms and Tavily then added 2605ms of pure serial time when it waited. Reserves
+        // depend on the deduped count, so they run after.
+        let primaryTask: Task<[Hit], Never>? = primaries.isEmpty ? nil : Task {
+            await withTaskGroup(of: (Int, [Hit]).self) { group in
+                for (i, source) in primaries.enumerated() {
+                    group.addTask { (i, await PackageSearch.run(source.entry, source.command, query: query)) }
+                }
+                var byOrder: [(Int, [Hit])] = []
+                for await result in group { byOrder.append(result) }
+                return byOrder.sorted { $0.0 < $1.0 }.flatMap(\.1)
+            }
         }
 
         // Free baseline (Wikipedia / DuckDuckGo / Reddit) — only when the Web search connector is on.
@@ -111,32 +118,29 @@ struct WebSourcesProvider {
         hits = Self.deduped(hits)
         dedupMs = since(tDedup)
 
-        // Tavily: primary paid source (best results + snippets), budget-paced — its hits lead.
-        // `tavilyMs` is now the *remaining* wait after the overlap, which is the number that matters:
-        // it is what Tavily still adds to the turn, not what it costs in isolation.
-        if let tavilyTask {
+        // Primary packages' hits lead. `primaryMs` is the *remaining* wait after the overlap: what
+        // they still add to the turn, not what they cost in isolation.
+        if let primaryTask {
             let t = Date()
-            hits = Self.deduped(await tavilyTask.value + hits)
-            tavilyMs = since(t)
+            hits = Self.deduped(await primaryTask.value + hits)
+            primaryMs = since(t)
         }
-        // SerpApi: a top-up, not a strict reserve — fill only when the deduped set is thin (so a
-        // configured key actually helps), still gated by its small monthly quota.
-        if serpOn, hits.count < Self.serpTopUpThreshold, SearchQuota.canUse("serpapi") {
+        // Reserves top up a thin set, one at a time, until it isn't thin.
+        for source in reserves where hits.count < Self.reserveThreshold {
             let t = Date()
-            let serp = await serpAPI(query)
-            hits = Self.deduped(hits + serp)
-            serpMs = since(t)
+            hits = Self.deduped(hits + (await PackageSearch.run(source.entry, source.command, query: query)))
+            reserveMs += since(t)
         }
 
-        Log.chat.notice("lookup · free=\(freeMs, privacy: .public)ms dedup=\(dedupMs, privacy: .public)ms tavily=\(tavilyMs, privacy: .public)ms serp=\(serpMs, privacy: .public)ms total=\(since(tStart), privacy: .public)ms")
+        Log.chat.notice("lookup · free=\(freeMs, privacy: .public)ms dedup=\(dedupMs, privacy: .public)ms packages=\(primaryMs, privacy: .public)ms reserve=\(reserveMs, privacy: .public)ms total=\(since(tStart), privacy: .public)ms")
         SearchCache.set(cacheKey, abstract: abstract, abstractSource: abstractSource, hits: hits)
         var result = Result(abstract: abstract, abstractSource: abstractSource)
         result.hits = hits
         return result
     }
 
-    /// Below this many distinct hits, pull SerpApi to top up (rather than only when Tavily is empty).
-    private static let serpTopUpThreshold = 5
+    /// Below this many distinct hits, `reserve` packages top up (spec: "fewer than 5 results").
+    static let reserveThreshold = 5
 
     /// Collapse duplicate results across sources by normalized URL (host+path, case/scheme/trailing-slash
     /// and query/fragment insensitive), falling back to normalized title when there's no URL. Keeps the
@@ -167,29 +171,6 @@ struct WebSourcesProvider {
             return (host + path).lowercased()
         }
         return hit.title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    // MARK: SerpApi (free 250/mo, needs an API key — real Google results)
-
-    private func serpAPI(_ query: String) async -> [Hit] {
-        let key = Keychain.getMigrating("serpapi.apiKey", legacyDefaultsKey: "serpapi.apiKey") ?? ""
-        guard !key.isEmpty,
-              let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let k = key.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://serpapi.com/search.json?engine=google&num=8&q=\(q)&api_key=\(k)")
-        else { return [] }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 8
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let organic = json["organic_results"] as? [[String: Any]] else { return [] }
-        SearchQuota.record("serpapi")
-        return organic.prefix(6).compactMap { result -> Hit? in
-            guard let title = result["title"] as? String, !title.isEmpty else { return nil }
-            return Hit(title: title, url: (result["link"] as? String).flatMap { URL(string: $0) },
-                       source: "Google")
-        }
     }
 
     // MARK: Wikipedia (official, free, no key — the stable core)
@@ -233,32 +214,6 @@ struct WebSourcesProvider {
         let path = title.replacingOccurrences(of: " ", with: "_")
             .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? title
         return URL(string: "https://en.wikipedia.org/wiki/\(path)")
-    }
-
-    // MARK: Tavily (free 1,000/mo, needs an API key — stable real web search)
-
-    private func tavily(_ query: String) async -> [Hit] {
-        let key = Keychain.getMigrating("tavily.apiKey", legacyDefaultsKey: "tavily.apiKey") ?? ""
-        guard !key.isEmpty, let url = URL(string: "https://api.tavily.com/search") else { return [] }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")   // newer Tavily
-        request.timeoutInterval = 8
-        request.httpBody = try? JSONEncoder().encode(
-            TavilyRequest(api_key: key, query: query, max_results: 6, search_depth: "basic"))
-
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200,
-              let decoded = try? JSONDecoder().decode(TavilyResponse.self, from: data) else {
-            return []
-        }
-        SearchQuota.record("tavily")
-        return decoded.results.prefix(6).compactMap { result in
-            guard !result.title.isEmpty else { return nil }
-            return Hit(title: result.title, url: URL(string: result.url), source: "Tavily",
-                       snippet: result.content)
-        }
     }
 
     // MARK: DuckDuckGo Instant Answer (JSON)
@@ -366,17 +321,6 @@ struct WebSourcesProvider {
     }
 }
 
-private struct TavilyRequest: Encodable {
-    let api_key: String
-    let query: String
-    let max_results: Int
-    let search_depth: String
-}
-
-private struct TavilyResponse: Decodable {
-    struct Result: Decodable { let title: String; let url: String; let content: String? }
-    let results: [Result]
-}
 
 // MARK: - Identify source registry (the "bring your own tool" surface)
 
@@ -448,14 +392,11 @@ enum IdentifySources {
     /// those that never leave the Mac (today that's none, so Identify stays fully local).
     static func active() -> [IdentifySource] {
         all().filter { source in
-            // The "web" source is the hub for three independent text connectors (Web search, Tavily,
-            // SerpApi) that layer into one lookup — run it if ANY of them is active, so Tavily/SerpApi
-            // work on their own without Web search also being on. (isActive() already respects
-            // local-only.)
+            // The "web" source is the hub for the built-in Web search and every search package, which
+            // layer into one lookup: run it if any of them is active, so a package works without Web
+            // search also being on. (Both checks respect local-only.)
             if source.id == "web" {
-                return Connectors.webSearch.isActive()
-                    || Connectors.tavily.isActive()
-                    || Connectors.serpApi.isActive()
+                return Connectors.webSearch.isActive() || PackageRegistry.shared.hasActiveSearch
             }
             guard isEnabled(source), !source.requiresKey || source.isConfigured() else { return false }
             return !PrivacyMode.localOnly || !source.leavesDevice
@@ -463,12 +404,12 @@ enum IdentifySources {
     }
 }
 
-/// Built-in source: Wikipedia + DuckDuckGo + Reddit (and optional Tavily/SerpApi keys), all over
-/// plain URLSession. Backed by the existing `imageSearch.enabled` toggle for continuity.
+/// Built-in source: Wikipedia + DuckDuckGo + Reddit (and any search packages), all over plain
+/// URLSession. Backed by the existing `imageSearch.enabled` toggle for continuity.
 struct WebSearchSource: IdentifySource {
     let id = "web"
     let title = "Web search"
-    let detail = "Wikipedia, DuckDuckGo and Reddit for context. Optional Tavily / SerpApi keys add stronger results."
+    let detail = "Wikipedia, DuckDuckGo and Reddit for context. Search packages add stronger results."
     let kind = SourceKind.textual
     let leavesDevice = true
     let enabledKey = "imageSearch.enabled"

@@ -1,0 +1,20 @@
+{
+  "lasso": 1, "id": "tavily", "version": "1.0.0", "name": "Tavily",
+  "summary": "Web search tuned for AI: clean, ranked results.", "author": "Lasso",
+  "homepage": "https://tavily.com", "category": "search",
+  "icon": { "symbol": "magnifyingglass.circle", "domain": "tavily.com" },
+  "hosts": ["api.tavily.com"],
+  "settings": [ { "id": "key", "label": "API key", "kind": "secret", "help": "https://app.tavily.com/" } ],
+  "limits": { "daily": 40, "monthly": 960 },
+  "commands": [ {
+    "id": "search", "title": "Tavily", "surfaces": ["search"], "input": ["query"], "output": "results",
+    "run": {
+      "http": { "method": "POST", "url": "https://api.tavily.com/search",
+                "headers": { "Authorization": "Bearer {{settings.key}}" },
+                "json": { "api_key": "{{settings.key}}", "query": "{{query}}", "max_results": 6, "search_depth": "basic" } },
+      "role": "primary",
+      "results": { "list": "results", "title": "title", "url": "url", "snippet": "content", "limit": 6 }
+    },
+    "test": { "query": "lasso app" }
+  } ]
+}
