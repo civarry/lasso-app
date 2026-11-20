@@ -74,6 +74,8 @@ enum ConversationStore {
         var files: [FileDTO]? = nil
         /// Optional so conversations saved before the Agent decode unchanged.
         var viaAgent: Bool? = nil
+        /// Optional so conversations saved before packages decode unchanged.
+        var caption: String? = nil
     }
 
     struct FileDTO: Codable {
@@ -220,7 +222,7 @@ extension ConversationStore {
                 files: m.files.isEmpty ? nil : m.files.map {
                     FileDTO(id: $0.id, path: $0.path, name: $0.name, kind: $0.kind, typeName: $0.typeName, bytes: $0.bytes)
                 },
-                viaAgent: m.viaAgent ? true : nil)
+                viaAgent: m.viaAgent ? true : nil, caption: m.caption)
         }
         return ConversationDTO(
             schemaVersion: schemaVersion,
@@ -265,6 +267,7 @@ extension ConversationStore {
             msg.reasoningSeconds = md.reasoningSeconds
             msg.sources = md.sources
             msg.viaAgent = md.viaAgent ?? false
+            msg.caption = md.caption
             msg.files = (md.files ?? []).map {
                 FileAttachment(id: $0.id, path: $0.path, name: $0.name, kind: $0.kind, typeName: $0.typeName, bytes: $0.bytes)
             }

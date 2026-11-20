@@ -28,13 +28,18 @@ final class ActionRegistry {
         actions.append(action)
     }
 
+    /// Enabled package `toolbar` commands, as actions (rebuilt each time: packages change at runtime).
+    func packageActions() -> [any CaptureAction] {
+        PackageRegistry.shared.commands(for: .toolbar).map { PackageCommandAction(entry: $0.entry, command: $0.command) }
+    }
+
     /// Relevant actions for a context, sorted by `relevancePriority` then registration order.
     ///
     /// This is the *shipped* order, not the displayed one. What the bar actually renders is decided
     /// by `ActionBarLayout.arrange`, which puts the user's saved order first and falls back to this
     /// ranking only for actions they have never moved.
     func relevantActions(for ctx: CaptureContext) -> [any CaptureAction] {
-        actions
+        (actions + packageActions())
             .enumerated()
             .filter { $0.element.isRelevant(to: ctx) }
             .sorted {

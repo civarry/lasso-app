@@ -398,6 +398,121 @@ final class ChatController {
         }.joined(separator: "\n\n")
     }
 
+    // MARK: - Package /commands
+
+    /// One line over the composer when a package command can't run as typed (cleared on the next edit).
+    var composerNotice: String? {
+        didSet { composerNoticeInput = composerNotice == nil ? nil : input }
+    }
+    /// The composer text the notice is about: it clears only when the text changes from this.
+    private(set) var composerNoticeInput: String?
+
+    struct PackageSlashMatch {
+        let name: String
+        let entry: PackageRegistry.Entry
+        let command: PackageCommand
+        let argument: String
+    }
+
+    /// The package command `typed` starts with ("/explain some text"), if any.
+    func packageSlash(_ typed: String) -> PackageSlashMatch? {
+        guard typed.hasPrefix("/") else { return nil }
+        let head = String(typed.prefix { !$0.isWhitespace }).lowercased()
+        guard let found = PackageRegistry.shared.slashCommands().first(where: { $0.name == head }) else { return nil }
+        let argument = String(typed.dropFirst(head.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        return PackageSlashMatch(name: found.name, entry: found.entry, command: found.command, argument: argument)
+    }
+
+    /// The last reply a command can run on, when nothing was typed after it.
+    var lastReplyText: String? {
+        messages.last { $0.role == .assistant && !$0.isError && !$0.text.isEmpty }?.text
+    }
+
+    /// Why `match` can't run here, or nil. In chat there's no source app or image, so `apps` and
+    /// `hasImage: true` never hold (spec, "When").
+    func packageSlashProblem(_ match: PackageSlashMatch) -> String? {
+        let command = match.command
+        if let reason = PackageRegistry.shared.unavailableReason(match.entry, command) { return reason }
+        let text = match.argument.isEmpty ? (lastReplyText ?? "") : match.argument
+        if command.input.contains(.text), text.isEmpty { return "Type the text after \(match.name)." }
+        guard let when = command.when else { return nil }
+        if when.hasImage == true || !when.apps.isEmpty { return "\(command.title) doesn't run in chat." }
+        if let min = when.minLength, text.count < min { return "\(command.title) needs at least \(min) characters." }
+        if let max = when.maxLength, text.count > max { return "\(command.title) takes at most \(max) characters." }
+        if let pattern = when.match, !PackageWhen.matches(pattern, in: text) { return "\(command.title) doesn't apply to this text." }
+        return nil
+    }
+
+    func runPackageSlash(_ match: PackageSlashMatch, typed: String) {
+        if let problem = packageSlashProblem(match) { composerNotice = problem; return }
+        let command = match.command, entry = match.entry
+        let text = match.argument.isEmpty ? (lastReplyText ?? "") : match.argument
+        Task { @MainActor in
+            // `detects` needs the slower detector; checked here so a mismatch keeps the composer as typed.
+            if let when = command.when, !when.detects.isEmpty,
+               await PackageDetection.kinds(in: text).isDisjoint(with: when.detects) {
+                composerNotice = "\(command.title) doesn't apply to this text."
+                return
+            }
+            startPackageReply(match, typed: typed, text: text)
+        }
+    }
+
+    private func startPackageReply(_ match: PackageSlashMatch, typed: String, text: String) {
+        let command = match.command, entry = match.entry
+        composerNotice = nil
+        var user = ChatMessage(role: .user, text: typed)
+        // Later turns see what was asked, not the raw "/explain".
+        user.promptText = "\(command.title): \(text)"
+        messages.append(user)
+        var reply = ChatMessage(role: .assistant, text: "", isStreaming: true)
+        reply.caption = PackageOutput.attribution(entry, command)
+        messages.append(reply)
+        let replyID = reply.id
+        input = ""
+        isStreaming = true
+        let session = active
+        func update(_ change: (inout ChatMessage) -> Void) {
+            if let i = session.messages.firstIndex(where: { $0.id == replyID }) { change(&session.messages[i]) }
+        }
+        streamTask?.cancel()
+        streamTask = Task { [weak self] in
+            defer {
+                update { $0.isStreaming = false }
+                session.isStreaming = false
+                self?.persist(session)
+            }
+            do {
+                let result = try await PackageCommandRunner.run(entry, command, input: PackageInput(text: text))
+                switch result {
+                case .stream(let stream):
+                    for try await piece in stream {
+                        if Task.isCancelled { break }
+                        update { $0.text += piece }
+                    }
+                    let intelligence = IntelligenceCoordinator.shared
+                    if !intelligence.lastProviderName.isEmpty {
+                        update { $0.caption = "\(entry.package.name) · \(intelligence.lastProviderName) · \(intelligence.lastProviderLocationNote)" }
+                    }
+                case .text(let answer):
+                    update { $0.text = answer }
+                case .url(let url):
+                    update { $0.text = url.absoluteString }
+                }
+                if command.output != .markdown {
+                    let shown = session.messages.first { $0.id == replyID }?.text ?? ""
+                    let delivered: PackageCommandResult = command.output == .open ? (URL(string: shown).map { .url($0) } ?? .text(shown)) : .text(shown)
+                    await PackageOutput.deliver(delivered, output: command.output, title: command.title)
+                }
+                if (session.messages.first { $0.id == replyID }?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    update { $0.text = "\(command.title) returned nothing."; $0.isError = true }
+                }
+            } catch {
+                update { $0.text = PackageOutput.failure(error, entry, command); $0.isError = true }
+            }
+        }
+    }
+
     /// Append a local, non-model message (e.g. `/help` output). Never sent to a provider; persisted so it
     /// scrolls with the thread, but it isn't indexed (no turn runs) so it won't pollute retrieval.
     func postLocalMessage(_ text: String) {
@@ -930,6 +1045,12 @@ final class ChatController {
         if Self.isClearCommand(typed) {
             Log.chat.notice("send: /clear — resetting active session")
             clearActive()
+            return
+        }
+        // A package's /command runs that command, not a model turn.
+        if let match = packageSlash(typed), pendingAttachments.isEmpty, pendingFiles.isEmpty {
+            guard !isStreaming else { return }
+            runPackageSlash(match, typed: typed)
             return
         }
 

@@ -42,6 +42,12 @@ struct CaptureContext: @unchecked Sendable {
     var detectedData: [DetectedItem]
     /// Which display the selection came from.
     let displayID: CGDirectDisplayID
+    /// The app that was in front when the capture started (packages' `source` input and `when.apps`).
+    var sourceApp: String?
+    var sourceBundleID: String?
+    /// What `when.detects` can match in the text (links, flights, tracking numbers…), filled in by the
+    /// pre-pass only when an enabled package asks.
+    var packageKinds: Set<String> = []
 
     init(
         image: CGImage,
@@ -103,9 +109,13 @@ protocol CaptureAction {
 
     /// Run it. Return a result to show, or perform a side effect and return `.none`.
     func perform(_ ctx: CaptureContext) async throws -> ActionResult
+
+    /// Who produced the result, for the result card's footer (a package's name). nil for Lasso's own.
+    var resultAttribution: String? { get }
 }
 
 extension CaptureAction {
     var relevancePriority: Int { 100 }
+    var resultAttribution: String? { nil }
     func disabledReason(for ctx: CaptureContext, visionAvailable: Bool) -> String? { nil }
 }

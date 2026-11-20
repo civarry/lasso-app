@@ -6,6 +6,8 @@ import SwiftUI
 struct FloatingResultView: View {
     let title: String
     let result: ActionResult
+    /// A package's name (and host), shown in the footer before the model, for package commands.
+    var attribution: String?
 
     @AppStorage("ui.resultTextScale") private var textScale = 1.0
     @State private var streamed = ""
@@ -32,9 +34,13 @@ struct FloatingResultView: View {
 
             if case .stream = result, !IntelligenceCoordinator.shared.lastProviderName.isEmpty {
                 Divider()
-                Label("\(IntelligenceCoordinator.shared.lastProviderName) · \(IntelligenceCoordinator.shared.lastProviderLocationNote)",
+                Label([attribution, IntelligenceCoordinator.shared.lastProviderName,
+                       IntelligenceCoordinator.shared.lastProviderLocationNote].compactMap { $0 }.joined(separator: " · "),
                       systemImage: IntelligenceCoordinator.shared.lastProviderIcon)
                     .font(.caption2).foregroundStyle(.secondary)
+            } else if let attribution {
+                Divider()
+                Label(attribution, systemImage: "shippingbox").font(.caption2).foregroundStyle(.secondary)
             }
         }
         .padding(14)

@@ -42,14 +42,42 @@ struct PackageCommand: Sendable, Equatable {
     enum Input: String, Sendable, CaseIterable { case text, image, source, query, args }
     enum Output: String, Sendable, CaseIterable { case markdown, copy, replace, open, image, file, notify, results }
 
+    enum Runner: Sendable, Equatable {
+        case http(PackageHTTPRun)
+        case prompt(PackagePromptRun)
+    }
+
     var id: String
     var title: String
     var symbol: String?
     var surfaces: [Surface]
     var input: [Input]
     var output: Output
-    var run: PackageHTTPRun
+    var runner: Runner
+    var when: PackageWhen?
     var testQuery: String?
+    var testText: String?
+
+    var http: PackageHTTPRun? { if case .http(let h) = runner { h } else { nil } }
+    var prompt: PackagePromptRun? { if case .prompt(let p) = runner { p } else { nil } }
+}
+
+/// The `prompt` runner: a prompt run on the model chosen in Lasso's Settings.
+struct PackagePromptRun: Sendable, Equatable {
+    var prompt: String
+    var system: String?
+}
+
+/// Where a command is offered (spec, "When"). Every condition given must hold.
+struct PackageWhen: Sendable, Equatable {
+    var match: String?
+    var detects: [String] = []
+    var apps: [String] = []
+    var minLength: Int?
+    var maxLength: Int?
+    var hasImage: Bool?
+
+    static let detectable: Set<String> = ["link", "email", "phone", "address", "date", "flight", "tracking", "money"]
 }
 
 /// The `http` runner, as declared. Values are templates (`{{query}}`, `{{settings.key}}`).
@@ -393,65 +421,147 @@ private struct Reader {
                 guard let surface = PackageCommand.Surface(rawValue: name) else {
                     problem("\(path).surfaces[\(i)]", "Unknown surface \"\(name)\"."); continue
                 }
-                if surface != .search {
+                if surface == .tool {
                     problem("\(path).surfaces[\(i)]", "This version of Lasso can't show commands on \"\(name)\" yet.")
                 }
                 surfaces.append(surface)
             }
         } else { problem(join(path, "surfaces"), "Required: a list of where the command appears.") }
+        let isSearch = surfaces.contains(.search)
+        if isSearch, surfaces.count > 1 { problem(join(path, "surfaces"), "A search command can't appear anywhere else.") }
 
         var inputs: [PackageCommand.Input] = []
         if let list = o["input"] as? [String] {
             for (i, name) in list.enumerated() {
-                if let input = PackageCommand.Input(rawValue: name) { inputs.append(input) }
-                else { problem("\(path).input[\(i)]", "Unknown input \"\(name)\".") }
+                guard let input = PackageCommand.Input(rawValue: name) else {
+                    problem("\(path).input[\(i)]", "Unknown input \"\(name)\"."); continue
+                }
+                if input == .image { problem("\(path).input[\(i)]", "This version of Lasso can't give commands images yet.") }
+                if input == .args { problem("\(path).input[\(i)]", "\"args\" comes with the tool surface, which this version of Lasso can't show yet.") }
+                if input == .query, !isSearch { problem("\(path).input[\(i)]", "\"query\" is only for search commands.") }
+                inputs.append(input)
             }
         } else if o["input"] != nil { problem(join(path, "input"), "Must be a list.") }
 
         let outputName = string(o, "output", at: path) ?? ""
         let output = PackageCommand.Output(rawValue: outputName)
         if !outputName.isEmpty, output == nil { problem(join(path, "output"), "Unknown output \"\(outputName)\".") }
-
-        if o["when"] != nil { problem(join(path, "when"), "This version of Lasso can't use \"when\" yet.") }
-        if o["tool"] != nil { problem(join(path, "tool"), "This version of Lasso can't offer commands as tools yet.") }
-
-        if surfaces.contains(.search) {
+        if output == .image || output == .file {
+            problem(join(path, "output"), "This version of Lasso can't give \"\(outputName)\" output yet.")
+        }
+        if isSearch {
             if inputs != [.query] { problem(join(path, "input"), "A search command takes [\"query\"].") }
             if output != .results { problem(join(path, "output"), "A search command's output is \"results\".") }
+        } else if output == .results {
+            problem(join(path, "output"), "\"results\" is only for search commands.")
+        }
+        // Pasting over text only makes sense for text highlighted in an app: a capture's text was
+        // read from pixels, and a chat reply isn't editable.
+        if output == .replace, surfaces.contains(where: { $0 != .hotkey }) {
+            problem(join(path, "output"), "\"replace\" is only for hotkey commands (it pastes over the highlighted text).")
+        }
+        if output == .replace, !inputs.contains(.text) {
+            problem(join(path, "input"), "\"replace\" needs the \"text\" input.")
         }
 
-        var testQuery: String?
+        if surfaces.contains(.send), let output, ![.notify, .copy, .open].contains(output) {
+            problem(join(path, "output"), "A Send to command's output is notify, copy or open.")
+        }
+        if output == .open, o["run"].flatMap({ ($0 as? [String: Any])?["prompt"] }) != nil {
+            problem(join(path, "output"), "\"open\" needs an http command: a model's answer can't choose what opens.")
+        }
+
+        var when: PackageWhen?
+        if let raw = o["when"] {
+            when = self.when(raw, at: join(path, "when"))
+            if isSearch { problem(join(path, "when"), "\"when\" doesn't apply to search commands.") }
+            if when?.hasImage == true, surfaces.contains(.hotkey) || surfaces.contains(.slash) {
+                problem(join(join(path, "when"), "hasImage"), "Hotkeys and chat commands run on text, never an image.")
+            }
+        }
+        if o["tool"] != nil { problem(join(path, "tool"), "This version of Lasso can't offer commands as tools yet.") }
+
+        var testQuery: String?, testText: String?
         if let test = o["test"] {
             if let t = test as? [String: Any] {
                 onlyKnown(t, ["text", "query", "args", "image"], at: join(path, "test"))
                 testQuery = string(t, "query", at: join(path, "test"), required: false)
+                testText = string(t, "text", at: join(path, "test"), required: false)
             } else { problem(join(path, "test"), "Must be an object.") }
         }
-        if surfaces.contains(.search), testQuery?.isEmpty != false {
+        if isSearch, testQuery?.isEmpty != false {
             problem(join(path, "test"), "A search command needs a test query, like {\"query\": \"lasso app\"}.")
         }
 
         guard let runObject = o["run"] as? [String: Any] else { problem(join(path, "run"), "Required."); return nil }
-        let names = Set(inputs.map(\.rawValue)).union(["language"])
-        guard let run = self.run(runObject, at: join(path, "run"), hosts: hosts, settings: settings,
-                                 values: names, output: output) else { return nil }
+        var names = Set(inputs.map(\.rawValue)).union(["language"])
+        if inputs.contains(.source) { names.formUnion(["source.app", "source.url"]); names.remove("source") }
+        guard let runner = self.runner(runObject, at: join(path, "run"), hosts: hosts, settings: settings,
+                                       values: names, output: output, isSearch: isSearch) else { return nil }
         guard let output else { return nil }
-        return PackageCommand(id: id, title: title, symbol: symbol, surfaces: surfaces, input: inputs,
-                              output: output, run: run, testQuery: testQuery)
+        return PackageCommand(id: id, title: title, symbol: symbol, surfaces: surfaces, input: inputs, output: output,
+                              runner: runner, when: when, testQuery: testQuery, testText: testText)
     }
 
-    mutating func run(_ o: [String: Any], at path: String, hosts: [String], settings: [PackageSetting],
-                      values: Set<String>, output: PackageCommand.Output?) -> PackageHTTPRun? {
+    mutating func when(_ raw: Any, at path: String) -> PackageWhen? {
+        guard let o = raw as? [String: Any] else { problem(path, "Must be an object."); return nil }
+        onlyKnown(o, ["match", "detects", "apps", "minLength", "maxLength", "hasImage"], at: path)
+        var when = PackageWhen()
+        if let match = string(o, "match", at: path, required: false, length: 1...200) {
+            if (try? NSRegularExpression(pattern: match)) == nil { problem(join(path, "match"), "Isn't a valid regular expression.") }
+            when.match = match
+        }
+        if let raw = o["detects"] {
+            if let list = raw as? [String] {
+                for (i, kind) in list.enumerated() where !PackageWhen.detectable.contains(kind) {
+                    problem("\(path).detects[\(i)]", "Must be one of: \(PackageWhen.detectable.sorted().joined(separator: ", ")).")
+                }
+                when.detects = list
+            } else { problem(join(path, "detects"), "Must be a list.") }
+        }
+        if let raw = o["apps"] {
+            if let list = raw as? [String] { when.apps = list } else { problem(join(path, "apps"), "Must be a list of bundle ids.") }
+        }
+        when.minLength = int(o, "minLength", at: path, range: 0...1_000_000)
+        when.maxLength = int(o, "maxLength", at: path, range: 1...1_000_000)
+        if let raw = o["hasImage"] {
+            if let b = raw as? Bool { when.hasImage = b } else { problem(join(path, "hasImage"), "Must be true or false.") }
+        }
+        return when
+    }
+
+    mutating func runner(_ o: [String: Any], at path: String, hosts: [String], settings: [PackageSetting],
+                         values: Set<String>, output: PackageCommand.Output?, isSearch: Bool) -> PackageCommand.Runner? {
         onlyKnown(o, ["http", "prompt", "system", "shortcut", "script", "results", "answer", "role"], at: path)
-        for runner in ["prompt", "shortcut", "script"] where o[runner] != nil {
+        for runner in ["shortcut", "script"] where o[runner] != nil {
             problem(join(path, runner), "This version of Lasso can't run \"\(runner)\" commands yet.")
         }
-        guard let http = o["http"] as? [String: Any] else {
-            if o["prompt"] == nil, o["shortcut"] == nil, o["script"] == nil {
-                problem(path, "Needs exactly one runner: http, prompt, shortcut or script.")
+        let present = ["http", "prompt", "shortcut", "script"].filter { o[$0] != nil }
+        if present.isEmpty { problem(path, "Needs exactly one runner: http, prompt, shortcut or script."); return nil }
+        if present.count > 1 { problem(path, "Use one runner, not \(present.joined(separator: " and ")).") ; return nil }
+        let allowed = values.union(settings.map { "settings.\($0.id)" })
+
+        if o["prompt"] != nil {
+            for key in ["results", "answer", "role"] where o[key] != nil {
+                problem(join(path, key), "Only for http commands.")
             }
-            return nil
+            if isSearch { problem(join(path, "prompt"), "A search command runs over http.") }
+            let prompt = string(o, "prompt", at: path, length: 1...4000) ?? ""
+            let system = string(o, "system", at: path, required: false, length: 1...1000)
+            for (field, template) in [(join(path, "prompt"), prompt), (join(path, "system"), system ?? "")] {
+                for name in PackageTemplate.names(in: template) where !allowed.contains(name) {
+                    problem(field, "Unknown value {{\(name)}}.")
+                }
+            }
+            for setting in settings where setting.kind == .secret {
+                if (prompt + (system ?? "")).contains("{{settings.\(setting.id)}}") {
+                    problem(join(path, "prompt"), "A secret can't go into a prompt: it would be sent to the model.")
+                }
+            }
+            return .prompt(PackagePromptRun(prompt: prompt, system: system))
         }
+        if o["system"] != nil { problem(join(path, "system"), "Only for prompt commands.") }
+        guard let http = o["http"] as? [String: Any] else { return nil }
         let hp = join(path, "http")
         onlyKnown(http, ["method", "url", "query", "headers", "json", "form", "timeout"], at: hp)
         let method = (string(http, "method", at: hp, required: false) ?? "GET").uppercased()
@@ -474,9 +584,12 @@ private struct Reader {
             if let n = (t as? NSNumber)?.doubleValue, (1...20).contains(n) { timeout = n }
             else { problem(join(hp, "timeout"), "Must be 1 to 20 seconds.") }
         }
+        if output == .open {
+            if method != "GET" || json != nil || form != nil || !headers.isEmpty {
+                problem(hp, "An \"open\" command is a page address: GET, with no headers or body.")
+            }
+        }
 
-        // Templates may name only what this command has.
-        let allowed = values.union(settings.map { "settings.\($0.id)" })
         var templated: [(String, String)] = [(join(hp, "url"), url)]
         templated += query.map { (join(join(hp, "query"), $0.key), $0.value) }
         templated += headers.map { (join(join(hp, "headers"), $0.key), $0.value) }
@@ -503,13 +616,15 @@ private struct Reader {
         if output == .results, results == nil { problem(join(path, "results"), "Required for \"results\" output: where the list and its titles are.") }
         if output != .results, results != nil { problem(join(path, "results"), "Only for \"results\" output.") }
         let answer = string(o, "answer", at: path, required: false)
+        if output == .results || output == .open, answer != nil { problem(join(path, "answer"), "Not used with \"\(output?.rawValue ?? "")\" output.") }
         var role = PackageHTTPRun.Role.primary
         if let r = string(o, "role", at: path, required: false) {
+            if !isSearch { problem(join(path, "role"), "Only for search commands.") }
             if let parsed = PackageHTTPRun.Role(rawValue: r) { role = parsed }
             else { problem(join(path, "role"), "Must be primary or reserve.") }
         }
-        return PackageHTTPRun(method: method, url: url, query: query, headers: headers, json: json, form: form,
-                              timeout: timeout, results: results, answer: answer, role: role)
+        return .http(PackageHTTPRun(method: method, url: url, query: query, headers: headers, json: json, form: form,
+                                    timeout: timeout, results: results, answer: answer, role: role))
     }
 
     /// `https` to a declared host; plain `http` only to a server setting on this Mac. Templates only

@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Tavily and SerpApi became packages: move a saved key over, once. Not in the test host,
         // which shares this Mac's settings and Keychain.
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil { PackageMigration.run() }
+        PackageHotkeys.shared.start()
 
         let registry = ActionRegistry.makeDefault(intelligence: .shared)
         self.registry = registry

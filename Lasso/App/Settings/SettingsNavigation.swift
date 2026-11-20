@@ -51,7 +51,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .toolbar: "Choose which actions appear and in what order."
         case .models: "The AI models Lasso uses for text, images and memory."
         case .agent: "Lets chat search the web, read files and run commands."
-        case .packages: "Add search services to Lasso from a file or pasted code."
+        case .packages: "Add search services, buttons and commands to Lasso from a file or pasted code."
         case .privacy: "Control what leaves your Mac."
         }
     }

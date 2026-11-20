@@ -20,8 +20,8 @@ final class GrammarFixService {
     private var answeredBy: String?
 
     /// 'c' and 'v' ANSI virtual key codes (kVK_ANSI_C / kVK_ANSI_V).
-    private let keyC: CGKeyCode = 8
-    private let keyV: CGKeyCode = 9
+    let keyC: CGKeyCode = 8
+    let keyV: CGKeyCode = 9
 
     func run() {
         guard !running else { return }
@@ -68,7 +68,7 @@ final class GrammarFixService {
             corrected = try await correct(selected)
         } catch {
             StatusHUD.shared.show(icon: "exclamationmark.triangle",
-                text: "Couldn't proofread — \(error.localizedDescription)", persist: 4)
+                text: "Couldn't proofread: \(error.localizedDescription)", persist: 4)
             restore(savedClipboard, to: pb)
             return
         }
@@ -107,7 +107,7 @@ final class GrammarFixService {
     /// Whether the focused element's selection can be replaced (so paste-back will actually work).
     /// Uses the Accessibility tree: selected-text/value settable, or a known editable role. String
     /// literals for the attribute names avoid the non-concurrency-safe `kAX…` globals.
-    private func isSelectionEditable() -> Bool {
+    func isSelectionEditable() -> Bool {
         let system = AXUIElementCreateSystemWide()
         var focusedRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(system, "AXFocusedUIElement" as CFString, &focusedRef) == .success,
@@ -160,7 +160,7 @@ final class GrammarFixService {
 
     /// Heuristic: did the model answer conversationally instead of returning corrected text? Guards
     /// against pasting "I'm not sure what you meant…"-style replies over the user's selection.
-    private func looksLikeRefusal(_ s: String) -> Bool {
+    func looksLikeRefusal(_ s: String) -> Bool {
         let t = s.lowercased()
         let markers = ["i'm not sure", "i am not sure", "not sure what", "please provide",
                        "you'd like me to", "you would like me to", "i'll try to", "i will try to",
@@ -172,7 +172,7 @@ final class GrammarFixService {
     // MARK: - Clipboard & key simulation
 
     /// Poll the pasteboard until its changeCount moves (the copy landed), up to ~0.7s.
-    private func readClipboard(changedFrom change: Int) async -> String? {
+    func readClipboard(changedFrom change: Int) async -> String? {
         let pb = NSPasteboard.general
         for _ in 0..<24 {
             if pb.changeCount != change { return pb.string(forType: .string) }
@@ -181,13 +181,13 @@ final class GrammarFixService {
         return nil
     }
 
-    private func restore(_ string: String?, to pb: NSPasteboard) {
+    func restore(_ string: String?, to pb: NSPasteboard) {
         guard let string else { return }
         pb.clearContents()
         pb.setString(string, forType: .string)
     }
 
-    private func sendKey(_ keyCode: CGKeyCode) {
+    func sendKey(_ keyCode: CGKeyCode) {
         let source = CGEventSource(stateID: .combinedSessionState)
         guard let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false) else { return }
@@ -199,7 +199,7 @@ final class GrammarFixService {
 
     // MARK: - Accessibility permission
 
-    private func ensureAccessibility() -> Bool {
+    func ensureAccessibility() -> Bool {
         if AXIsProcessTrusted() { return true }
         // Prompts the user (and adds Lasso to the Accessibility list) the first time. Use the literal
         // option key — the `kAXTrustedCheckOptionPrompt` global isn't concurrency-safe under Swift 6.
@@ -207,7 +207,7 @@ final class GrammarFixService {
         return AXIsProcessTrustedWithOptions(options)
     }
 
-    private func openAccessibilitySettings() {
+    func openAccessibilitySettings() {
         let url = URL(string:
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
         NSWorkspace.shared.open(url)

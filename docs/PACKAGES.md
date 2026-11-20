@@ -175,11 +175,11 @@ package that silently does nothing.
 | Surface | Where it appears | Notes |
 |---|---|---|
 | `toolbar` | A button in the capture toolbar, after Lasso's own | The user can hide or reorder it like any action. |
-| `send` | The "Send to" menu on a capture and on chat replies | For commands that deliver something somewhere. |
-| `slash` | A chat command, `/<command-id>` | Runs on what's typed after it, or the last reply. |
+| `send` | The "Send to" menu on a capture and on chat replies | For commands that deliver something somewhere. Output MUST be `notify`, `copy` or `open`. |
+| `slash` | A chat command, `/<command-id>` | Runs on what's typed after it, or the last reply. Lasso's own names (`new`, `clear`, `copy`, `about`, `web`, `help`) are reserved; when two packages use the same id, both become `/<package-id>-<id>`. |
 | `tool` | A tool for the chat model and Lasso's Agent | See [Model and Agent tools](#model-and-agent-tools). |
 | `search` | A source for Lasso's web search (chat, Identify, Agent) | `input` MUST be `query`, `output` MUST be `results`. |
-| `hotkey` | Listed in Settings › Shortcuts; the user can assign a key that runs it on the current selection | The package never assigns a key itself. |
+| `hotkey` | Listed in Settings › Shortcuts under Highlighted text; the user can assign a key that runs it on the text highlighted in the frontmost app | The package never assigns a key itself. Hotkeys are stored as `pkg.<package-id>.<command-id>`, cleared on Remove, and checked for conflicts with Lasso's own. `source.url` is empty for hotkeys. |
 
 ### Input
 
@@ -197,17 +197,20 @@ package that silently does nothing.
 |---|---|
 | `markdown` | Shown in the result card, or as a chat reply. |
 | `copy` | Copied to the clipboard; "Copied" is shown. |
-| `replace` | Pasted over the selection in the app it came from (like Lasso's grammar fix). Only with the `text` input from a capture; one Undo restores the original. |
-| `open` | The result is a URL, opened in the default app. Only `https`, `http` and `mailto`. |
+| `replace` | Pasted over the highlighted text (like Lasso's Proofread highlighted text). Only on the `hotkey` surface: a capture's text was read from pixels and has nothing to paste over. One Undo restores the original. |
+| `open` | The result is a URL, opened in the default app. Only from the `http` runner, whose address is a template on a declared host: a model's answer can't choose what opens (text captured from a page could steer it to any site). |
 | `image` | Shown as an image. |
 | `file` | A file saved to `~/LassoWorkspace/<package-id>/`, shown with Open and Show in Finder. |
-| `notify` | A short confirmation is shown, for "Send to" commands. |
+| `notify` | A short confirmation is shown, for "Send to" commands: the `answer` value when it's 60 characters or less, otherwise "Done". |
 | `results` | Search results (the `search` surface). |
 
 ### When
 
 Narrows where a command is offered, so the toolbar shows "Track package" only when there's a tracking
-number. All conditions given must hold.
+number. All conditions given must hold. In the capture toolbar a command whose `match`, `detects`, `apps`
+or `hasImage` fails is hidden, and one whose only failure is length is greyed ("Select more text"). In
+chat, `apps` and `hasImage: true` never hold (there's no source app or image), and the other conditions
+are tested against the typed text or the reply.
 
 | Condition | Holds when |
 |---|---|
@@ -462,7 +465,7 @@ What the review screen shows, and what enforces it:
 | Runs code on your Mac | a `script` command | The sandbox profile. |
 | Reads what you lasso | `input` of `text`, `image`, `source` | Only those values are passed. |
 | Reads this folder | a `folder` setting | The sandbox profile and the bookmark. |
-| Changes text in your apps | `output: "replace"` | Only on the user's click, never from a model. |
+| Changes text in your apps | `output: "replace"` | Only from the user's own hotkey, never from a model. |
 | Needs a key | `secret` settings | The Keychain, per package. |
 | Changes Lasso's content | `patches` | Only the listed targets; undone when the package is off. |
 | Full access | the user, per package | Nothing: that's what it means. Shown on the package's row, revocable. |
@@ -760,13 +763,13 @@ print(json.dumps({"path": path}))
 Each step ships on its own, with its checks from [Verification](#verification), the README and
 `docs/APP_FLOW.md` updated, and is usable without the steps after it.
 
-1. **Search packages.** The format, validator and templates; the `http` runner with the `search` surface;
+1. **Search packages** (built: Lasso 0.17.0). The format, validator and templates; the `http` runner with the `search` surface;
    installing from **+** (a file, a folder or pasted JSON) with the review; Settings › Packages with
    per-package settings, keys and Test; Tavily and SerpApi moved to packages;
    `docs/CONTRIBUTING-PACKAGES.md` and `docs/packages/schema-v1.json` (they move to the catalog in
    step 6). This replaces today's Search API Keys page. Until the catalog exists, **+** also offers
    the packages bundled with Lasso (Tavily, SerpApi).
-2. **Buttons and commands.** The `prompt` runner; `toolbar`, `slash`, `send` and `hotkey` surfaces;
+2. **Buttons and commands** (built: Lasso 0.18.0). The `prompt` runner; `toolbar`, `slash`, `send` and `hotkey` surfaces;
    `when`; the `markdown`, `copy`, `replace`, `open` and `notify` outputs.
 3. **Tools.** The `tool` surface for the chat model and the Agent, the tool budget, and asking first.
 4. **Shortcuts and scripts.** Both runners, the sandbox, `requires`, folders, full access, `file` and
@@ -774,6 +777,9 @@ Each step ships on its own, with its checks from [Verification](#verification), 
 5. **Patches.** Built-in content moved to data files, `docs/patch-targets.md`, patch order and undo.
 6. **Catalog and tools for authors.** `civarry/lasso-packages`, Browse and updates, Developer mode,
    `lasso-pkg`.
+
+Step 2 leaves out "drag then run" hotkeys for package toolbar buttons (built-in actions have them);
+the `hotkey` surface covers keyboard use for now.
 
 Until the step that builds a part ships, a package using it (a `prompt` command, a `toolbar` surface,
 a `folder` setting, `patches`…) is refused at install with "This version of Lasso can't run <part>

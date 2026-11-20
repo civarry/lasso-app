@@ -440,6 +440,13 @@ struct ChatView: View {
 
             // Slash-command palette — appears while typing a "/…" token.
             if inputFocused, !slashMatches.isEmpty { slashPalette }
+            // A package command that can't run as typed says why here, and goes on the next edit.
+            if let notice = chat.composerNotice {
+                Label(notice, systemImage: "exclamationmark.circle")
+                    .font(.caption).foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
+            }
 
             // The message box gets the full width (it grows to six lines), with the mic and send
             // inside its trailing edge; the tools sit in a small row under it.
@@ -451,6 +458,7 @@ struct ChatView: View {
                     .frame(height: inputHeight)
                     .onChange(of: chat.active.input) { _, _ in
                         if slashSelection >= slashMatches.count { slashSelection = 0 }
+                        if chat.active.input != chat.composerNoticeInput { chat.composerNotice = nil }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 2)
@@ -525,10 +533,20 @@ struct ChatView: View {
             case .up:
                 slashSelection = max(slashSelection - 1, 0)
             case .submit:
-                runSlash(slashMatches[min(slashSelection, slashMatches.count - 1)])
+                let cmd = slashMatches[min(slashSelection, slashMatches.count - 1)]
+                // A package command with nothing after it runs on the last reply; with no reply yet,
+                // it completes so the text can be typed (no error state).
+                if cmd.takesText, chat.lastReplyText == nil {
+                    chat.active.input = cmd.name + " "
+                    slashSelection = 0
+                } else {
+                    runSlash(cmd)
+                }
             case .tab:
-                // Complete to the full command name; keep the palette open so Enter runs it.
-                chat.active.input = slashMatches[min(slashSelection, slashMatches.count - 1)].name
+                // Complete to the full command name; keep the palette open so Enter runs it. A package
+                // command gets a space, ready for its text.
+                let cmd = slashMatches[min(slashSelection, slashMatches.count - 1)]
+                chat.active.input = cmd.name + (cmd.takesText ? " " : "")
                 slashSelection = 0
             case .escape:
                 chat.active.input = ""
@@ -665,6 +683,11 @@ struct ChatView: View {
         let name: String
         let detail: String
         let icon: String
+        /// The package it comes from (shown after the detail, and a divider before the first one).
+        var package: String? = nil
+        /// Runs on text: Tab completes with a trailing space, and Enter with nothing typed after it
+        /// runs on the last reply (or completes, when there's none).
+        var takesText = false
         let run: () -> Void
         var id: String { name }
     }
@@ -689,6 +712,13 @@ struct ChatView: View {
         cmds.append(SlashCommand(name: "/help", detail: "List commands & tips", icon: "questionmark.circle") {
             chat.postLocalMessage(slashHelpText)
         })
+        for item in PackageRegistry.shared.slashCommands() {
+            let symbol = item.command.symbol ?? item.entry.package.iconSymbol ?? "shippingbox"
+            cmds.append(SlashCommand(name: item.name, detail: item.command.title, icon: symbol,
+                                     package: item.entry.package.name, takesText: item.command.input.contains(.text)) {
+                chat.send(text: item.name)
+            })
+        }
         return cmds
     }
 
@@ -728,11 +758,17 @@ struct ChatView: View {
     private var slashPalette: some View {
         VStack(spacing: 0) {
             ForEach(Array(slashMatches.enumerated()), id: \.element.id) { idx, cmd in
+                if cmd.package != nil, idx > 0, slashMatches[idx - 1].package == nil {
+                    Divider().padding(.vertical, 2)
+                }
                 HStack(spacing: 10) {
                     Image(systemName: cmd.icon).font(.system(size: 12)).frame(width: 16)
                         .foregroundStyle(idx == slashSelection ? Color.accentColor : Color.secondary)
                     Text(cmd.name).font(.system(.callout, design: .monospaced))
-                    Text(cmd.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    (Text(cmd.detail).foregroundStyle(.secondary)
+                        + Text(cmd.package.map { " · \($0)" } ?? "").foregroundStyle(.tertiary)
+                        + Text(cmd.takesText && chat.lastReplyText == nil ? " · Type the text after it" : "").foregroundStyle(.tertiary))
+                        .font(.caption).lineLimit(1)
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 10).padding(.vertical, 6)
@@ -859,6 +895,9 @@ struct MessageBubble: View {
     }
 
     @State private var copied = false
+    /// Send to, in place: "Sending to Todoist…", then "Sent to Todoist" or why not.
+    @State private var sendStatus: SendStatus?
+    enum SendStatus: Equatable { case sending(String), sent(String), failed(String) }
     @State private var confirmDelete = false
     @State private var confirmDeleteFrom = false
     @State private var editing = false
@@ -889,6 +928,50 @@ struct MessageBubble: View {
         .onAppear { DispatchQueue.main.async { editorFocused = true } }
     }
 
+    /// Send to targets that apply to this reply (in chat, `apps` and `hasImage: true` never hold).
+    private var sendTargets: [(entry: PackageRegistry.Entry, command: PackageCommand)] {
+        PackageRegistry.shared.commands(for: .send).filter { target in
+            target.command.when?.holds(text: message.text, detected: [], bundleID: nil, hasImage: false) ?? true
+        }
+    }
+
+    private func send(to entry: PackageRegistry.Entry, _ command: PackageCommand) {
+        sendStatus = .sending(entry.package.name)
+        let text = message.text
+        Task { @MainActor in
+            do {
+                let result = try await PackageCommandRunner.run(entry, command, input: PackageInput(text: text))
+                var shown = "Sent to \(entry.package.name)"
+                switch command.output {
+                case .open: if case .url(let url) = result { NSWorkspace.shared.open(url) }
+                case .copy: Pasteboard.copy((try? await PackageOutput.text(result)) ?? ""); shown = "Copied"
+                default:
+                    let answer = PackageOutput.notifyText((try? await PackageOutput.text(result)) ?? "")
+                    if answer != "Done" { shown = answer }
+                }
+                sendStatus = .sent(shown)
+                try? await Task.sleep(for: .seconds(2))
+            } catch {
+                sendStatus = .failed("Couldn't send to \(entry.package.name): \(PackageOutput.failure(error, entry, command))")
+                try? await Task.sleep(for: .seconds(4))
+            }
+            sendStatus = nil
+        }
+    }
+
+    @ViewBuilder private var sendStatusView: some View {
+        switch sendStatus {
+        case .sending(let name):
+            HStack(spacing: 4) { ProgressView().controlSize(.mini); Text("Sending to \(name)…") }
+        case .sent(let text):
+            Label(text, systemImage: "checkmark")
+        case .failed(let text):
+            Text(text).foregroundStyle(.orange).lineLimit(2)
+        case nil:
+            EmptyView()
+        }
+    }
+
     /// Persistent per-message action row (always visible — the space is reserved anyway): Copy + Delete
     /// as direct icons, plus a ⋯ menu for the rest (Regenerate/Edit/Resend/Delete-from-here). Delete
     /// actions confirm.
@@ -909,6 +992,20 @@ struct MessageBubble: View {
                     Button { draft = message.text; editing = true } label: { Label("Edit", systemImage: "pencil") }
                     Button { chat.resendMessage(message.id) } label: { Label("Resend", systemImage: "arrow.uturn.up") }
                 } else {
+                    let targets = sendTargets
+                    if !targets.isEmpty {
+                        Menu {
+                            ForEach(targets, id: \.command.id) { target in
+                                let reason = PackageRegistry.shared.unavailableReason(target.entry, target.command)
+                                Button { send(to: target.entry, target.command) } label: {
+                                    Label(target.command.title, systemImage: target.command.symbol ?? target.entry.package.iconSymbol ?? "paperplane")
+                                }
+                                .disabled(reason != nil)
+                                .help(reason ?? "")
+                            }
+                        } label: { Label("Send to", systemImage: "paperplane") }
+                        Divider()
+                    }
                     Button { chat.regenerate(message.id) } label: {
                         Label("Regenerate", systemImage: "arrow.triangle.2.circlepath")
                     }
@@ -923,6 +1020,7 @@ struct MessageBubble: View {
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
             .help("More actions")
+            sendStatusView
         }
         .font(.caption2)
         .foregroundStyle(.secondary)
@@ -998,6 +1096,10 @@ struct MessageBubble: View {
                 if editing {
                     editView
                 } else {
+                    if !isUser, let caption = message.caption {
+                        Label(caption, systemImage: "shippingbox")
+                            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    }
                     if !isUser, hasTrace {
                         TraceView(message: message)
                     }
@@ -1038,8 +1140,8 @@ struct MessageBubble: View {
                         // Always on the newest message, on hover for older ones (a long chat used to show
                         // a trash can per message). Faded rather than removed, so rows don't jump.
                         actionsRow
-                            .opacity(isLatest || hovering ? 1 : 0)
-                            .allowsHitTesting(isLatest || hovering)
+                            .opacity(isLatest || hovering || sendStatus != nil ? 1 : 0)
+                            .allowsHitTesting(isLatest || hovering || sendStatus != nil)
                     }
                 }
             }

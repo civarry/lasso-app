@@ -53,6 +53,8 @@ final class CaptureCoordinator {
     /// Set while the Agent waits for the user to select part of the screen (`selectForAgent`): the
     /// selection goes back to it instead of opening the action bar.
     private var agentSelection: CheckedContinuation<CGImage?, Never>?
+    /// The app in front when the capture began (before Lasso's overlay took focus).
+    private var sourceApp: NSRunningApplication?
     var isSelectingForAgent: Bool { agentSelection != nil }
 
     private init() {}
@@ -195,6 +197,8 @@ final class CaptureCoordinator {
 
     private func start() async {
         FloatingPanelController.shared.close()   // clear any prior result card
+        let front = NSWorkspace.shared.frontmostApplication
+        sourceApp = front?.bundleIdentifier == Bundle.main.bundleIdentifier ? nil : front
         // Every early return below leaves without `isActive`, so `teardown()` never runs and a
         // pre-bound direct action would survive into the *next* capture and hijack it (the bar would
         // be suppressed and the old action would run). Most likely on a first run, where the capture
@@ -288,8 +292,10 @@ final class CaptureCoordinator {
             return
         }
 
-        let base = CaptureContext(image: crop, fullFrame: shot.image,
+        var base = CaptureContext(image: crop, fullFrame: shot.image,
                                   selectionRect: rect, displayID: displayID)
+        base.sourceApp = sourceApp?.localizedName
+        base.sourceBundleID = sourceApp?.bundleIdentifier
         context = base
         // Direct shortcut: keep the bar hidden — the pending action fires when the pre-pass finishes.
         actions = pendingDirectActionID == nil ? (registry?.relevantActions(for: base) ?? []) : []
@@ -309,6 +315,12 @@ final class CaptureCoordinator {
         ctx.ocrText = ocrResult.isEmpty ? nil : ocrResult.text
         ctx.ocrLines = ocrResult.lines
         ctx.detectedData = detected + bars
+        // Flights, parcel numbers and money take a second detector: only when a package asks.
+        let packageWhens = PackageRegistry.shared.commands(for: .toolbar).compactMap(\.command.when)
+            + PackageRegistry.shared.commands(for: .send).compactMap(\.command.when)
+        if let text = ctx.ocrText, packageWhens.contains(where: \.needsDetection) {
+            ctx.packageKinds = await PackageDetection.kinds(in: text)
+        }
         context = ctx
 
         // Direct shortcut: the context is now complete — run the pre-bound action and skip the bar.
@@ -350,11 +362,15 @@ final class CaptureCoordinator {
                 case .text, .stream, .custom:
                     // We have the data — drop the freeze and float the result (persists; Esc/✕ to close).
                     FloatingPanelController.shared.present(
-                        AnyView(FloatingResultView(title: action.title, result: outcome)), anchor: anchor)
+                        AnyView(FloatingResultView(title: action.title, result: outcome,
+                                                   attribution: action.resultAttribution)), anchor: anchor)
                     teardown()
                 case .inlineTranslate:
                     translating = true   // needs the frozen image; stays in the overlay
-                case .copiedToPasteboard, .openedURL, .none:
+                case .copiedToPasteboard:
+                    teardown()
+                    StatusHUD.shared.show(icon: "checkmark.circle.fill", text: "Copied", persist: 1.2)
+                case .openedURL, .none:
                     teardown()
                 }
             } catch {
@@ -374,6 +390,22 @@ final class CaptureCoordinator {
     }
 
     // MARK: - Quick crop actions (Send-to)
+
+    /// Send the capture's text to a package target. The frozen screen goes at once (a request can take
+    /// seconds); the HUD says what's happening.
+    func send(_ text: String, to entry: PackageRegistry.Entry, _ command: PackageCommand) {
+        let input = PackageInput(text: text, sourceApp: context?.sourceApp, sourceBundleID: context?.sourceBundleID)
+        teardown()
+        StatusHUD.shared.show(icon: "", text: "Sending to \(entry.package.name)…", spinner: true)
+        Task {
+            do {
+                let result = try await PackageCommandRunner.run(entry, command, input: input)
+                await PackageOutput.deliver(result, output: command.output, title: command.title)
+            } catch {
+                StatusHUD.shared.show(icon: "exclamationmark.triangle", text: PackageOutput.failure(error, entry, command), persist: 4)
+            }
+        }
+    }
 
     func copyImageAndClose() {
         if let crop = context?.image { Pasteboard.copy(crop) }

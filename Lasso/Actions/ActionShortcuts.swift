@@ -46,7 +46,18 @@ enum ActionShortcuts {
     /// when two of the app's *own* shortcuts are the same: both would then fire on one keypress, with
     /// no sign that anything was wrong. This table is what makes that warnable, and the coverage test
     /// keeps it complete.
-    static let titlesByName: [KeyboardShortcuts.Name: String] = [
+    /// Lasso's own, plus every package hotkey command's (`pkg.<package>.<command>`), so a package's key
+    /// that collides with Capture is warned about like any other.
+    @MainActor
+    static var titlesByName: [KeyboardShortcuts.Name: String] {
+        var titles = builtInTitles
+        for item in PackageRegistry.shared.commands(for: .hotkey) {
+            titles[PackageHotkeys.name(item.entry.package.id, item.command.id)] = item.command.title
+        }
+        return titles
+    }
+
+    static let builtInTitles: [KeyboardShortcuts.Name: String] = [
         .capture: "Capture",
         .cancelCapture: "Cancel capture",
         .chat: "Chat",
@@ -146,6 +157,8 @@ struct ActionBarCatalogEntry: Identifiable, Sendable {
     /// nil for the built-in image actions: they are not in the registry, so the direct-capture path
     /// (`beginDirect(actionID:)`, which resolves the id against the registry) cannot run them.
     let shortcut: KeyboardShortcuts.Name?
+    /// For a package's button: the package's name (and when it shows), the line under the title.
+    var source: String?
 }
 
 @MainActor
@@ -160,11 +173,35 @@ enum ActionBarCatalog {
                               systemImage: "square.and.arrow.down", priority: 61, shortcut: nil),
     ]
 
-    /// Every toolbar row, in registration order (registered actions, then the built-ins).
+    /// Send to: a menu of package targets, in the bar only while at least one is enabled.
+    static let sendTo = ActionBarCatalogEntry(id: "builtin.sendTo", title: "Send to", systemImage: "paperplane",
+                                              priority: 62, shortcut: nil)
+
+    /// Every toolbar row, in registration order: registered actions, the built-ins, Send to while there
+    /// are targets, then package buttons.
     static func entries(actions: [any CaptureAction]) -> [ActionBarCatalogEntry] {
-        actions.map {
+        let packages = PackageRegistry.shared.commands(for: .toolbar).map { PackageCommandAction(entry: $0.entry, command: $0.command) }
+        return actions.map {
             ActionBarCatalogEntry(id: $0.id, title: $0.title, systemImage: $0.systemImage,
                                   priority: $0.relevancePriority, shortcut: ActionShortcuts.name(for: $0.id))
         } + builtIns
+            + (PackageRegistry.shared.commands(for: .send).isEmpty ? [] : [sendTo])
+            + packages.map {
+                ActionBarCatalogEntry(id: $0.id, title: $0.title, systemImage: $0.systemImage, priority: $0.relevancePriority,
+                                      shortcut: nil, source: $0.entry.package.name + Self.whenPhrase($0.command.when))
+            }
+    }
+
+    /// ", when there's a tracking number" and so on: why a contextual button may not show.
+    static func whenPhrase(_ when: PackageWhen?) -> String {
+        guard let when else { return "" }
+        let names = ["tracking": "a tracking number", "flight": "a flight number", "money": "an amount of money",
+                     "link": "a link", "email": "an email address", "phone": "a phone number",
+                     "address": "an address", "date": "a date"]
+        if let kind = when.detects.first, let name = names[kind] { return " · when there's \(name)" }
+        if let min = when.minLength { return " · for text of \(min) characters or more" }
+        if when.match != nil { return " · when the text matches a pattern" }
+        if !when.apps.isEmpty { return " · in certain apps" }
+        return ""
     }
 }
