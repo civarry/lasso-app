@@ -839,6 +839,9 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Settings sidebar can't be lost.** With the toggle removed, dragging the divider all the way left still
+  hid the sidebar and nothing brought it back; the split view's visibility is now bound and held at
+  `.all` (`SettingsSidebarTests` collapses it in a real window: stays shut before, comes back now).
 - **The Agent can see, with half the setup.** Lasso's own tools reach its Hermes through a profile plugin
   (`look_at_screen`, `look_at_image`; see Agent), and its Hermes tools are trimmed to commands, files,
   web and memory: the cold setup a local model reads fell from 12.7k to 6.7k tokens. Live-checked on
