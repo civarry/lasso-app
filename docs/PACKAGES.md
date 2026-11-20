@@ -37,6 +37,7 @@ The words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119. Every MUST has
 - [The catalog](#the-catalog)
 - [Tavily and SerpApi](#tavily-and-serpapi)
 - [Examples](#examples)
+- [Build order](#build-order)
 - [Out of scope for version 1](#out-of-scope-for-version-1)
 - [Verification](#verification)
 
@@ -211,7 +212,7 @@ number. All conditions given must hold.
 | Condition | Holds when |
 |---|---|
 | `match` | The text matches this regular expression (ICU syntax, at most 200 characters, tested against at most 10,000 characters of text, given up after 50 ms). |
-| `detects` | Lasso's data detector found one of: `link`, `email`, `phone`, `address`, `date`, `flight`, `tracking`, `money`. |
+| `detects` | Lasso's data detector found one of: `link`, `email`, `phone`, `address`, `date`, `flight`, `tracking`, `money`. (The first five come from Foundation's data detector, which Lasso uses today; `flight`, `tracking` and `money` need Apple's DataDetection framework added to it.) |
 | `apps` | The capture came from one of these bundle ids. |
 | `minLength`, `maxLength` | The text's length in characters. |
 | `hasImage` | `true`: only image captures; `false`: only text. |
@@ -491,7 +492,12 @@ Agent (through Lasso's tool server).
 - **Asking first:** when a model runs a command whose output is `notify`, `open` or `file`, or any
   `shortcut` or `script` command, Lasso MUST show what will run with what input and wait for Allow.
   Read-only `http` and `prompt` commands run without asking. A model can never run a `replace`
-  command.
+  command. For the Agent this is Lasso's own approval card in the reply, with the Agent's tool call
+  held open until the user answers (Hermes's approvals only cover its own commands); Deny returns
+  "The user didn't allow this" to the Agent.
+- **The Agent's list stays current:** Lasso's Hermes reads the tool list when it starts, so turning a
+  `tool` command on or off, or installing or removing a package with one, MUST restart Lasso's Agent
+  before its next turn.
 
 ## Installing, updating, removing
 
@@ -591,10 +597,13 @@ line before merging. Merging regenerates `index.json`; merging is publishing.
 Their Swift code is removed; they become catalog packages (`tavily`, `serpapi`, in
 [Examples](#examples)). For people upgrading:
 
-- If a Tavily or SerpApi key is saved and that connector was on, Lasso installs the package once, from
-  a copy bundled with that release (no download), and moves the key to the package's Keychain item.
-  Search behaves as before: Tavily `primary`, SerpApi `reserve`, the same limits.
+- If a Tavily or SerpApi key is saved, Lasso installs the package once, from a copy bundled with that
+  release (no download), moves the key to the package's Keychain item, and turns it on only if that
+  connector was on (a saved key is never thrown away). Search behaves as before: Tavily `primary`,
+  SerpApi `reserve`, the same limits.
 - Without a saved key nothing is installed; they're in Browse like any package.
+- This month's and today's use carries over to the package's `limits`, so the update can't spend a
+  free tier twice in one month.
 - The migration runs once and is recorded, so removing the package afterwards is final.
 
 ## Examples
@@ -742,6 +751,30 @@ print(json.dumps({"path": path}))
 }
 ```
 
+## Build order
+
+Each step ships on its own, with its checks from [Verification](#verification), the README and
+`docs/APP_FLOW.md` updated, and is usable without the steps after it.
+
+1. **Search packages.** The format, validator and templates; the `http` runner with the `search` surface;
+   installing from **+** (a file, a folder or pasted JSON) with the review; Settings › Packages with
+   per-package settings, keys and Test; Tavily and SerpApi moved to packages;
+   `docs/CONTRIBUTING-PACKAGES.md` and `docs/packages/schema-v1.json` (they move to the catalog in
+   step 6). This replaces today's Search API Keys page. Until the catalog exists, **+** also offers
+   the packages bundled with Lasso (Tavily, SerpApi).
+2. **Buttons and commands.** The `prompt` runner; `toolbar`, `slash`, `send` and `hotkey` surfaces;
+   `when`; the `markdown`, `copy`, `replace`, `open` and `notify` outputs.
+3. **Tools.** The `tool` surface for the chat model and the Agent, the tool budget, and asking first.
+4. **Shortcuts and scripts.** Both runners, the sandbox, `requires`, folders, full access, `file` and
+   `image` outputs.
+5. **Patches.** Built-in content moved to data files, `docs/patch-targets.md`, patch order and undo.
+6. **Catalog and tools for authors.** `civarry/lasso-packages`, Browse and updates, Developer mode,
+   `lasso-pkg`.
+
+Until the step that builds a part ships, a package using it (a `prompt` command, a `toolbar` surface,
+a `folder` setting, `patches`…) is refused at install with "This version of Lasso can't run <part>
+yet", never installed half-working.
+
 ## Out of scope for version 1
 
 Each needs a format addition, decided here before it's built:
@@ -795,4 +828,7 @@ Each MUST, with the check that fails when it's broken. App tests live in `LassoT
 | Patch targets documented | Build: `docs/patch-targets.md` is regenerated from the code and CI fails if it's out of date. |
 | Catalog hash checked | Install: a download whose SHA-256 differs from `index.json` is refused. |
 | Tavily and SerpApi migration | Migration: a saved Tavily key with Tavily on → package installed, key moved, the same request as before (the local server compares); no key → nothing installed; a second launch repeats nothing. |
+| Usage carries over | Migration: with 950 of Tavily's 960 monthly searches used, the package makes at most 10 more this month. |
+| The Agent's list stays current | Agent: after installing a package with a `tool` command, the next Agent turn's tool list includes it; after removing it, it's gone. |
+| The Agent asks first | Agent: an Agent call to a `notify` command shows Lasso's approval card and runs nothing until Allow; Deny gives the Agent "The user didn't allow this". |
 | Same search after removing the Swift code | Search: with both packages installed, `WebSourcesProvider` sends the same requests as the old code and returns the same titles and URLs in the same order for recorded responses. Accepted differences: SerpApi results are labelled "SerpApi" instead of "Google" and carry its snippets. |
