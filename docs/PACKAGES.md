@@ -4,11 +4,16 @@ Status: **draft, format version 1.** Nothing here is built yet. This document is
 engine, the Settings screens, the developer tools and the catalog are built and tested against; when
 code and this document disagree, one of them is a bug, and the fix is decided here first.
 
-A package adds things to Lasso without changing Lasso's code: a capture-toolbar button, a "Send to"
-target, a chat command, a tool for the model and the Agent, a search source. What a package does can
-come from a web service, a prompt to your own model, one of your Shortcuts, or a script that runs on
-your Mac. Packages are installed and removed by the user, like packages on Linux, from a public catalog
-or from a file.
+The direction: people can change almost anything about Lasso without changing Lasso's code, the way
+Stardew Valley players mod almost anything about the game. Anyone can make a package, and each person
+decides what they install and how much each package may do: Lasso's job is to make that choice clear
+and keep it the user's, not to make it for them.
+
+A package adds things to Lasso (a capture-toolbar button, a "Send to" target, a chat command, a tool
+for the model and the Agent, a search source), changes Lasso's own content (the prompts behind its
+actions, its suggestions, sounds, colours, wording), or, later, runs a mod program alongside Lasso.
+Packages are installed and removed by the user, like packages on Linux, from a public catalog or from
+a file.
 
 The words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119. Every MUST has a check listed in
 [Verification](#verification) that fails when the rule is broken.
@@ -16,15 +21,18 @@ The words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119. Every MUST has
 ## Contents
 
 - [Principles](#principles)
+- [Three layers](#three-layers)
 - [The model: commands](#the-model-commands)
 - [The package](#the-package)
 - [Commands](#commands): where they appear, what they take, what they give back, when they show
 - [Runners](#runners): http, prompt, shortcut, script
 - [Templates and responses](#templates-and-responses)
+- [Patches: changing Lasso's own content](#patches-changing-lassos-own-content)
 - [Settings and keys](#settings-and-keys)
 - [Permissions](#permissions)
 - [Model and Agent tools](#model-and-agent-tools)
 - [Installing, updating, removing](#installing-updating-removing)
+- [Code mods (layer 3, planned)](#code-mods-layer-3-planned)
 - [Building a package](#building-a-package)
 - [The catalog](#the-catalog)
 - [Tavily and SerpApi](#tavily-and-serpapi)
@@ -34,18 +42,38 @@ The words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119. Every MUST has
 
 ## Principles
 
-1. **The user sees what a package can do before it does it.** Every host it reaches, what it reads,
+1. **The user decides.** Anyone can make a package and anyone can install one, from the catalog or
+   from a file. Lasso never blocks an install the user chooses; it shows what the package can do,
+   and the user decides how much power it gets.
+2. **The user sees what a package can do before it does it.** Every host it reaches, what it reads,
    whether it runs code, and every key it needs is shown at install, and again when an update asks
    for more.
-2. **Least power that does the job.** Most packages are data (a web request, a prompt); Lasso does the
-   work and the package can't do anything else. Running code is a separate, clearly labelled kind,
-   and it runs in a sandbox that enforces what the package declared.
-3. **Local-only means local-only.** In local-only mode nothing a package does leaves the Mac. One gate
+3. **Least power by default, more by choice.** Most packages are data (a web request, a prompt, a
+   patch); Lasso does the work and the package can't do anything else. Code runs sandboxed to what
+   it declared, unless the user gives that package full access.
+4. **Only a person installs.** Packages are installed, updated and given more access only by the user's
+   own action: never by a model, the Agent, a web page or the package itself.
+5. **Local-only means local-only.** In local-only mode nothing a package does leaves the Mac. One gate
    in the engine enforces it, for every runner, at the moment a command runs.
-4. **Small for the model.** A command offered to a model as a tool costs context on every request.
+6. **Small for the model.** A command offered to a model as a tool costs context on every request.
    Tool descriptions are short, only enabled ones are offered, and their total is capped.
-5. **Built-in stays small.** Lasso keeps what makes it work with zero setup (keyless web search, the
+7. **Lasso's protections aren't moddable.** Local-only mode, approvals for the Agent, fencing of
+   screen text and the review of what a package can do can be turned off by the user in Settings,
+   never by a package.
+8. **Built-in stays small.** Lasso keeps what makes it work with zero setup (keyless web search, the
    core capture actions). Everything optional is a package, Tavily and SerpApi included.
+
+## Three layers
+
+Like Stardew Valley's content packs and code mods, from least to most power:
+
+| Layer | What it is | Can | Status |
+|---|---|---|---|
+| **1. Commands** | Data: web requests, prompts, Shortcuts, scripts | Add buttons, Send to targets, chat commands, model tools, search sources | Format version 1 |
+| **2. Patches** | Data: edits to Lasso's own content | Change the prompts behind Lasso's actions, its suggestions, toolbar, sounds, colours and wording | Format version 1 |
+| **3. Code mods** | A program running beside Lasso, talking to it through an API | React to what happens in Lasso, add panels Lasso draws for it, keep state, anything layers 1 and 2 can't | Planned: [direction](#code-mods-layer-3-planned) |
+
+One package can use any of the layers; the review screen shows what each part does.
 
 ## The model: commands
 
@@ -107,7 +135,8 @@ The manifest is UTF-8 JSON, at most 64 KB; a folder package is at most 5 MB in a
 | `requires` | no | Mac apps or command-line tools the package needs. See [script](#script). |
 | `limits` | no | `{"daily": n, "monthly": n}`: Lasso stops running the package's network commands once either is reached. |
 | `minLasso` | no | The oldest Lasso version that runs it. |
-| `commands` | yes | 1 to 12 commands. |
+| `commands` | one of `commands` or `patches` | 1 to 12 commands. |
+| `patches` | one of `commands` or `patches` | Up to 50 patches. See [Patches](#patches-changing-lassos-own-content). |
 
 Unknown fields, anywhere in the manifest, MUST be rejected by name, so a typo is an error rather than a
 package that silently does nothing.
@@ -325,6 +354,16 @@ copy, and doesn't run. Lasso never installs anything itself.
 **Labelled clearly.** A package with a `script` command shows "Runs code on your Mac" at install, with
 its script files viewable. An update that changes any script file always shows the review again.
 
+**Full access, the user's choice.** In a package's Settings page the user MAY switch its scripts to
+**Full access**, after a warning that says what it means: "This package's scripts can do anything your
+account can: read your files, reach the internet, run other programs." With full access a script
+runs without the sandbox, still with Lasso's environment (no Lasso keys beyond its own secrets) and
+its time limit. It is per package, off by default, never set by a package or an update, shown on the
+package's row, and can be switched off at any time. Packages loaded in Developer mode from the user's
+own folder MAY start with full access, since the user wrote them; local-only mode still applies to
+them through Lasso's own gates, but a full-access script's network can't be cut off by Lasso, which the
+warning says.
+
 ## Templates and responses
 
 `{{name}}` is replaced by a value: the inputs (`text`, `query`, `source.app`, `source.url`),
@@ -340,6 +379,53 @@ gives it to models fenced as content, never as instructions.
 
 A failure (non-2xx, a timeout, a non-zero exit) shows "<name> didn't work: <reason>" where the user
 asked for it, and is skipped silently in a background search.
+
+## Patches: changing Lasso's own content
+
+Lasso's built-in content becomes data that packages can change, the way Content Patcher changes
+Stardew Valley's. A package's `patches` list edits named entries; Lasso applies every enabled package's
+patches over its defaults when packages change.
+
+```json
+"patches": [
+  { "target": "action.ai.summarize.prompt", "set": "Summarize this as at most 5 bullet points:\n\n{{text}}" },
+  { "target": "chat.suggestions", "add": { "title": "What's on my calendar today?" } },
+  { "target": "toolbar.order", "set": ["translate", "ocr.copy", "study-tools/explain", "ai.summarize"] },
+  { "target": "sound.reply.done", "set": "sounds/chime.caf" },
+  { "target": "theme.accent", "set": "teal" },
+  { "target": "string.chat.placeholder", "set": "Ask me anything…" }
+]
+```
+
+**What can be patched (version 1):**
+
+| Target | Is | Operations |
+|---|---|---|
+| `action.<id>.prompt`, `action.<id>.title` | The prompt and label of a built-in action (`ai.ask`, `ai.summarize`, `ai.grammar`, `translate`, `identify`) | `set` |
+| `toolbar.order`, `toolbar.hidden` | The capture toolbar's order and hidden buttons, built-in and package ones | `set`, `add`, `remove` |
+| `chat.suggestions` | The suggestions on the empty chat | `set`, `add`, `remove` |
+| `chat.instructions` | Extra instructions added to the chat model's own (never replacing them) | `add` |
+| `sound.<event>` | The sound for `capture`, `send`, `reply.done`, `error` (a `.caf`, `.aiff` or `.wav` file in the package, at most 1 MB) | `set` |
+| `theme.<token>` | Colours from Lasso's palette (`accent`, `bubble`, `panel`), by name, so every theme stays readable | `set` |
+| `string.<key>` | Lasso's interface wording, by key; a set of them is a translation of Lasso | `set` |
+
+Lasso lists the patchable keys and their defaults in `docs/patch-targets.md`, generated from the code so
+it can't go stale. Built-in content moves into data files (`Lasso/Content/`) to make this possible.
+
+**Rules:**
+
+- A target not in the list, or an operation it doesn't allow, makes the package invalid.
+- Patches can't reach Lasso's protections: the fencing of screen text, the local-only gate, approvals
+  and the review screen aren't patch targets, and `chat.instructions` only adds text after Lasso's own,
+  which keeps its safety instructions first.
+- **Order:** patches apply in the order the user sets in Settings › Packages (newest install last by
+  default); for the same target a later `set` wins and `add`s accumulate. Settings shows, for each
+  target changed by more than one package, which one is in effect.
+- **Undo:** turning a package off or removing it restores what its patches changed, with no trace.
+- A patched prompt keeps the template values of the original (`{{text}}` and so on) and is validated
+  like a command's.
+- Review: the install screen lists every patch ("Changes the Summarize prompt"), with a Before/After view
+  for prompts.
 
 ## Settings and keys
 
@@ -376,6 +462,8 @@ What the review screen shows, and what enforces it:
 | Reads this folder | a `folder` setting | The sandbox profile and the bookmark. |
 | Changes text in your apps | `output: "replace"` | Only on the user's click, never from a model. |
 | Needs a key | `secret` settings | The Keychain, per package. |
+| Changes Lasso's content | `patches` | Only the listed targets; undone when the package is off. |
+| Full access | the user, per package | Nothing: that's what it means. Shown on the package's row, revocable. |
 
 **Local-only mode:** `http` to hosts off the Mac, Shortcuts not marked `offline`, and scripts' network
 are paused and shown as paused. `prompt` commands (on a local model), scripts without network, and
@@ -428,6 +516,31 @@ unchanged.
 Files it saved to `~/LassoWorkspace/<id>/` are the user's and are left.
 
 **Same id:** a higher version updates; the same or a lower one is refused ("Already installed").
+
+**Only a person installs.** Install, update and full access happen only from the user's own clicks in
+Lasso. A model, the Agent, a `lasso://` link or a package can open the review screen at most; none can
+complete it. Package files in the Packages folder changed by anything but Lasso are noticed at the next
+launch, and the package is turned off until the user reviews it again.
+
+## Code mods (layer 3, planned)
+
+Not part of format version 1. Recorded here so layers 1 and 2 are built to lead into it, and decided in
+full in a later version of this document before any of it is built.
+
+- **A program beside Lasso, never inside it.** A mod runs as its own process, started and stopped by
+  Lasso, talking to it over a documented, versioned API (JSON messages on standard input and output).
+  Lasso has no stable way to load plugin code into itself (Swift has no stable plugin interface the way
+  C# does for Stardew's SMAPI), and a mod that crashes or hangs mustn't take Lasso with it.
+- **Events in:** a capture was taken, a message was sent, a reply is streaming or finished, the Agent
+  ran a tool, the panel opened or closed, a timer the mod set fired.
+- **Calls out:** add a message or card to the chat, show a notification, run a command, register and
+  remove commands while running, read and write the mod's own saved data, and show panels.
+- **Panels Lasso draws.** A mod describes a panel (stacks, text, images, buttons, lists, grids, progress,
+  text fields) and Lasso draws it with its own components; clicks and typing go back to the mod. No
+  web views and no drawing code inside Lasso, so a mod can't read the rest of the screen or imitate
+  Lasso's own prompts.
+- **Access:** the same model as scripts: sandboxed to what it declared by default, full access by the
+  user's choice. Reading the selection or the screen, the network and folders each need the user's OK.
 
 ## Building a package
 
@@ -633,7 +746,8 @@ print(json.dumps({"path": path}))
 
 Each needs a format addition, decided here before it's built:
 
-- **Plugins in Swift**, or anything loaded into Lasso's own process. Scripts run outside it, sandboxed.
+- **Code loaded into Lasso's own process**, in any version: mods run beside Lasso (layer 3).
+- **Code mods** (layer 3): planned, see [the direction](#code-mods-layer-3-planned).
 - **Sign-in flows** (OAuth). They need a browser window; keys and tokens cover most services.
 - **Request signing** (AWS-style), multi-step http calls, pagination.
 - **Sending images over http** and multipart uploads (a script with `network` can).
@@ -674,6 +788,11 @@ Each MUST, with the check that fails when it's broken. App tests live in `LassoT
 | Limits honoured | Engine: after `daily` calls, the next search skips the package. |
 | Review on wider access | Install: an update adding a host, network, a runner or an input shows the review with it highlighted; one changing only a prompt doesn't; one changing a script always does. |
 | Remove deletes everything | Install: the package folder, preferences, Keychain items, bookmarks and data folder are gone; `~/LassoWorkspace/<id>/` is kept. |
+| Full access is the user's alone | Install: no manifest field, update or `lasso://` link turns on full access; after the user turns it on, an update leaves it on only if no script changed, and the script runs unsandboxed (it can read `~/Documents`); turned off, the sandbox applies again. |
+| Only a person installs | Chat and Agent: a model's attempt to install or update a package (a tool call, a link in a reply) at most opens the review; nothing is installed without the user's click. A package file edited on disk is turned off at the next launch until reviewed. |
+| Protections can't be patched | Validator: patches targeting anything outside the list (the fencing, local-only, approvals) are refused; `chat.instructions` only appends after Lasso's own. |
+| Patch order and undo | Patches: two packages setting the same prompt apply in the user's order and Settings names the winner; turning the winner off restores the other's, removing both restores Lasso's default exactly. |
+| Patch targets documented | Build: `docs/patch-targets.md` is regenerated from the code and CI fails if it's out of date. |
 | Catalog hash checked | Install: a download whose SHA-256 differs from `index.json` is refused. |
 | Tavily and SerpApi migration | Migration: a saved Tavily key with Tavily on → package installed, key moved, the same request as before (the local server compares); no key → nothing installed; a second launch repeats nothing. |
 | Same search after removing the Swift code | Search: with both packages installed, `WebSourcesProvider` sends the same requests as the old code and returns the same titles and URLs in the same order for recorded responses. Accepted differences: SerpApi results are labelled "SerpApi" instead of "Google" and carry its snippets. |
