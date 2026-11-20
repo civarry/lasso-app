@@ -101,6 +101,22 @@ a Hermes you run yourself, which Lasso only accepts with `approvals.mode:
 manual`. The agent uses cloud models and the web, so it's unavailable in
 Local-only mode.
 
+## Packages
+
+Add search services to Lasso without changing its code. A package is a small JSON file that describes
+a web service: what to send, where, and where the results are in the answer. In **Settings ›
+Packages**, click **+** and drop the file in, choose it, or paste its text. Tavily and SerpApi are
+built in under **+**, and a key you'd already saved for them moves over by itself. Before anything is
+added, Lasso shows what it reaches ("Sends your searches to api.tavily.com"), what key it needs and its
+limits; keys stay in your Keychain and go only to that package's hosts. Each package has its own page
+with its key, how much of its free tier you've used, and a Test button. Local-only mode pauses packages
+that reach off your Mac.
+
+This version runs search packages. Buttons, chat commands, tools for the model and the Agent,
+Shortcuts and scripts are planned in the same format: [`docs/PACKAGES.md`](docs/PACKAGES.md) is the
+full design, and [`docs/CONTRIBUTING-PACKAGES.md`](docs/CONTRIBUTING-PACKAGES.md) shows how to make
+one, with a working example, the rules Lasso checks, and a JSON Schema for your editor.
+
 ## Privacy
 
 Out of the box everything runs on your Mac — text via **Apple Intelligence**,
@@ -175,9 +191,8 @@ yourself skips the "can't verify the developer" step entirely. See
 Each feature is a `CaptureAction` (see `Lasso/Actions/`) — adding one is a single file plus a line in
 `ActionRegistry`. OCR, barcode, and data detection run as `actor`s; capture and UI stay on the main
 actor. The AI side sits behind an `IntelligenceProvider` protocol so providers (Apple, Ollama, MLX,
-OpenAI-compatible, Anthropic) are interchangeable, and optional web/reverse-image **connectors** are a
-declarative catalog you can extend with one entry. There's a fuller writeup in
-[`Lasso-macOS-Spec.md`](Lasso-macOS-Spec.md).
+OpenAI-compatible, Anthropic) are interchangeable. Extra search sources are **packages** (below), not
+code. There's a fuller writeup in [`Lasso-macOS-Spec.md`](Lasso-macOS-Spec.md).
 
 ## Good to know
 

@@ -319,6 +319,8 @@ struct HTTPRequest: Sendable {
     var path: String
     var headers: [String: String]   // lowercased names
     var body: Data
+    /// What came after `?` in the request line, still percent-encoded ("" when none).
+    var query: String = ""
 
     static func parse(_ data: Data) -> HTTPRequest? {
         guard let end = data.range(of: Data("\r\n\r\n".utf8)) else { return nil }
@@ -334,9 +336,11 @@ struct HTTPRequest: Sendable {
         let length = Int(headers["content-length"] ?? "0") ?? 0
         let bodyStart = end.upperBound
         guard data.count - bodyStart >= length else { return nil }
-        let path = String(start[1]).split(separator: "?").first.map(String.init) ?? "/"
+        let target = String(start[1])
+        let path = target.split(separator: "?", maxSplits: 1).first.map(String.init) ?? "/"
+        let query = target.contains("?") ? String(target[target.index(after: target.firstIndex(of: "?")!)...]) : ""
         return HTTPRequest(method: String(start[0]), path: path, headers: headers,
-                           body: data.subdata(in: bodyStart..<(bodyStart + length)))
+                           body: data.subdata(in: bodyStart..<(bodyStart + length)), query: query)
     }
 }
 

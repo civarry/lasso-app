@@ -1,0 +1,508 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/civarry/lasso-app/main/docs/packages/schema-v1.json",
+  "title": "Lasso package, format version 1",
+  "description": "See docs/PACKAGES.md. Lasso itself is the final check: it also verifies templates, hosts and what this version of Lasso can run.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "lasso",
+    "id",
+    "version",
+    "name",
+    "summary",
+    "author"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "lasso": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "author": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "homepage": {
+      "type": "string",
+      "pattern": "^https://"
+    },
+    "icon": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string"
+        },
+        "domain": {
+          "type": "string"
+        }
+      }
+    },
+    "category": {
+      "enum": [
+        "search",
+        "knowledge",
+        "productivity",
+        "writing",
+        "developer",
+        "media",
+        "fun"
+      ]
+    },
+    "hosts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?)+$"
+      }
+    },
+    "settings": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "label",
+          "kind"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,39}$"
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "kind": {
+            "enum": [
+              "secret",
+              "text",
+              "choice",
+              "toggle",
+              "server",
+              "folder"
+            ]
+          },
+          "help": {
+            "type": "string",
+            "pattern": "^https://"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "default": {
+            "type": [
+              "string",
+              "boolean"
+            ]
+          }
+        }
+      }
+    },
+    "requires": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "daily": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "monthly": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "minLasso": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "title",
+          "surfaces",
+          "run",
+          "output"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 24
+          },
+          "symbol": {
+            "type": "string",
+            "description": "An SF Symbol name"
+          },
+          "surfaces": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "enum": [
+                "toolbar",
+                "send",
+                "slash",
+                "tool",
+                "search",
+                "hotkey"
+              ]
+            }
+          },
+          "input": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "text",
+                "image",
+                "source",
+                "query",
+                "args"
+              ]
+            }
+          },
+          "when": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "match": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "detects": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "link",
+                    "email",
+                    "phone",
+                    "address",
+                    "date",
+                    "flight",
+                    "tracking",
+                    "money"
+                  ]
+                }
+              },
+              "apps": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "minLength": {
+                "type": "integer"
+              },
+              "maxLength": {
+                "type": "integer"
+              },
+              "hasImage": {
+                "type": "boolean"
+              }
+            }
+          },
+          "run": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "http": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "url"
+                ],
+                "properties": {
+                  "method": {
+                    "enum": [
+                      "GET",
+                      "POST"
+                    ]
+                  },
+                  "url": {
+                    "type": "string",
+                    "description": "https URL on a declared host, or {{settings.<server>}}/path"
+                  },
+                  "query": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": [
+                        "string",
+                        "number"
+                      ]
+                    }
+                  },
+                  "headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "json": {
+                    "description": "Request body; string values may contain {{templates}}"
+                  },
+                  "form": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "timeout": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 20
+                  }
+                }
+              },
+              "prompt": {
+                "type": "string",
+                "maxLength": 4000
+              },
+              "system": {
+                "type": "string",
+                "maxLength": 1000
+              },
+              "shortcut": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "get": {
+                    "type": "string",
+                    "pattern": "^https://www\\.icloud\\.com/shortcuts/"
+                  },
+                  "offline": {
+                    "type": "boolean"
+                  },
+                  "timeout": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 120
+                  }
+                }
+              },
+              "script": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "path"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "pattern": "^scripts/"
+                  },
+                  "network": {
+                    "type": "boolean"
+                  },
+                  "timeout": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 300
+                  }
+                }
+              },
+              "results": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "list",
+                  "title"
+                ],
+                "properties": {
+                  "list": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  },
+                  "snippet": {
+                    "type": "string"
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10
+                  }
+                }
+              },
+              "answer": {
+                "type": "string"
+              },
+              "role": {
+                "enum": [
+                  "primary",
+                  "reserve"
+                ]
+              }
+            },
+            "oneOf": [
+              {
+                "required": [
+                  "http"
+                ]
+              },
+              {
+                "required": [
+                  "prompt"
+                ]
+              },
+              {
+                "required": [
+                  "shortcut"
+                ]
+              },
+              {
+                "required": [
+                  "script"
+                ]
+              }
+            ]
+          },
+          "output": {
+            "enum": [
+              "markdown",
+              "copy",
+              "replace",
+              "open",
+              "image",
+              "file",
+              "notify",
+              "results"
+            ]
+          },
+          "tool": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "description"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z0-9_]{1,40}$"
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "args": {
+                "type": "object",
+                "maxProperties": 6,
+                "additionalProperties": {
+                  "enum": [
+                    "string",
+                    "number",
+                    "boolean"
+                  ]
+                }
+              }
+            }
+          },
+          "test": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "query": {
+                "type": "string"
+              },
+              "args": {
+                "type": "object"
+              },
+              "image": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "patches": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "required": [
+          "target"
+        ],
+        "properties": {
+          "target": {
+            "type": "string"
+          },
+          "set": {},
+          "add": {},
+          "remove": {}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "anyOf": [
+    {
+      "required": [
+        "commands"
+      ]
+    },
+    {
+      "required": [
+        "patches"
+      ]
+    }
+  ]
+}

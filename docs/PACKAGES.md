@@ -373,7 +373,8 @@ in a URL, JSON-escaped in a JSON body, form-encoded in a form body. A header val
 break is refused. A template naming something the command doesn't have MUST make the package invalid
 at install time. There are no expressions, conditions or loops.
 
-`http` responses must be JSON, at most 2 MB. A path is dot-separated keys and array indexes
+`http` responses must be JSON, at most 2 MB. Text taken from them has HTML tags removed and common
+entities decoded (services mark matches with tags), since it's shown and used as plain text. A path is dot-separated keys and array indexes
 (`web.results`, `data.0.text`); a missing path yields nothing. Everything a package returns, from any
 runner, is untrusted: Lasso trims it (titles 200 characters, snippets 500, tool answers 4,000) and
 gives it to models fenced as content, never as instructions.
@@ -519,14 +520,17 @@ script, the review is shown again with what's new highlighted. Settings carry ov
 unchanged.
 
 **Removing** deletes the package, its preferences, Keychain items, folder bookmarks and data folder.
-Files it saved to `~/LassoWorkspace/<id>/` are the user's and are left.
+Files it saved to `~/LassoWorkspace/<id>/` are the user's and are left, and so are its usage counts, so
+removing and adding it again can't spend a free tier twice in one month.
 
 **Same id:** a higher version updates; the same or a lower one is refused ("Already installed").
 
 **Only a person installs.** Install, update and full access happen only from the user's own clicks in
 Lasso. A model, the Agent, a `lasso://` link or a package can open the review screen at most; none can
 complete it. Package files in the Packages folder changed by anything but Lasso are noticed at the next
-launch, and the package is turned off until the user reviews it again.
+launch, and the package is turned off until the user reviews it again. Its switch can't turn it back on:
+only the review's **Turn On** can, after showing what changed against the approved copy, which Lasso
+keeps in its own preferences (a copy kept beside the package's files could be edited with them).
 
 ## Code mods (layer 3, planned)
 
@@ -787,6 +791,8 @@ Each needs a format addition, decided here before it's built:
 - **Non-JSON http responses** (XML, HTML).
 - **Local MCP servers** as a runner.
 - **Agent skills** (instructions for the Agent) as a package part.
+- **The user changing a package's `limits`** (someone on a paid plan held to the free tier's numbers).
+  Until then the author's limits apply.
 - **Dependencies between packages**, and installing `requires` automatically.
 - **Commands that run on a schedule** or in the background. Every command runs because the user or a
   model asked, while Lasso is open.
@@ -820,7 +826,8 @@ Each MUST, with the check that fails when it's broken. App tests live in `LassoT
 | Tool budget | Settings: enabling tools past 1,500 characters of descriptions asks which to offer, and the model is offered only those. |
 | Limits honoured | Engine: after `daily` calls, the next search skips the package. |
 | Review on wider access | Install: an update adding a host, network, a runner or an input shows the review with it highlighted; one changing only a prompt doesn't; one changing a script always does. |
-| Remove deletes everything | Install: the package folder, preferences, Keychain items, bookmarks and data folder are gone; `~/LassoWorkspace/<id>/` is kept. |
+| Remove deletes everything | Install: the package folder, preferences, Keychain items, bookmarks and data folder are gone; `~/LassoWorkspace/<id>/` and the usage counts are kept. |
+| A changed package needs the review | Install: after its file is edited on disk the package is off, its switch can't turn it on, the review shows the approved and the new version, and only Turn On enables it. |
 | Full access is the user's alone | Install: no manifest field, update or `lasso://` link turns on full access; after the user turns it on, an update leaves it on only if no script changed, and the script runs unsandboxed (it can read `~/Documents`); turned off, the sandbox applies again. |
 | Only a person installs | Chat and Agent: a model's attempt to install or update a package (a tool call, a link in a reply) at most opens the review; nothing is installed without the user's click. A package file edited on disk is turned off at the next launch until reviewed. |
 | Protections can't be patched | Validator: patches targeting anything outside the list (the fencing, local-only, approvals) are refused; `chat.instructions` only appends after Lasso's own. |

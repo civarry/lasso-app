@@ -624,8 +624,7 @@ final class ChatController {
 
     /// Any web-search connector active (respecting local-only mode).
     static func computeWebAvailable() -> Bool {
-        Connectors.webSearch.isActive() || Connectors.tavily.isActive()
-            || Connectors.serpApi.isActive()
+        Connectors.webSearch.isActive() || PackageRegistry.shared.hasActiveSearch
     }
 
     // MARK: - Slash commands
@@ -1656,8 +1655,7 @@ final class ChatController {
     private func gatherEvidence(typed: String, boxed: UncheckedImage?, ocrText: String?,
                                 enabled: Bool, plan: SearchPlan? = nil) async -> Evidence? {
         guard enabled, !PrivacyMode.localOnly else { return nil }
-        let webActive = Connectors.webSearch.isActive() || Connectors.tavily.isActive()
-            || Connectors.serpApi.isActive()
+        let webActive = Connectors.webSearch.isActive() || PackageRegistry.shared.hasActiveSearch
         guard webActive else { return nil }
 
         var evidence = Evidence()

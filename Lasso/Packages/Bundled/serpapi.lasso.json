@@ -1,0 +1,19 @@
+{
+  "lasso": 1, "id": "serpapi", "version": "1.0.0", "name": "SerpApi",
+  "summary": "Google results, used when other sources come back thin.", "author": "Lasso",
+  "homepage": "https://serpapi.com", "category": "search",
+  "icon": { "symbol": "magnifyingglass.circle.fill", "domain": "serpapi.com" },
+  "hosts": ["serpapi.com"],
+  "settings": [ { "id": "key", "label": "API key", "kind": "secret", "help": "https://serpapi.com/manage-api-key" } ],
+  "limits": { "daily": 10, "monthly": 240 },
+  "commands": [ {
+    "id": "search", "title": "SerpApi", "surfaces": ["search"], "input": ["query"], "output": "results",
+    "run": {
+      "http": { "url": "https://serpapi.com/search.json",
+                "query": { "engine": "google", "num": "8", "q": "{{query}}", "api_key": "{{settings.key}}" } },
+      "role": "reserve",
+      "results": { "list": "organic_results", "title": "title", "url": "link", "snippet": "snippet", "limit": 6 }
+    },
+    "test": { "query": "lasso app" }
+  } ]
+}

@@ -17,7 +17,8 @@ struct SettingsSearchTests {
         #expect(SettingsSearchEntry.results(for: "hotkey").allSatisfy { $0.route == .shortcuts })
         #expect(SettingsSearchEntry.results(for: "offline").map(\.label) == ["Local-only mode"])
         #expect(SettingsSearchEntry.results(for: "update").contains { $0.route == .softwareUpdate })
-        #expect(SettingsSearchEntry.results(for: "tavily").first?.route == .searchKeys)
+        #expect(SettingsSearchEntry.results(for: "tavily").allSatisfy { $0.pane == .packages })
+        #expect(SettingsSearchEntry.results(for: "plugin").map(\.label) == ["Add a package"])
         #expect(SettingsSearchEntry.results(for: "  ").isEmpty)
     }
 }

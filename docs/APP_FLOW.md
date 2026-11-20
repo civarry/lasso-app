@@ -697,7 +697,7 @@ flowchart LR
   Stop["Stop"] -->|"cancel consumer → POST /stop"| SSE
 ```
 
-## 8. Connectors, web grounding & privacy
+## 8. Search sources, packages & privacy
 
 Reverse-image via a keyed API was **removed** — Google Lens (zero-setup, opt-in) is the only
 reverse-image path now.
@@ -707,17 +707,23 @@ flowchart LR
   subgraph Default[Default - zero setup]
     WebSearch["Web search (ON by default)<br/>Wikipedia · DuckDuckGo · Reddit<br/>keyless URLSession"]
   end
-  subgraph Adv["Settings ▸ Connectors ▸ Advanced (collapsed, off)"]
-    Tavily[Tavily key]
-    SerpApi[SerpApi key]
+  subgraph Pkgs["Search packages (Settings ▸ Packages)"]
+    Primary["primary: every search,<br/>started alongside the free sources,<br/>results first"]
+    Reserve["reserve: only when<br/>fewer than 5 results"]
   end
+  Add["+ : file · folder · pasted JSON ·<br/>built in (Tavily, SerpApi)"] --> Review["Review: hosts, keys, limits"] --> Pkgs
   Identify[Identify] --> WebSearch
   ChatP[Chat] --> WebSearch
-  WebSearch -. optional stronger results .-> Adv
+  WebSearch --> Pkgs
+  Pkgs -->|"PackageHTTP: declared hosts only,<br/>no undeclared redirects, local-only gate,<br/>2 MB, limits, secrets redacted"| Hits[results labelled by package]
 ```
 
-Files: `Intelligence/Connectors.swift`, `WebSourcesProvider.swift` (`WebSearchSource`,
-`IdentifySources`), `SearchCache`, `SearchQuota`, `DomainNoise`, `Keychain`.
+Files: `Intelligence/Connectors.swift` (built-in Web search only), `WebSourcesProvider.swift`
+(`WebSearchSource`, `IdentifySources`), `Packages/` (`PackageManifest` validator, `PackageTemplate`,
+`PackageHTTP`, `PackageStore` + `PackageRegistry`, `PackageSearch`, `PackageMigration`, `Bundled/`),
+`App/Settings/PackagesSettings.swift`, `SearchCache`, `SearchQuota`, `DomainNoise`, `Keychain`. The
+format is `docs/PACKAGES.md` (build step 1 of 6 is built); authors use `docs/CONTRIBUTING-PACKAGES.md`
+and `docs/packages/schema-v1.json`.
 
 **Privacy invariant:** `privacy.localOnly` (PrivacyMode) gates **every** off-device path at the source
 — web connectors pause, the Lens button/action hides, favicons don't load. Local-only = zero
@@ -839,6 +845,25 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Packages, build step 1: search packages** (`docs/PACKAGES.md`, reviewed and fixed before building:
+  Agent tool list and approvals, usage carry-over, detection source, key migration, build order).
+  Tavily and SerpApi are no longer Swift: they're bundled packages, and a saved key moves to the
+  package once, with the connector's on/off state (a key is never dropped) and this month's usage
+  carried over (the packages count under the old counters' names). The validator refuses unknown
+  fields, unknown template names, undeclared or templated hosts, plain http except a server setting on
+  this Mac, and parts not built yet ("This version of Lasso can't run X yet"), each with its field
+  path. The http engine refuses undeclared hosts before connecting and redirects to them, gates
+  local-only per request, caps answers at 2 MB, strips HTML from result text, and redacts secrets.
+  Settings › Packages (new pane, designed with a separate UI/UX review and two rounds of pushback):
+  the built-in Web search switch moved here (Privacy keeps a "Search sources · N on" pointer); rows
+  with status lines and a switch outside the link; + at the list's foot; one sheet with Add (built in,
+  drop or choose, paste), Review (what it does and reaches, tagged New/Changed for updates and on-disk
+  changes, the file itself) and Problems (each with its path, Copy Problems); a page per package with
+  settings, usage, Test (counts as a search, respects limits) and Remove. Found while building: a
+  manifest edited on disk was re-approved by flipping its switch, and a review couldn't show what
+  changed; now only the review's Turn On approves, against an approved copy kept in preferences. A
+  CRLF in a header value passed the line-break check (Swift treats "\r\n" as one Character); it's
+  checked by scalar now.
 - **Settings sidebar can't be lost.** With the toggle removed, dragging the divider all the way left still
   hid the sidebar and nothing brought it back; the split view's visibility is now bound and held at
   `.all` (`SettingsSidebarTests` collapses it in a real window: stays shut before, comes back now).
@@ -894,7 +919,7 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
   tiles and search. General and Models are hubs (a header card, then grouped rows with the current value
   and a chevron that open a page: About, Software Update, Keyboard Shortcuts with every hotkey,
   Translation; Language, Image and Embedding Model, Ollama), with Open at login as a switch on the hub.
-  Toolbar, Agent and Privacy show their controls directly (Use My Own Hermes and Search API Keys open
+  Toolbar, Agent and Privacy show their controls directly (Use My Own Hermes and Search API Keys, now Packages, open
   pages). Save & Apply is gone: a change applies 0.4 s after the last edit, `apply()` writes only what
   changed (it used to rewrite every Keychain item), closing the window flushes. Search is a hand-written
   index (`SettingsSearchEntry`) tested so every entry leads to its pane. The chat's model menu opens

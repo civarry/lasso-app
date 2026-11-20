@@ -1,19 +1,16 @@
 import Foundation
 
-/// Budget guard for limited-quota search APIs (Tavily, SerpApi). Enforces both a monthly cap (free
-/// tier) and a daily cap (pacing, so a busy day can't drain the month). Counters are keyed by
-/// month/day, so they reset automatically as time rolls over.
+/// Budget guard for search sources with limited free tiers (search packages with `limits`). Enforces a
+/// monthly cap (the free tier) and a daily one (pacing, so a busy day can't drain the month). Counters
+/// are keyed by the package id and the month/day, so they reset as time rolls over, and they outlive
+/// the package: Tavily's and SerpApi's counts from before they became packages carry over, and
+/// removing and reinstalling can't spend a free tier twice.
 enum SearchQuota {
-    /// (monthly, daily) caps per source, kept just under each free tier with daily pacing.
-    /// Tavily: 1,000 credits/mo (basic search = 1 credit). SerpApi: 250 searches/mo.
-    static let caps: [String: (monthly: Int, daily: Int)] = [
-        "tavily": (monthly: 960, daily: 40),
-        "serpapi": (monthly: 240, daily: 10),
-    ]
-
-    static func canUse(_ source: String) -> Bool {
-        guard let cap = caps[source] else { return false }
-        return usedMonth(source) < cap.monthly && usedToday(source) < cap.daily
+    static func canUse(_ source: String, limits: PackageLimits?) -> Bool {
+        guard let limits else { return true }
+        if let monthly = limits.monthly, usedMonth(source) >= monthly { return false }
+        if let daily = limits.daily, usedToday(source) >= daily { return false }
+        return true
     }
 
     static func usedMonth(_ source: String) -> Int {
@@ -22,10 +19,6 @@ enum SearchQuota {
 
     static func usedToday(_ source: String) -> Int {
         UserDefaults.standard.integer(forKey: dayKey(source))
-    }
-
-    static func remainingMonth(_ source: String) -> Int {
-        max(0, (caps[source]?.monthly ?? 0) - usedMonth(source))
     }
 
     /// Record one consumed request (call after a successful API response).

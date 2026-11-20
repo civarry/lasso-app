@@ -76,11 +76,9 @@ extension Connector {
 
 /// The catalog. Add an integration here and it appears in the store automatically.
 enum Connectors {
-    static let all: [Connector] = [webSearch, tavily, serpApi]
-
-    /// The optional, bring-your-own-key connectors — shown under a collapsed "Advanced" section so the
-    /// default surface stays zero-setup. Keyless Web search is intentionally excluded (it's the default).
-    static let advanced: [Connector] = [tavily, serpApi]
+    /// The built-in, keyless one. Everything optional (Tavily, SerpApi, any other search) is a package:
+    /// see `docs/PACKAGES.md` and `PackageStore`.
+    static let all: [Connector] = [webSearch]
 
     static func by(id: String) -> Connector? { all.first { $0.id == id } }
 
@@ -99,7 +97,7 @@ enum Connectors {
         keyAccount: nil,
         guide: SetupGuide([
             .init("On by default — it uses free public sources over plain HTTP (no embedded browser)."),
-            .init("Optional: connect Tavily or SerpApi under Advanced for stronger, ranked web results."),
+            .init("Optional: add a search package (Tavily, SerpApi or your own) in Settings › Packages for stronger, ranked results."),
         ], note: "Leaves your Mac. Paused automatically in local-only mode."),
         test: { _ in
             await ConnectorTests.get(
@@ -108,60 +106,6 @@ enum Connectors {
                 okNote: "Reachable")
         })
 
-    // MARK: Tavily (BYO key)
-
-    static let tavily = Connector(
-        id: "tavily",
-        name: "Tavily",
-        icon: "magnifyingglass.circle",
-        iconDomain: "tavily.com",
-        usesImage: false,
-        summary: "Text web search tuned for AI — clean, ranked results from a search query (not the image).",
-        leavesDevice: true,
-        enabledKey: "connector.tavily.enabled",
-        defaultEnabled: false,
-        keyAccount: "tavily.apiKey",
-        guide: SetupGuide([
-            .init("Create a free Tavily account.", link: "https://app.tavily.com/", linkLabel: "Open Tavily"),
-            .init("Open the dashboard — your API key is shown on the home page."),
-            .init("Copy the key (starts with “tvly-”) and paste it below."),
-        ], note: "Free tier ≈ 1,000 searches/month. Leaves your Mac."),
-        test: { key in
-            guard !key.isEmpty else { return .failure("Enter an API key.") }
-            return await ConnectorTests.postJSON(
-                "https://api.tavily.com/search",
-                body: ["api_key": key, "query": "lasso connector test", "max_results": 1],
-                bearer: key)
-        })
-
-    // MARK: SerpApi (BYO key)
-
-    static let serpApi = Connector(
-        id: "serpApi",
-        name: "SerpApi",
-        icon: "magnifyingglass.circle.fill",
-        iconDomain: "serpapi.com",
-        usesImage: false,
-        summary: "Real Google text results via SerpApi — a reserve source when Tavily is empty.",
-        leavesDevice: true,
-        enabledKey: "connector.serpapi.enabled",
-        defaultEnabled: false,
-        keyAccount: "serpapi.apiKey",
-        guide: SetupGuide([
-            .init("Create a free SerpApi account.", link: "https://serpapi.com/users/sign_up", linkLabel: "Open SerpApi"),
-            .init("Go to your dashboard → API Key.", link: "https://serpapi.com/manage-api-key", linkLabel: "API Key page"),
-            .init("Copy the private API key and paste it below."),
-        ], note: "Free tier ≈ 250 searches/month. Leaves your Mac."),
-        test: { key in
-            guard !key.isEmpty else { return .failure("Enter an API key.") }
-            guard let encoded = key.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
-                return .failure("Invalid API key.")
-            }
-            return await ConnectorTests.get(
-                "https://serpapi.com/account.json?api_key=\(encoded)",
-                okNote: "Account reachable",
-                unauthorizedNote: "Check the API key.")
-        })
 }
 
 // MARK: - Test helpers (lightweight URLSession probes; reused by the catalog's `test` closures)
