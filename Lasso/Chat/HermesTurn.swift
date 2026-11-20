@@ -125,8 +125,18 @@ struct HermesTurn {
 
     // MARK: - Labels
 
+    /// Lasso's own tools (`LassoAgentTools`, through its Hermes plugin).
+    static func lassoTool(_ tool: String) -> String? {
+        [LassoAgentTools.lookAtScreen, LassoAgentTools.lookAtImage].contains(tool) ? tool : nil
+    }
+
     static func label(for tool: String) -> String {
-        switch tool {
+        switch lassoTool(tool) {
+        case "look_at_screen": return "Looked at your screen"
+        case "look_at_image": return "Looked at an image"
+        default: break
+        }
+        return switch tool {
         case "terminal", "process": "Ran a command"
         case "web_search": "Searched the web"
         case "web_extract": "Read a page"
@@ -146,7 +156,8 @@ struct HermesTurn {
     }
 
     static func icon(for tool: String) -> String {
-        switch tool {
+        if lassoTool(tool) != nil { return "eye" }
+        return switch tool {
         case "terminal", "process", "execute_code": "terminal"
         case "web_search", "web_extract": "globe"
         case "read_file", "search_files", "session_search": "doc.text.magnifyingglass"

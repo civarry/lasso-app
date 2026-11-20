@@ -83,7 +83,13 @@ gives it a fresh profile of its own (your own Hermes settings, keys and any
 running gateway stay untouched and aren't used), starts it when you use Agent,
 and stops it when Lasso quits. It works in `~/LassoWorkspace`: its commands
 start there and the files it makes go there (Settings ▸ Agent ▸ Show in
-Finder). The agent thinks with the model you picked in
+Finder). It can also see: it can look at your whole screen, ask you to drag
+around the part you mean, or read an image file, getting back the text in it
+and a description from your image model, so even a text-only model can work
+with what's on screen. To keep each request small, Lasso gives it only the
+Hermes tools that are useful here (commands, files, the web and its memory),
+which roughly halves what a local model reads before the first reply. The
+agent thinks with the model you picked in
 Lasso and nothing else, side tasks included. An MLX model is served to it by
 Lasso on your Mac (the first reply takes a while as the model reads the agent's
 setup, later ones are quick). Apple Intelligence can't drive the agent, so with

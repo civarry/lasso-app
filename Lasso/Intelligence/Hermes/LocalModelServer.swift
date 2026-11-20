@@ -341,7 +341,7 @@ struct HTTPRequest: Sendable {
 }
 
 /// Writes one response and closes the connection (no keep-alive: Hermes reconnects per request).
-private final class ResponseWriter: @unchecked Sendable {
+final class ResponseWriter: @unchecked Sendable {
     private let connection: NWConnection
     private let lock = NSLock()
     private var closed = false
@@ -353,7 +353,18 @@ private final class ResponseWriter: @unchecked Sendable {
     func json(status: Int, _ object: [String: Any]) async {
         let body = (try? JSONSerialization.data(withJSONObject: object)) ?? Data()
         let reason = [200: "OK", 400: "Bad Request", 401: "Unauthorized", 404: "Not Found"][status] ?? "Error"
-        let head = "HTTP/1.1 \(status) \(reason)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+        await head(status: status, reason: reason, contentType: "application/json", body: body)
+    }
+
+    /// A response with no body (202 Accepted for a notification, 405 for an unsupported method).
+    func empty(status: Int) async {
+        let reason = [202: "Accepted", 405: "Method Not Allowed"][status] ?? "OK"
+        await head(status: status, reason: reason, contentType: nil, body: Data())
+    }
+
+    private func head(status: Int, reason: String, contentType: String?, body: Data) async {
+        let type = contentType.map { "Content-Type: \($0)\r\n" } ?? ""
+        let head = "HTTP/1.1 \(status) \(reason)\r\n\(type)Content-Length: \(body.count)\r\nConnection: close\r\n\r\n"
         await send(Data(head.utf8) + body)
         await close()
     }
@@ -417,7 +428,7 @@ private actor Turnstile {
 }
 
 /// A flag that can be claimed once (a continuation resumes exactly once).
-private final class OnceFlag: @unchecked Sendable {
+final class OnceFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var claimed = false
     func claim() -> Bool { lock.withLock { defer { claimed = true }; return !claimed } }

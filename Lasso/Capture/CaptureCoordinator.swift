@@ -50,7 +50,32 @@ final class CaptureCoordinator {
     /// (or full-screen grab) and pre-pass are ready — the "direct shortcut" path (e.g. ⇧⌘ → Lens).
     private(set) var pendingDirectActionID: String?
 
+    /// Set while the Agent waits for the user to select part of the screen (`selectForAgent`): the
+    /// selection goes back to it instead of opening the action bar.
+    private var agentSelection: CheckedContinuation<CGImage?, Never>?
+    var isSelectingForAgent: Bool { agentSelection != nil }
+
     private init() {}
+
+    /// Lets the user drag around part of the screen for the Agent. Returns the selected area, or nil if
+    /// they pressed Esc, a capture was already open, or Lasso can't record the screen.
+    func selectForAgent() async -> CGImage? {
+        guard !isActive, agentSelection == nil else { return nil }
+        return await withCheckedContinuation { continuation in
+            agentSelection = continuation
+            NSApp.activate()
+            Task {
+                await start()
+                if !isActive { finishAgentSelection(nil) }   // no permission, or the capture failed
+            }
+        }
+    }
+
+    private func finishAgentSelection(_ image: CGImage?) {
+        let continuation = agentSelection
+        agentSelection = nil
+        continuation?.resume(returning: image)
+    }
 
     func configure(registry: ActionRegistry, intelligence: IntelligenceCoordinator) {
         self.registry = registry
@@ -221,6 +246,7 @@ final class CaptureCoordinator {
     }
 
     private func teardown() {
+        finishAgentSelection(nil)   // Esc while the Agent waited: it hears "cancelled"
         KeyboardShortcuts.disable(.cancelCapture)
         runTask?.cancel(); runTask = nil
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
@@ -256,6 +282,11 @@ final class CaptureCoordinator {
         let pixelRect = CGRect(x: rect.minX * shot.scale, y: rect.minY * shot.scale,
                                width: rect.width * shot.scale, height: rect.height * shot.scale)
         guard let crop = shot.image.cropping(toPixelRect: pixelRect) else { return }
+        if agentSelection != nil {
+            finishAgentSelection(crop)
+            teardown()
+            return
+        }
 
         let base = CaptureContext(image: crop, fullFrame: shot.image,
                                   selectionRect: rect, displayID: displayID)
