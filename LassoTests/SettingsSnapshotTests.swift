@@ -53,6 +53,11 @@ struct SettingsSnapshotTests {
         for pane in SettingsPane.allCases {
             let w = open(pane); try await snap(w, pane.rawValue); w.orderOut(nil); w.contentView = nil
         }
+        // The Agent pane for Lasso's built-in agent (the Workspace row), whatever this Mac has set.
+        let ownWas = UserDefaults.standard.object(forKey: HermesAgent.useOwnHermesKey)
+        UserDefaults.standard.set(false, forKey: HermesAgent.useOwnHermesKey)
+        let builtIn = open(.agent); try await snap(builtIn, "agent-builtin"); builtIn.orderOut(nil); builtIn.contentView = nil
+        UserDefaults.standard.set(ownWas, forKey: HermesAgent.useOwnHermesKey)
         for route in SettingsRoute.allCases {
             let w = open(route.pane, route: route); try await snap(w, "\(route.pane.rawValue)-\(route.rawValue)"); w.orderOut(nil); w.contentView = nil
         }

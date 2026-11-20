@@ -73,6 +73,12 @@ final class HermesRuntime {
         FileManager.default.homeDirectoryForCurrentUser.appending(path: ".hermes/profiles/\(profileName)")
     }
 
+    /// Where Lasso's agent works: its commands start here and the files it makes go here, in a folder
+    /// the user can see, not inside the hidden profile. The user's own Hermes keeps its own setting.
+    nonisolated static var workspaceDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appending(path: "LassoWorkspace", directoryHint: .isDirectory)
+    }
+
     nonisolated static var logFile: URL {
         FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Logs/Lasso/hermes-gateway.log")
     }
@@ -157,8 +163,10 @@ final class HermesRuntime {
         let env = (try? String(contentsOf: envURL, encoding: .utf8)) ?? ""
         try Self.writePrivate(HermesProfileFiles.filteredEnv(env, apiKey: key, port: port), to: envURL)
         let config = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
+        try FileManager.default.createDirectory(at: Self.workspaceDirectory, withIntermediateDirectories: true)
         try Self.writePrivate(HermesProfileFiles.withManagedBlock(config, port: port, route: launch.route,
-                                                                   letHermesDecide: launch.letHermesDecide),
+                                                                   letHermesDecide: launch.letHermesDecide,
+                                                                   workspace: Self.workspaceDirectory),
                               to: configURL)
     }
 
@@ -611,7 +619,8 @@ enum HermesProfileFiles {
     }
 
     /// `config` with Lasso's block (re)written at the end.
-    static func withManagedBlock(_ config: String, port: Int, route: HermesRoute?, letHermesDecide: Bool = false) -> String {
+    static func withManagedBlock(_ config: String, port: Int, route: HermesRoute?, letHermesDecide: Bool = false,
+                                 workspace: URL? = nil) -> String {
         var text = config.replacingOccurrences(of: "\r\n", with: "\n")
         if let start = text.range(of: beginMarker) {
             let end = text.range(of: endMarker, range: start.upperBound..<text.endIndex)
@@ -619,12 +628,12 @@ enum HermesProfileFiles {
         }
         while text.hasSuffix("\n\n") { text.removeLast() }
         if !text.isEmpty, !text.hasSuffix("\n") { text += "\n" }
-        return text + "\n" + managedBlock(port: port, route: route, letHermesDecide: letHermesDecide)
+        return text + "\n" + managedBlock(port: port, route: route, letHermesDecide: letHermesDecide, workspace: workspace)
     }
 
     /// `letHermesDecide`: the user's opt-out in Settings; Hermes's `smart` mode then decides flagged
     /// commands with its helper model (its hard blocklist still applies), and every reply says so.
-    static func managedBlock(port: Int, route: HermesRoute?, letHermesDecide: Bool = false) -> String {
+    static func managedBlock(port: Int, route: HermesRoute?, letHermesDecide: Bool = false, workspace: URL? = nil) -> String {
         var lines = [beginMarker]
         // The model Hermes thinks with, for everything: replies, and its side tasks (titles, history
         // summaries), which follow `model:` rather than the per-request route. Lasso's choice, never a
@@ -635,6 +644,11 @@ enum HermesProfileFiles {
                       "  default: \(quoted(route.model))"]
             if let base = route.baseURL { lines.append("  base_url: \(quoted(base))") }
             if let key = route.apiKey { lines.append("  api_key: \(quoted(key))") }
+        }
+        // The agent's working folder (Hermes's file tools also resolve relative paths against it). The
+        // profile is Lasso's own, so its `terminal:` section is Lasso's to set; Hermes fills in the rest.
+        if let workspace {
+            lines += ["terminal:", "  cwd: \(quoted(workspace.path))"]
         }
         lines += ["approvals:",
                      "  mode: \(letHermesDecide ? "smart" : "manual")",

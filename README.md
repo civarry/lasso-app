@@ -67,7 +67,9 @@ A persistent chat panel that remembers the thread, takes any file you attach or
 drop (images, text, PDFs, code; the model gets what it can use), and
 grounds its answers with real sources when you want. Click the mic to talk
 instead of typing: English speech recognition on your Mac, with words appearing
-at the cursor as you speak. When you stop, Lasso tidies what you said on your
+at the cursor as you speak. It stops by itself when you've finished: soon
+after a complete sentence, and it waits longer if you trail off on "and",
+"so", "um" or a comma. When you stop, Lasso tidies what you said on your
 Mac (ums, filler words, repeats, small grammar fixes) without changing your
 words, and one Undo brings back exactly what you said. You can turn the
 cleanup off in Settings.
@@ -79,7 +81,9 @@ showing each step as it goes. It's powered by
 once (`brew install hermes-agent`); you don't need to set Hermes up. Lasso
 gives it a fresh profile of its own (your own Hermes settings, keys and any
 running gateway stay untouched and aren't used), starts it when you use Agent,
-and stops it when Lasso quits. The agent thinks with the model you picked in
+and stops it when Lasso quits. It works in `~/LassoWorkspace`: its commands
+start there and the files it makes go there (Settings ▸ Agent ▸ Show in
+Finder). The agent thinks with the model you picked in
 Lasso and nothing else, side tasks included. An MLX model is served to it by
 Lasso on your Mac (the first reply takes a while as the model reads the agent's
 setup, later ones are quick). Apple Intelligence can't drive the agent, so with

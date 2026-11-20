@@ -177,6 +177,18 @@ struct HermesAgentTests {
         #expect(none.hasPrefix(user))
     }
 
+    /// The built-in agent works in ~/LassoWorkspace, not the hidden profile folder (or the home folder,
+    /// Hermes's default), and only the built-in agent is told so.
+    @Test func managedBlockSetsTheWorkspace() {
+        let workspace = URL(fileURLWithPath: "/Users/someone/LassoWorkspace")
+        let block = HermesProfileFiles.withManagedBlock("", port: 8653, route: nil, workspace: workspace)
+        #expect(block.contains("\nterminal:\n  cwd: \"/Users/someone/LassoWorkspace\"\n"))
+        #expect(!HermesProfileFiles.withManagedBlock("", port: 8653, route: nil).contains("terminal:"))
+        #expect(HermesRuntime.workspaceDirectory.lastPathComponent == "LassoWorkspace")
+        #expect(HermesAgent.instructions(builtIn: true).contains(HermesRuntime.workspaceDirectory.path))
+        #expect(!HermesAgent.instructions(builtIn: false).contains("LassoWorkspace"))
+    }
+
     /// Hermes's side tasks (titles, history summaries) follow the top-level `model:`, not the request's
     /// route, so the block sets that too: the user's own model (here a cloud Opus) must not survive.
     @Test func managedBlockReplacesTheMainModel() {

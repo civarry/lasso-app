@@ -164,6 +164,7 @@ struct SettingsSearchEntry: Identifiable, Hashable {
         .init(label: "Free-model fallback", pane: .models, route: .languageModel, keywords: ["free", "rate limit"]),
         .init(label: "Ollama server", pane: .models, route: .ollama, keywords: ["local"]),
         .init(label: "Agent status", pane: .agent, route: nil, keywords: ["hermes", "set up"]),
+        .init(label: "Agent workspace", pane: .agent, route: nil, keywords: ["folder", "files", "LassoWorkspace"]),
         .init(label: "Ask before risky commands", pane: .agent, route: nil, keywords: ["approval", "hermes"]),
         .init(label: "Use my own Hermes", pane: .agent, route: .ownHermes, keywords: ["gateway", "api key", "address"]),
         .init(label: "Local-only mode", pane: .privacy, route: nil, keywords: ["offline", "network", "privacy"]),

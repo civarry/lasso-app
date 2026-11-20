@@ -309,15 +309,20 @@ struct ChatView: View {
                 .scrollIndicators(.visible)
                 // Follow a streaming reply only while the reader is at the bottom: someone who scrolled
                 // up to reread isn't pulled back down on every token.
-                .onScrollGeometryChange(for: Bool.self) { geo in
-                    geo.contentOffset.y + geo.containerSize.height >= geo.contentSize.height - 48
-                } action: { _, atBottom in followsLatest = atBottom }
+                .onScrollGeometryChange(for: ScrollFollow.Position.self) { geo in
+                    ScrollFollow.Position(offset: geo.contentOffset.y,
+                                          atBottom: geo.contentOffset.y + geo.containerSize.height >= geo.contentSize.height - 48)
+                } action: { old, new in
+                    followsLatest = ScrollFollow.follows(was: followsLatest, from: old, to: new)
+                    // Content that grew after the last scroll (layout settling a moment later) is caught up.
+                    if followsLatest, !new.atBottom { proxy.scrollTo(Self.scrollBottomID, anchor: .bottom) }
+                }
                 .onAppear { proxy.scrollTo(Self.scrollBottomID, anchor: .bottom) }
                 .onChange(of: chat.messages.count) { _, _ in
                     // A new message (the user's own, or a new reply) always comes into view.
                     proxy.scrollTo(Self.scrollBottomID, anchor: .bottom)
                 }
-                .onChange(of: chat.messages.last?.text) { _, _ in
+                .onChange(of: chat.messages.last.map(ScrollFollow.growth)) { _, _ in
                     if followsLatest { proxy.scrollTo(Self.scrollBottomID, anchor: .bottom) }
                 }
                 .overlay(alignment: .bottom) {

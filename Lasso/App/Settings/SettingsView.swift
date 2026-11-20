@@ -1058,6 +1058,16 @@ struct SettingsView: View {
             if !draft.hermesUseOwn {
                 SettingsRow("Status", caption: agentStatusCaption) { agentStatusControl }
             }
+            if !draft.hermesUseOwn {
+                SettingsRow("Workspace", caption: "~/LassoWorkspace: where the agent saves its files") {
+                    Button("Show in Finder") {
+                        let folder = HermesRuntime.workspaceDirectory
+                        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                        NSWorkspace.shared.activateFileViewerSelecting([folder])
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
             SettingsRow("Ask before risky commands", caption: "Recommended") {
                 SettingsSwitch(title: "", isOn: Binding(get: { !draft.hermesLetDecide },
                                                         set: { draft.hermesLetDecide = !$0 }))
