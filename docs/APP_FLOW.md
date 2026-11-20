@@ -845,6 +845,18 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **One Keychain prompt per update, not one per key; Settings opens on the first click.** Inspected the
+  real login Keychain: all 13 Lasso items had their access list open to any app (the 0.16 fix), yet
+  each carried a partition list of `cdhash:` values, one per build the user had approved. Lasso's
+  self-signed certificate has no Team ID (tested: not even with an OU), so macOS locks an item to the
+  exact build, and after every update each item asked again. The 0.16 test checked only the access
+  list, so it passed while the prompts went on. Now every key lives in one item, `lasso.vault` (JSON,
+  read once per launch, never written when it can't be read so a cancelled prompt can't wipe keys, and
+  a cancel isn't re-asked per key); old per-key items move in the first time each is read, then are
+  deleted. Tests count Keychain items. Settings from the menu bar: `NSApp.activate()` ran while the
+  menu was still closing, which macOS ignores for an accessory app, so the window opened behind the
+  front app; `SettingsWindow.open` now brings it forward again after the menu closes (lookup by the
+  scene's `settings` identifier, checked in the real window).
 - **Packages, build step 2: buttons and commands.** The `prompt` runner (the model chosen in Settings,
   `scope: .none` so no fallback provider; `{{text}}` fenced between `<<<LASSO-CONTENT>>>` markers with a
   rule not to follow instructions inside, a marker inside the text defused; secrets can't go into a

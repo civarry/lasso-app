@@ -25,6 +25,11 @@ struct SettingsWindowCaptureTests {
         try await Task.sleep(for: .seconds(3))
         opener.orderOut(nil)
         let window = try #require(NSApp.windows.first { $0.isVisible && $0.frame.width > 600 }, "Settings didn't open")
+        // The menu-bar fix brings this window forward by looking it up: it must find it.
+        print("[settings-window] identifier=\(window.identifier?.rawValue ?? "nil")")
+        #expect(SettingsWindow.window === window, "SettingsWindow.window can't find the Settings window")
+        SettingsWindow.bringForward()
+        #expect(window.isKeyWindow)
         window.makeKeyAndOrderFront(nil)
         print("[settings-window] number=\(window.windowNumber) title=\(window.title) toolbarStyle=\(window.toolbarStyle.rawValue) items=\(window.toolbar?.items.map(\.itemIdentifier.rawValue) ?? [])")
         try "\(window.windowNumber)".write(toFile: out, atomically: true, encoding: .utf8)
