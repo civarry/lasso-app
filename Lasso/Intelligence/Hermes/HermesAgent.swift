@@ -134,6 +134,8 @@ enum HermesAgent {
             Your working folder is \(HermesRuntime.workspaceDirectory.path), and commands start there. Put \
             files you make in it (a subfolder per task when there are several) unless the user names another \
             place, and give their full paths. Don't leave files in the home folder, Desktop or Documents unasked.
+            To see the screen or an image, use Lasso's look_at_screen and look_at_image tools. The clipboard is \
+            pbpaste and pbcopy; open apps, files and links with `open`.
             """
     }
 

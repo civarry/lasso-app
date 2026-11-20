@@ -109,6 +109,9 @@ struct SettingsView: View {
     @State private var loaded = false
     /// The pages opened in the current pane (back/forward in the toolbar).
     @State private var path: [SettingsRoute] = []
+    /// Always both columns. With the toggle removed, dragging the divider all the way left still hid
+    /// the sidebar, and nothing brought it back (the window remembered it).
+    @State private var columns: NavigationSplitViewVisibility = .all
     /// Pages left with Back, for Forward (cleared by opening a different page).
     @State private var forwardPath: [SettingsRoute] = []
     @State private var goingForward = false
@@ -182,7 +185,7 @@ struct SettingsView: View {
     private var isDirty: Bool { draft != saved || registryKeyValues != savedRegistryKeyValues }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columns) {
             sidebar
                 .navigationSplitViewColumnWidth(200)
                 // Not collapsible, like System Settings.
@@ -212,6 +215,8 @@ struct SettingsView: View {
             goingForward = false
         }
         .onChange(of: requestedRoute) { _, _ in consumeRequestedRoute() }
+        .onChange(of: columns) { _, now in if now != .all { columns = .all } }
+        .onAppear { columns = .all }
         .onChange(of: draft) { _, _ in scheduleApply() }
         .onChange(of: registryKeyValues) { _, _ in scheduleApply() }
         .onDisappear { flushApply() }

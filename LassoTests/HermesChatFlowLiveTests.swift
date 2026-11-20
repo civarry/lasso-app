@@ -1,3 +1,4 @@
+import AppKit
 import Testing
 import Foundation
 @testable import Lasso
@@ -158,6 +159,49 @@ struct HermesChatFlowLiveTests {
         let block = config().components(separatedBy: HermesProfileFiles.beginMarker).last ?? ""
         #expect(block.contains("default: \"\(model)\""))
         #expect(block.contains("base_url: \"http://127.0.0.1:"))
+    }
+
+    /// Lasso's own tools reach the agent through Hermes (MCP), and it uses them: it reads a number it
+    /// can only get by looking at the image. Needs TEST_RUNNER_LASSO_TEST_MLX=<model id>.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["LASSO_TEST_MLX"] != nil), .timeLimit(.minutes(15)))
+    func agentUsesLassosTools() async throws {
+        let restoreOwnHermes = usingLassosHermes()
+        defer { restoreOwnHermes() }
+        let model = try #require(ProcessInfo.processInfo.environment["LASSO_TEST_MLX"])
+        let intelligence = IntelligenceCoordinator.shared
+        let (providerWas, mlxWas, agentWas) = (intelligence.preferred, intelligence.mlxModel, chat.hermesSelected)
+        intelligence.preferred = .mlx
+        intelligence.mlxModel = model
+        chat.newChat()
+        let conversation = chat.active.id
+        let image = HermesRuntime.workspaceDirectory.appending(path: "lasso-tool-check.png")
+        defer {
+            chat.close(conversation)
+            if chat.hermesSelected != agentWas { chat.hermesSelected = agentWas }
+            intelligence.preferred = providerWas
+            intelligence.mlxModel = mlxWas
+            HermesRuntime.shared.stop()
+            try? FileManager.default.removeItem(at: image)
+        }
+        let drawn = NSImage(size: NSSize(width: 700, height: 160), flipped: false) { rect in
+            NSColor.white.setFill(); rect.fill()
+            ("Locker code 7342" as NSString).draw(at: NSPoint(x: 20, y: 60),
+                withAttributes: [.font: NSFont.systemFont(ofSize: 44), .foregroundColor: NSColor.black])
+            return true
+        }
+        let cg = try #require(drawn.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        try FileManager.default.createDirectory(at: HermesRuntime.workspaceDirectory, withIntermediateDirectories: true)
+        try #require(NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])).write(to: image)
+
+        if !chat.hermesSelected { chat.toggleAgent() }
+        chat.send(text: "Use your look_at_image tool on \(image.path) and tell me the locker code written in it.")
+        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil(600) { !chat.isStreaming || lastReply()?.approval != nil }
+        dump("lasso tool")
+        let reply = try #require(lastReply())
+        #expect(!reply.isError, "\(reply.text.prefix(200))")
+        #expect(reply.steps.contains { $0.text.hasPrefix("Looked at an image") }, "Lasso's tool wasn't used")
+        #expect(reply.text.contains("7342"))
     }
 
     /// Ollama through the Agent: Ollama's OpenAI endpoint ignores `num_ctx`, so without the Agent variant

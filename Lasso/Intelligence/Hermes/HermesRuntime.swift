@@ -148,7 +148,7 @@ final class HermesRuntime {
                 key = HermesProfileFiles.newKey()
                 HermesAgent.setManagedKey(key)
             }
-            try writeProfile(active ?? Launch(route: nil, letHermesDecide: HermesAgent.letHermesDecide), key: key, port: port)
+            try writeProfile(active ?? Launch(route: nil, letHermesDecide: HermesAgent.letHermesDecide), key: key, port: port, tools: nil)
             state = wasRunning && process?.isRunning == true ? .running : .stopped
             Log.chat.notice("hermes runtime · set up profile \(Self.profileName, privacy: .public)")
         } catch {
@@ -157,16 +157,18 @@ final class HermesRuntime {
         }
     }
 
-    private func writeProfile(_ launch: Launch, key: String, port: Int) throws {
+    private func writeProfile(_ launch: Launch, key: String, port: Int, tools: LassoToolsAccess?) throws {
         let dir = Self.profileDirectory
         let envURL = dir.appending(path: ".env"), configURL = dir.appending(path: "config.yaml")
         let env = (try? String(contentsOf: envURL, encoding: .utf8)) ?? ""
         try Self.writePrivate(HermesProfileFiles.filteredEnv(env, apiKey: key, port: port), to: envURL)
         let config = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
         try FileManager.default.createDirectory(at: Self.workspaceDirectory, withIntermediateDirectories: true)
+        try HermesLassoPlugin.install(in: dir, access: tools)
         try Self.writePrivate(HermesProfileFiles.withManagedBlock(config, port: port, route: launch.route,
                                                                    letHermesDecide: launch.letHermesDecide,
-                                                                   workspace: Self.workspaceDirectory),
+                                                                   workspace: Self.workspaceDirectory,
+                                                                   tools: tools),
                               to: configURL)
     }
 
@@ -226,8 +228,12 @@ final class HermesRuntime {
 
         state = .starting
         do {
-            // The route and approval mode are read when the gateway starts.
-            try writeProfile(wanted, key: HermesAgent.managedKey, port: port)
+            // The route and approval mode are read when the gateway starts. Lasso's own tools too: if
+            // their server can't start, the agent still runs, just without them.
+            let toolsURL = try? await LassoToolServer.shared.start()
+            try stillWanted()
+            let tools = toolsURL.map { LassoToolsAccess(url: $0.absoluteString, token: LassoToolServer.shared.token) }
+            try writeProfile(wanted, key: HermesAgent.managedKey, port: port, tools: tools)
             active = wanted
             Log.chat.notice("hermes runtime · starting (route: \(wanted.route?.label ?? "Hermes's model", privacy: .public))")
 
@@ -301,6 +307,7 @@ final class HermesRuntime {
         generation += 1
         startTask?.cancel()
         stopProcess(waiting: false)
+        LassoToolServer.shared.stop()
     }
 
     /// Lasso is quitting: same, but waits (up to 3 s) so nothing outlives it.
@@ -308,6 +315,7 @@ final class HermesRuntime {
         generation += 1
         startTask?.cancel()
         stopProcess(waiting: true)
+        LassoToolServer.shared.stop()
     }
 
     /// Signals only the process Lasso launched and its children (Hermes runs the gateway under a
@@ -620,7 +628,7 @@ enum HermesProfileFiles {
 
     /// `config` with Lasso's block (re)written at the end.
     static func withManagedBlock(_ config: String, port: Int, route: HermesRoute?, letHermesDecide: Bool = false,
-                                 workspace: URL? = nil) -> String {
+                                 workspace: URL? = nil, tools: LassoToolsAccess? = nil) -> String {
         var text = config.replacingOccurrences(of: "\r\n", with: "\n")
         if let start = text.range(of: beginMarker) {
             let end = text.range(of: endMarker, range: start.upperBound..<text.endIndex)
@@ -628,12 +636,22 @@ enum HermesProfileFiles {
         }
         while text.hasSuffix("\n\n") { text.removeLast() }
         if !text.isEmpty, !text.hasSuffix("\n") { text += "\n" }
-        return text + "\n" + managedBlock(port: port, route: route, letHermesDecide: letHermesDecide, workspace: workspace)
+        return text + "\n" + managedBlock(port: port, route: route, letHermesDecide: letHermesDecide, workspace: workspace, tools: tools)
     }
 
     /// `letHermesDecide`: the user's opt-out in Settings; Hermes's `smart` mode then decides flagged
     /// commands with its helper model (its hard blocklist still applies), and every reply says so.
-    static func managedBlock(port: Int, route: HermesRoute?, letHermesDecide: Bool = false, workspace: URL? = nil) -> String {
+    /// Hermes's tools the Agent gets in Lasso. Every tool's description is sent with every request (on a
+    /// local model, context and seconds), so only what's useful in Lasso's chat panel: commands, files,
+    /// the web and Hermes's memory. Left out: sub-agents, a second code runner, its own session search
+    /// (Lasso keeps the conversation), skill writing, to-do lists, scheduled jobs, the browser and image
+    /// generation (they need setup Lasso doesn't do), and its vision tool (it asks the model Hermes
+    /// thinks with, which here often can't see; Lasso's `look_at_image` uses the image model instead).
+    /// Measured with Hermes's own resolver: 17 tools, ~7.5k tokens, down to 10, ~3.9k.
+    static let hermesToolsets = ["terminal", "file", "web", "memory"]
+
+    static func managedBlock(port: Int, route: HermesRoute?, letHermesDecide: Bool = false, workspace: URL? = nil,
+                             tools: LassoToolsAccess? = nil) -> String {
         var lines = [beginMarker]
         // The model Hermes thinks with, for everything: replies, and its side tasks (titles, history
         // summaries), which follow `model:` rather than the per-request route. Lasso's choice, never a
@@ -669,6 +687,14 @@ enum HermesProfileFiles {
         for platform in messagingPlatforms {
             lines += ["  \(platform):", "    enabled: false"]
         }
+        // Lasso's own tools come in through its plugin (`HermesLassoPlugin`), turned on here: plugins
+        // are opt-in, and a listed toolset is the only way one reaches the API server's agent.
+        let toolsets = hermesToolsets + (tools == nil ? [] : [HermesLassoPlugin.toolset])
+        lines += ["platform_toolsets:",
+                  "  api_server: [\(toolsets.map(quoted).joined(separator: ", "))]"]
+        if tools != nil {
+            lines += ["plugins:", "  enabled: [\(quoted(HermesLassoPlugin.name))]"]
+        }
         lines.append(endMarker)
         return lines.joined(separator: "\n") + "\n"
     }
@@ -683,4 +709,10 @@ enum HermesProfileFiles {
     private static func lineEnd(in text: String, after index: String.Index) -> String.Index {
         text[index...].firstIndex(of: "\n").map { text.index(after: $0) } ?? text.endIndex
     }
+}
+
+/// Where Hermes reaches Lasso's own tools, written into the profile for one launch.
+struct LassoToolsAccess: Equatable, Sendable {
+    var url: String
+    var token: String
 }

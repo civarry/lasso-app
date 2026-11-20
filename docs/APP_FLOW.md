@@ -620,6 +620,22 @@ The **Agent** button in the message box (next to the web globe) hands each turn 
 plans, uses its own tools and answers. It is a mode of the same chat, not another model: the header
 still shows the Lasso model, and the agent thinks with it.
 
+**Lasso's tools for the agent** (`LassoAgentTools`, `LassoToolServer`, `HermesLassoPlugin`). Two tools,
+on purpose: `look_at_screen` (`area: select` opens Lasso's capture overlay with a "the agent wants to see
+part of your screen" hint and returns the dragged area, Esc returns "cancelled"; `area: screen` grabs
+the display with the key window) and `look_at_image` (a path, relative ones in the workspace). Both
+return Apple's on-device text recognition plus a description from the image model in Settings (what
+the user has; nothing new is downloaded), and screen grabs are saved to `~/LassoWorkspace/Screenshots`.
+They're served MCP-style on loopback (fresh port and token per launch); Hermes reaches them through a
+plugin Lasso writes into its own profile on every start (`plugins/lasso`, the address and token in an
+owner-only `access.json`), because the Homebrew Hermes lacks the `mcp` package. Anything a command
+already does (clipboard via pbcopy/pbpaste, `open`) is left to the terminal and named in the
+instructions instead of costing a tool. **Context budget**: the managed block lists the API server's
+toolsets (`platform_toolsets.api_server: terminal, file, web, memory, lasso`); delegation,
+code_execution, session_search, skills, todo, cronjob, browser, image_gen and vision are left out.
+Measured on Qwen3.5-9B MLX: the agent's fixed setup went from 12.7k tokens (38 s cold) to 6.7k with
+Lasso's tools (about 20 s).
+
 **Lasso's own Hermes** (`HermesRuntime`, the default). Hermes is the user's install (Homebrew; ~500 MB
 with Python and Node, so never bundled). Set up (Settings ▸ Intelligence ▸ Agent, or the first time
 Agent is turned on) runs `hermes profile create lasso-app` (fresh, not `--clone`: nothing of the
@@ -823,6 +839,13 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Settings sidebar can't be lost.** With the toggle removed, dragging the divider all the way left still
+  hid the sidebar and nothing brought it back; the split view's visibility is now bound and held at
+  `.all` (`SettingsSidebarTests` collapses it in a real window: stays shut before, comes back now).
+- **The Agent can see, with half the setup.** Lasso's own tools reach its Hermes through a profile plugin
+  (`look_at_screen`, `look_at_image`; see Agent), and its Hermes tools are trimmed to commands, files,
+  web and memory: the cold setup a local model reads fell from 12.7k to 6.7k tokens. Live-checked on
+  MLX: the agent read a number from an image only `look_at_image` could see.
 - **Agent workspace, scroll-follow, smarter dictation stop.** Lasso's agent works in `~/LassoWorkspace`
   (`HermesRuntime.workspaceDirectory`): the managed block sets `terminal.cwd` (Hermes's commands start
   there and its file tools resolve relative paths against it; Hermes defaulted to the home folder), the

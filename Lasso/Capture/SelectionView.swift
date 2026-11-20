@@ -43,6 +43,18 @@ struct CaptureSessionView: View {
                     .contentShape(Rectangle())
                     .gesture(selectionGesture)
 
+                // The Agent asked for part of the screen: say so, or the overlay looks like it opened
+                // by itself.
+                if coordinator.isSelectingForAgent, liveRect == nil {
+                    Text("The agent wants to see part of your screen. Drag around it, or press Esc.")
+                        .font(.callout.weight(.medium))
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(.regularMaterial, in: Capsule())
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 48)
+                        .allowsHitTesting(false)
+                }
+
                 // Anchored UI on the active display once a selection is committed.
                 if coordinator.activeDisplayID == shot.id, let r = coordinator.committedRect {
                     if coordinator.translating, let ctx = coordinator.context {
