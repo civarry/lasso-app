@@ -85,9 +85,11 @@ struct PackageValidatorTests {
 
     @Test func partsNotBuiltYetAreRefusedClearly() {
         let prompt = messages(Self.search.replacingOccurrences(of: "\"run\": {\"http\"", with: "\"run\": {\"prompt\": \"x\", \"http\""))
-        #expect(prompt.contains("commands[0].run.prompt: This version of Lasso can't run \"prompt\" commands yet."))
-        let toolbar = messages(Self.search.replacingOccurrences(of: "\"surfaces\": [\"search\"]", with: "\"surfaces\": [\"search\", \"toolbar\"]"))
-        #expect(toolbar.contains { $0.contains("can't show commands on \"toolbar\" yet") })
+        #expect(prompt.contains("commands[0].run: Use one runner, not http and prompt."))
+        let tool = messages(Self.search.replacingOccurrences(of: "\"surfaces\": [\"search\"]", with: "\"surfaces\": [\"tool\"]"))
+        #expect(tool.contains { $0.contains("can't show commands on \"tool\" yet") })
+        let script = messages(Self.search.replacingOccurrences(of: "\"run\": {\"http\"", with: "\"run\": {\"script\": {}, \"http\""))
+        #expect(script.contains("commands[0].run.script: This version of Lasso can't run \"script\" commands yet."))
         let patches = messages(Self.search.replacingOccurrences(of: "\"hosts\":", with: "\"patches\": [], \"hosts\":"))
         #expect(patches.contains("patches: This version of Lasso can't apply patches yet."))
     }
@@ -141,7 +143,7 @@ struct PackageHTTPTests {
              "headers": {"X-Key": "{{settings.key}}"}, "json": {"query": "{{query}}", "n": 6}}
             """))
         let values = ["settings.server": server.base, "settings.key": "k-123", "query": tricky]
-        let request = try PackageHTTP.request(command.run, values: values)
+        let request = try PackageHTTP.request(command.http!, values: values)
         _ = try await PackageHTTP.send(request, allowed: PackageHTTP.allowedHosts(package, values: values), localOnly: false)
         let got = try #require(server.requests.first)
         #expect(got.path.removingPercentEncoding == "/p/\(tricky)")
@@ -159,7 +161,7 @@ struct PackageHTTPTests {
         let (_, form) = try run(local(http: """
             {"method": "POST", "url": "{{settings.server}}/f", "form": {"q": "{{query}}"}}
             """))
-        _ = try await PackageHTTP.send(try PackageHTTP.request(form.run, values: values),
+        _ = try await PackageHTTP.send(try PackageHTTP.request(form.http!, values: values),
                                        allowed: PackageHTTP.allowedHosts(package, values: values), localOnly: false)
         let lastRequest = try #require(server.requests.last)
         let formBody = String(decoding: lastRequest.body, as: UTF8.self)
@@ -171,7 +173,7 @@ struct PackageHTTPTests {
             {"url": "{{settings.server}}/h", "headers": {"X-Key": "{{settings.key}}"}}
             """))
         #expect(throws: PackageHTTP.RunError.headerLineBreak("X-Key")) {
-            try PackageHTTP.request(command.run, values: ["settings.server": "http://127.0.0.1:9", "settings.key": "a\r\nInjected: 1"])
+            try PackageHTTP.request(command.http!, values: ["settings.server": "http://127.0.0.1:9", "settings.key": "a\r\nInjected: 1"])
         }
     }
 
@@ -181,7 +183,7 @@ struct PackageHTTPTests {
         let (package, command) = try run(local(http: "{\"url\": \"{{settings.server}}/r\"}"))
         let values = ["settings.server": server.base, "query": "x"]
         // Before connecting: a host it didn't declare.
-        var request = try PackageHTTP.request(command.run, values: values)
+        var request = try PackageHTTP.request(command.http!, values: values)
         request.url = URL(string: "http://localhost:\(server.port)/other")
         await #expect(throws: PackageHTTP.RunError.undeclaredHost("localhost")) {
             _ = try await PackageHTTP.send(request, allowed: PackageHTTP.allowedHosts(package, values: values), localOnly: false)
@@ -190,7 +192,7 @@ struct PackageHTTPTests {
         // A redirect to one isn't followed.
         server.answer(.init(status: 302, body: Data(), location: "http://localhost:\(server.port)/stolen"))
         await #expect(throws: PackageHTTP.RunError.undeclaredHost("localhost")) {
-            _ = try await PackageHTTP.send(try PackageHTTP.request(command.run, values: values),
+            _ = try await PackageHTTP.send(try PackageHTTP.request(command.http!, values: values),
                                            allowed: PackageHTTP.allowedHosts(package, values: values), localOnly: false)
         }
         #expect(server.requests.map(\.path) == ["/r"], "the redirect was followed")
@@ -200,7 +202,7 @@ struct PackageHTTPTests {
         let (package, command) = try run(PackageValidatorTests.search)
         let values = ["settings.key": "k", "query": "x"]
         await #expect(throws: PackageHTTP.RunError.localOnly) {
-            _ = try await PackageHTTP.send(try PackageHTTP.request(command.run, values: values),
+            _ = try await PackageHTTP.send(try PackageHTTP.request(command.http!, values: values),
                                            allowed: PackageHTTP.allowedHosts(package, values: values), localOnly: true)
         }
         // A server on this Mac keeps working.
@@ -209,7 +211,7 @@ struct PackageHTTPTests {
         server.answer(.init(body: Data("{\"items\": []}".utf8)))
         let (lp, lc) = try run(local(http: "{\"url\": \"{{settings.server}}/s\"}"))
         let lv = ["settings.server": server.base, "query": "x"]
-        _ = try await PackageHTTP.send(try PackageHTTP.request(lc.run, values: lv), allowed: PackageHTTP.allowedHosts(lp, values: lv), localOnly: true)
+        _ = try await PackageHTTP.send(try PackageHTTP.request(lc.http!, values: lv), allowed: PackageHTTP.allowedHosts(lp, values: lv), localOnly: true)
         #expect(server.requests.count == 1)
     }
 
@@ -220,13 +222,13 @@ struct PackageHTTPTests {
         let values = ["settings.server": server.base, "query": "x"]
         server.answer(.init(body: Data(("{\"items\": [\"" + String(repeating: "x", count: 3 * 1024 * 1024) + "\"]}").utf8)))
         await #expect(throws: PackageHTTP.RunError.tooLarge) {
-            _ = try await PackageHTTP.send(try PackageHTTP.request(command.run, values: values),
+            _ = try await PackageHTTP.send(try PackageHTTP.request(command.http!, values: values),
                                            allowed: PackageHTTP.allowedHosts(package, values: values), localOnly: false)
         }
         let long = String(repeating: "t", count: 300), snippet = String(repeating: "s", count: 900)
         let items = (0..<5).map { ["t": "\(long)\($0)", "u": $0 == 0 ? "javascript:alert(1)" : "https://e.com/\($0)", "s": snippet] }
         let json: [String: Any] = ["items": items]
-        let map = try #require(command.run.results)
+        let map = try #require(command.http!.results)
         let hits = PackageHTTP.results(json, map: map, source: "Local")
         #expect(hits.count == 3)
         #expect(hits.allSatisfy { $0.title.count == 200 && ($0.snippet?.count ?? 0) == 500 && $0.source == "Local" })
@@ -248,7 +250,7 @@ struct PackageHTTPTests {
     @Test func tavilyAndSerpApiSendTheSameRequests() throws {
         let tavilyData = try #require(BundledPackages.data("tavily"))
         let tavily = try #require(PackageValidator.validate(tavilyData).package)
-        let t = try PackageHTTP.request(tavily.commands[0].run, values: ["settings.key": "tvly-k", "query": "mars rover"])
+        let t = try PackageHTTP.request(tavily.commands[0].http!, values: ["settings.key": "tvly-k", "query": "mars rover"])
         #expect(t.url?.absoluteString == "https://api.tavily.com/search")
         #expect(t.httpMethod == "POST")
         #expect(t.value(forHTTPHeaderField: "Authorization") == "Bearer tvly-k")
@@ -258,19 +260,19 @@ struct PackageHTTPTests {
 
         let serpData = try #require(BundledPackages.data("serpapi"))
         let serp = try #require(PackageValidator.validate(serpData).package)
-        let s = try PackageHTTP.request(serp.commands[0].run, values: ["settings.key": "sk", "query": "mars rover"])
+        let s = try PackageHTTP.request(serp.commands[0].http!, values: ["settings.key": "sk", "query": "mars rover"])
         let sURL = try #require(s.url)
         let items = Set(URLComponents(url: sURL, resolvingAgainstBaseURL: false)?.queryItems ?? [])
         #expect(s.url?.host == "serpapi.com" && s.url?.path == "/search.json" && s.httpMethod == "GET")
         #expect(items == [URLQueryItem(name: "engine", value: "google"), URLQueryItem(name: "num", value: "8"),
                           URLQueryItem(name: "q", value: "mars rover"), URLQueryItem(name: "api_key", value: "sk")])
         // Same limits as the old quota table, and reserve below 5 results.
-        #expect(tavily.limits == PackageLimits(daily: 40, monthly: 960) && tavily.commands[0].run.role == .primary)
-        #expect(serp.limits == PackageLimits(daily: 10, monthly: 240) && serp.commands[0].run.role == .reserve)
+        #expect(tavily.limits == PackageLimits(daily: 40, monthly: 960) && tavily.commands[0].http!.role == .primary)
+        #expect(serp.limits == PackageLimits(daily: 10, monthly: 240) && serp.commands[0].http!.role == .reserve)
         #expect(WebSourcesProvider.reserveThreshold == 5)
         // Results map the same fields the Swift code read.
         let hits = PackageHTTP.results(["results": [["title": "T", "url": "https://a.com", "content": "C"]]],
-                                       map: tavily.commands[0].run.results!, source: tavily.name)
+                                       map: tavily.commands[0].http!.results!, source: tavily.name)
         #expect(hits.first?.title == "T" && hits.first?.snippet == "C" && hits.first?.source == "Tavily")
     }
 }

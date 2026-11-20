@@ -65,5 +65,17 @@ struct PackagesSnapshotTests {
             .replacingOccurrences(of: "\"author\": \"Me\"", with: "\"author\": \"Me\", \"autor\": 1")
         try await snap("sheet-problems", width: 480, height: 520, sheet((Data(bad.utf8), .pasted), nil))
         try await snap("sheet-not-json", width: 480, height: 300, sheet((Data("{\"lasso\": 1,,}".utf8), .pasted), nil))
+
+        // Step 2: a package of buttons and commands.
+        let study = PackageCommandTests.study
+        let hotkeyCmd = study.replacingOccurrences(of: "\"id\": \"study-tools\"", with: "\"id\": \"study-hotkey\"")
+            .replacingOccurrences(of: "\"name\": \"Study tools\"", with: "\"name\": \"Rewrite\"")
+            .replacingOccurrences(of: "\"surfaces\": [\"toolbar\", \"slash\"]", with: "\"surfaces\": [\"hotkey\"]")
+            .replacingOccurrences(of: "\"when\": {\"minLength\": 40}, \"output\": \"markdown\"", with: "\"output\": \"replace\"")
+        try await snap("sheet-review-study", width: 480, height: 700, sheet((Data(study.utf8), .file), nil))
+        try store.install(Data(study.utf8), origin: .file)
+        _ = hotkeyCmd
+        try await snap("hub-commands", height: 760, hub())
+        try await snap("page-study", height: 1000, PackagePage(id: "study-tools", localOnly: false, removed: {}))
     }
 }

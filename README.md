@@ -112,8 +112,11 @@ limits; keys stay in your Keychain and go only to that package's hosts. Each pac
 with its key, how much of its free tier you've used, and a Test button. Local-only mode pauses packages
 that reach off your Mac.
 
-This version runs search packages. Buttons, chat commands, tools for the model and the Agent,
-Shortcuts and scripts are planned in the same format: [`docs/PACKAGES.md`](docs/PACKAGES.md) is the
+Packages can also add commands: a button in the capture toolbar, a `/command` in chat, a "Send to"
+target on captures and chat replies, or a hotkey that runs on text highlighted in any app (and can
+paste the result back over it). A command runs a prompt on the model you chose in Lasso, never another
+one, or calls a web service. Tools for the model and the Agent, Shortcuts and scripts are planned in
+the same format: [`docs/PACKAGES.md`](docs/PACKAGES.md) is the
 full design, and [`docs/CONTRIBUTING-PACKAGES.md`](docs/CONTRIBUTING-PACKAGES.md) shows how to make
 one, with a working example, the rules Lasso checks, and a JSON Schema for your editor.
 
@@ -126,9 +129,10 @@ Mac are the optional web lookup in Identify, the optional Google Lens search
 the latest version a few times a day and sends nothing but Lasso's version.
 There's a **Local-only mode** that forces a local model and blocks every
 incidental network call. Cloud models (OpenAI, Groq, Anthropic, custom) are
-supported too, but strictly opt-in. API keys live in your macOS Keychain, encrypted;
-other apps you run can read them without a prompt (that's what lets updates
-install without asking for your Keychain password once per key).
+supported too, but strictly opt-in. API keys live in your macOS Keychain, encrypted,
+all in one item. Lasso isn't signed with an Apple developer ID, so macOS ties that
+item to each version: after an update it asks for your password once (choose
+Always Allow), not once per key.
 
 <p align="center"><img src="screenshots/privacy.png" alt="Runs on your Mac — nothing leaves unless you say so"></p>
 

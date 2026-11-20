@@ -59,6 +59,8 @@ final class PackageStore {
         var origin: Origin
         /// The manifest the user approved, so a change on disk can be reviewed against it.
         var approved: Data?
+        /// Commands the user switched off (the package's other commands keep working).
+        var disabledCommands: [String]?
     }
 
     private var recordsKey: String { "packages.records" }
@@ -99,7 +101,14 @@ final class PackageStore {
         }
         installed = found
         broken = problems
-        PackageRegistry.shared.update(found.filter(\.enabled).map(\.package), settings: settingValues(for:))
+        let active = found.filter(\.enabled).map { item -> LassoPackage in
+            var package = item.package
+            let off = Set(records[item.id]?.disabledCommands ?? [])
+            package.commands.removeAll { off.contains($0.id) }
+            return package
+        }
+        PackageRegistry.shared.update(active, settings: settingValues(for:))
+        NotificationCenter.default.post(name: PackageStore.didChange, object: nil)
     }
 
     // MARK: Install, remove, on/off
@@ -155,6 +164,7 @@ final class PackageStore {
     /// and reinstalling can't spend a free tier twice; files it saved to the workspace are the user's.
     func remove(_ id: String) {
         let package = installed.first { $0.id == id }?.package
+        if let package { PackageHotkeys.clear(package) }
         for setting in package?.settings ?? [] {
             if setting.kind == .secret { Keychain.delete(secretAccount(id, setting.id)) }
             else { defaults.removeObject(forKey: settingKey(id, setting.id)) }
@@ -196,6 +206,24 @@ final class PackageStore {
     func manifestData(_ id: String) -> Data? { try? Data(contentsOf: manifestURL(id)) }
 
     func isInstalled(_ id: String) -> Bool { installed.contains { $0.id == id } }
+
+    /// Posted after packages change (hotkeys re-register, menus rebuild).
+    static let didChange = Notification.Name("lasso.packages.didChange")
+
+    func isCommandEnabled(_ id: String, _ command: String) -> Bool {
+        !(records[id]?.disabledCommands ?? []).contains(command)
+    }
+
+    func setCommandEnabled(_ id: String, _ command: String, _ on: Bool) {
+        var records = self.records
+        guard var record = records[id] else { return }
+        var off = Set(record.disabledCommands ?? [])
+        if on { off.remove(command) } else { off.insert(command) }
+        record.disabledCommands = off.sorted()
+        records[id] = record
+        self.records = records
+        reload()
+    }
 
     // MARK: Settings
 

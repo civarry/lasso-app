@@ -51,7 +51,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .toolbar: "Choose which actions appear and in what order."
         case .models: "The AI models Lasso uses for text, images and memory."
         case .agent: "Lets chat search the web, read files and run commands."
-        case .packages: "Add search services to Lasso from a file or pasted code."
+        case .packages: "Add search services, buttons and commands to Lasso from a file or pasted code."
         case .privacy: "Control what leaves your Mac."
         }
     }
@@ -267,8 +267,27 @@ enum SettingsWindow {
 
     /// Opens it (or brings it forward) in front of other apps: Lasso is a menu bar app with no Dock icon,
     /// so it has to activate itself for its window to come to the front.
+    ///
+    /// From the menu bar menu this ran while the menu was still closing: macOS ignores an app's request
+    /// to come forward at that moment, so the window opened behind the app in front, and it took two or
+    /// three tries for one to land after the menu had gone. So it's brought forward again once the menu
+    /// has closed, and once more a moment later.
     @MainActor static func open(with openWindow: OpenWindowAction) {
-        NSApp.activate()
+        NSApp.activate(ignoringOtherApps: true)
         openWindow(id: id)
+        DispatchQueue.main.async { bringForward() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { bringForward() }
+    }
+
+    /// The Settings window, once SwiftUI has made it.
+    @MainActor static var window: NSWindow? {
+        NSApp.windows.first { ($0.identifier?.rawValue ?? "").hasPrefix(id) && $0.isVisible }
+    }
+
+    @MainActor static func bringForward() {
+        guard let window else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
     }
 }

@@ -1,10 +1,16 @@
 # Making a Lasso package
 
-A package adds something to Lasso without changing Lasso's code. This version of Lasso runs **search
-packages**: a web service that Lasso asks when it searches the web (in chat, Identify and the Agent).
-Buttons, chat commands, tools for the model, Shortcuts and scripts come in later steps; they're
-described in [PACKAGES.md](PACKAGES.md), which is the full format and the source of truth when this
-guide and it disagree.
+A package adds something to Lasso without changing Lasso's code. This version of Lasso runs:
+
+- **Search packages**: a web service Lasso asks when it searches the web (in chat, Identify and the
+  Agent).
+- **Commands**: a button in the capture toolbar, a `/command` in chat, a "Send to" target, or a hotkey
+  on text highlighted in any app. A command either runs a prompt on the model the user chose in Lasso,
+  or calls a web service.
+
+Tools for the model, Shortcuts and scripts come in later steps; they're described in
+[PACKAGES.md](PACKAGES.md), which is the full format and the source of truth when this guide and it
+disagree.
 
 A package is one JSON file, `<id>.lasso.json`. You write it, people add it in **Settings › Packages ›
 +** (drop the file, choose it, or paste its text), and Lasso shows them exactly what it does before
@@ -129,6 +135,69 @@ and the reason. They're here so you don't have to find them by trial.
 - When the user turns on local-only mode, packages that reach off the Mac are paused automatically.
   A `server` package pointed at `localhost` keeps working. You don't need to do anything for this.
 
+## Commands: buttons, /commands, Send to and hotkeys
+
+A command says **where it appears** (`surfaces`), **what it takes** (`input`), **how it runs** (`run`)
+and **what happens with the result** (`output`). This one adds an "Explain simply" button to the capture
+toolbar and `/explain` to chat, and runs on the user's own model, so it works offline when that model
+is on their Mac:
+
+```json
+{
+  "lasso": 1, "id": "study-tools", "version": "1.0.0", "name": "Study tools",
+  "summary": "Explain anything you lasso, simply.", "author": "Your name", "category": "writing",
+  "commands": [ {
+    "id": "explain", "title": "Explain simply", "symbol": "lightbulb",
+    "surfaces": ["toolbar", "slash"], "input": ["text"], "when": { "minLength": 40 },
+    "run": { "prompt": "Explain this so a 10-year-old understands it, in at most 5 sentences:\n\n{{text}}" },
+    "output": "markdown"
+  } ]
+}
+```
+
+**Where it appears**
+- `toolbar`: a button after Lasso's own in the capture toolbar, running on the text Lasso read from
+  the capture. People reorder or hide it in Settings › Toolbar like any other.
+- `slash`: `/<id>` in chat, on the text typed after it or the last reply. Lasso's own names (`new`,
+  `clear`, `copy`, `about`, `web`, `help`) are taken; if two packages share an id, both become
+  `/<package-id>-<id>`.
+- `send`: an entry in "Send to", on a capture and in a chat reply's ⋯ menu. Its output must be
+  `notify`, `copy` or `open`.
+- `hotkey`: listed in Settings › Keyboard Shortcuts under Highlighted text; the user sets a key that runs
+  it on the text highlighted in any app. Your package never picks the key.
+
+**How it runs**
+- `prompt` runs on the model the user chose in Settings › Models, never another one. `{{text}}` is
+  given to the model between markers that tell it not to follow instructions inside, so captured text
+  can't take over your prompt. A `secret` setting can't go into a prompt. Up to 4,000 characters, plus an
+  optional `system` of 1,000.
+- `http` calls a web service, under the same rules as search packages. `answer` is the path to the
+  value to use from the JSON it returns.
+
+**What happens with the result**
+- `markdown`: shown in a result card on a capture, as a reply in chat.
+- `copy`: copied to the clipboard.
+- `replace`: pasted over the highlighted text. Only for `hotkey` commands; one ⌘Z undoes it.
+- `open`: a page opened in the browser. Only from `http`, where the address is your template on a
+  declared host; Lasso builds it and the browser opens it, without Lasso fetching it.
+- `notify`: a short confirmation, the `answer` when it's 60 characters or less, otherwise "Done".
+
+**When it shows (`when`)**, all optional: `match` (a regular expression), `detects` (`link`, `email`,
+`phone`, `address`, `date`, `flight`, `tracking`, `money`), `apps` (bundle ids), `minLength`,
+`maxLength`, `hasImage`. In the toolbar a button whose `match`, `detects` or `apps` fails is hidden, and
+one that's only too short or long is greyed. In chat there's no source app, so `apps` never holds there.
+For example, a button that opens parcel tracking only when there's a tracking number:
+
+```json
+"surfaces": ["toolbar"], "input": ["text"], "when": { "detects": ["tracking"] }, "output": "open",
+"run": { "http": { "url": "https://parcelsapp.com/en/tracking/{{text}}" } }
+```
+
+with `"hosts": ["parcelsapp.com"]` at the top.
+
+**Not yet:** images as input, tools for the model and the Agent, Shortcuts, scripts, and files as
+output. A package using one is refused with "This version of Lasso can't … yet".
+
 ## Editor help
 
 [`packages/schema-v1.json`](packages/schema-v1.json) is a JSON Schema for the format. Point your editor
@@ -157,4 +226,7 @@ before it's listed.
 - [ ] Results have titles, links that open the right page, and snippets where the service has them.
 - [ ] A wrong key gives a clear failure on the Test button, not a silent empty list.
 - [ ] `limits` sit under the free tier; `role` is `reserve` if the tier is small.
+- [ ] Commands: each one runs from every place it appears, and its `when` shows it where it makes sense
+      and nowhere else.
+- [ ] A `replace` command's prompt asks for only the rewritten text (no "Here's your text:").
 - [ ] `version` raised since the last copy you shared.

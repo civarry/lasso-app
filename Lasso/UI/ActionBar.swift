@@ -25,6 +25,9 @@ struct ActionBar: View {
     /// Max labeled pills shown inline before the rest collapse into "More" (Comfortable only). Keeps
     /// the bar bounded instead of growing to the screen edge. Tunable.
     private static let maxLabeled = 6
+    /// Compact had no cap while the set was fixed; package buttons can be many, so past 12 icons the
+    /// rest (packages come last) go into "…".
+    private static let maxCompact = 12
 
     var body: some View {
         let items = barItems()
@@ -38,7 +41,7 @@ struct ActionBar: View {
             order: ActionBarPreferences.order(),
             hidden: ActionBarPreferences.hidden(),
             hideUnavailable: hideUnavailable,
-            maxMain: style == .compact ? nil : Self.maxLabeled)
+            maxMain: style == .compact ? Self.maxCompact : Self.maxLabeled)
         let visible = arrangement.main.compactMap { byID[$0.id] }
         let overflow = arrangement.overflow.compactMap { byID[$0.id] }
         let primaryID = visible.first(where: { !$0.disabled })?.id
@@ -54,11 +57,16 @@ struct ActionBar: View {
                                Self.band(item.priority) != Self.band(visible[idx - 1].priority) {
                                 Divider().frame(height: 18)
                             }
-                            ActionPill(title: item.title, systemImage: item.systemImage, style: style,
-                                       index: idx, disabled: item.disabled, help: item.help,
-                                       isPrimary: item.id == primaryID,
-                                       tint: colorful ? Self.tint(for: item.id) : nil,
-                                       action: item.run)
+                            if let menu = item.menu {
+                                MenuPill(title: item.title, systemImage: item.systemImage, items: menu,
+                                         style: style, index: idx, disabled: item.disabled, help: item.help)
+                            } else {
+                                ActionPill(title: item.title, systemImage: item.systemImage, style: style,
+                                           index: idx, disabled: item.disabled, help: item.help,
+                                           isPrimary: item.id == primaryID,
+                                           tint: colorful ? Self.tint(for: item.id) : nil,
+                                           action: item.run)
+                            }
                         }
                         // Only present when something is actually behind it: hidden actions, or the
                         // tail past the Comfortable cap. An always-there "…" opening an empty menu
@@ -98,10 +106,10 @@ struct ActionBar: View {
         .accessibilityLabel("Close")
     }
 
-    /// Priority band an action belongs to, for grouping: 0 = text/data, 1 = AI, 2 = image/utility.
-    /// Mirrors the `relevancePriority` ranges used across the action set.
+    /// Priority band an action belongs to, for grouping: 0 = text/data, 1 = AI, 2 = image/utility,
+    /// 3 = packages. Mirrors the `relevancePriority` ranges used across the action set.
     fileprivate static func band(_ priority: Int) -> Int {
-        priority < 16 ? 0 : (priority < 50 ? 1 : 2)
+        priority < 16 ? 0 : (priority < 50 ? 1 : (priority < 70 ? 2 : 3))
     }
 
     /// Per-action color for the optional "Color-code actions" mode — a distinct hue per feature so
@@ -143,7 +151,30 @@ struct ActionBar: View {
             items.append(BarItem(id: builtIn.id, title: builtIn.title, systemImage: builtIn.systemImage,
                                  priority: builtIn.priority, disabled: false, help: nil, run: run))
         }
+        if let sendTo = sendToItem() { items.append(sendTo) }
         return items
+    }
+
+    /// "Send to": a menu of the package targets that apply to this capture. Absent when none do.
+    private func sendToItem() -> BarItem? {
+        guard let ctx = coordinator.context, let text = ctx.ocrText, !text.isEmpty else { return nil }
+        let registry = PackageRegistry.shared
+        let targets = registry.commands(for: .send).filter { target in
+            target.command.when?.holds(text: text, detected: ctx.packageKinds, bundleID: ctx.sourceBundleID, hasImage: false) ?? true
+        }
+        guard !targets.isEmpty else { return nil }
+        let entry = ActionBarCatalog.sendTo
+        let menu = targets.map { target in
+            let reason = registry.unavailableReason(target.entry, target.command)
+            return BarItem(id: PackageCommandAction.id(target.entry.package.id, target.command.id), title: target.command.title,
+                           systemImage: target.command.symbol ?? target.entry.package.iconSymbol ?? "paperplane",
+                           priority: entry.priority, disabled: reason != nil, help: reason) {
+                coordinator.send(text, to: target.entry, target.command)
+            }
+        }
+        let allOff = menu.allSatisfy(\.disabled)
+        return BarItem(id: entry.id, title: entry.title, systemImage: entry.systemImage, priority: entry.priority,
+                       disabled: allOff, help: allOff ? menu.first?.help : nil, menu: menu) {}
     }
 }
 
@@ -156,7 +187,56 @@ private struct BarItem: Identifiable {
     let priority: Int
     let disabled: Bool
     let help: String?
+    /// Set for an entry that opens a menu (Send to) instead of running.
+    var menu: [BarItem]?
     let run: () -> Void
+}
+
+/// A pill that opens a menu of targets (Send to). Looks like its neighbours; the menu is native.
+private struct MenuPill: View {
+    let title: String
+    let systemImage: String
+    let items: [BarItem]
+    var style: ActionBarStyle = .labeled
+    var index: Int = 0
+    var disabled = false
+    var help: String?
+    @State private var hovering = false
+    @State private var shown = false
+
+    var body: some View {
+        Menu {
+            ForEach(items) { item in
+                Button { item.run() } label: { Label(item.title, systemImage: item.systemImage) }
+                    .disabled(item.disabled)
+                    .help(item.help ?? "")
+            }
+        } label: {
+            Group {
+                if style == .compact {
+                    Image(systemName: systemImage).frame(minWidth: 22, minHeight: 18)
+                } else {
+                    Label(title, systemImage: systemImage).frame(minHeight: 18)
+                }
+            }
+            .font(.callout)
+            .padding(.horizontal, style == .compact ? 8 : 10).padding(.vertical, 7)
+            .background(.white.opacity(disabled ? 0.10 : hovering ? 0.20 : 0.10),
+                        in: RoundedRectangle(cornerRadius: Theme.pillRadius))
+            .opacity(disabled ? 0.4 : 1)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(disabled)
+        .help(help ?? title)
+        .accessibilityLabel(title)
+        .opacity(shown ? 1 : 0)
+        .offset(y: shown ? 0 : 6)
+        .onAppear { withAnimation(.easeOut(duration: 0.22).delay(Double(index) * 0.04)) { shown = true } }
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+    }
 }
 
 private struct ActionPill: View {
@@ -249,8 +329,18 @@ private struct MorePill: View {
                 if idx > 0, ActionBar.band(item.priority) != ActionBar.band(items[idx - 1].priority) {
                     Divider()
                 }
-                Button { item.run() } label: { Label(item.title, systemImage: item.systemImage) }
+                if let menu = item.menu {
+                    Menu {
+                        ForEach(menu) { sub in
+                            Button { sub.run() } label: { Label(sub.title, systemImage: sub.systemImage) }
+                                .disabled(sub.disabled)
+                        }
+                    } label: { Label(item.title, systemImage: item.systemImage) }
                     .disabled(item.disabled)
+                } else {
+                    Button { item.run() } label: { Label(item.title, systemImage: item.systemImage) }
+                        .disabled(item.disabled)
+                }
             }
         } label: {
             Group {

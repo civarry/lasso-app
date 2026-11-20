@@ -1,4 +1,5 @@
 import AppKit
+import KeyboardShortcuts
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -47,9 +48,30 @@ struct PackageStatus: Equatable {
         if let monthly = package.limits?.monthly, month >= monthly {
             return PackageStatus(text: "Monthly limit reached. Back on \(firstOfNextMonth(now))", needsAction: false)
         }
-        let role = package.commands.contains { $0.run.role == .primary } ? "Every search" : "When results are thin"
+        guard package.commands.contains(where: { $0.surfaces.contains(.search) }) else {
+            return PackageStatus(text: surfacesSummary(package), needsAction: false)
+        }
+        let role = package.commands.contains { $0.http?.role == .primary } ? "Every search" : "When results are thin"
         if let monthly = package.limits?.monthly { return PackageStatus(text: "\(role) · \(month) of \(monthly) this month", needsAction: false) }
         return PackageStatus(text: role, needsAction: false)
+    }
+
+    /// "Toolbar · /explain · Send to · Hotkey": where a package's commands show.
+    static func surfacesSummary(_ package: LassoPackage) -> String {
+        var parts: [String] = []
+        func add(_ part: String) { if !parts.contains(part) { parts.append(part) } }
+        for command in package.commands {
+            for surface in command.surfaces {
+                switch surface {
+                case .toolbar: add("Toolbar")
+                case .send: add("Send to")
+                case .slash: add("/\(command.id)")
+                case .hotkey: add("Hotkey")
+                default: break
+                }
+            }
+        }
+        return parts.joined(separator: " · ")
     }
 
     static func firstOfNextMonth(_ now: Date) -> String {
@@ -61,7 +83,7 @@ struct PackageStatus: Equatable {
 
     /// The command's role, in words (review, page caption).
     static func roleLine(_ command: PackageCommand) -> String {
-        command.run.role == .primary ? "Adds results to every web search" : "Adds results when web search comes back thin"
+        command.http?.role == .primary ? "Adds results to every web search" : "Adds results when web search comes back thin"
     }
 }
 
@@ -105,32 +127,53 @@ struct PackagesHub: View {
     @State private var adding = false
     private var store: PackageStore { .shared }
 
+    private var sorted: [PackageStore.Installed] {
+        store.installed.sorted { $0.package.name.localizedCaseInsensitiveCompare($1.package.name) == .orderedAscending }
+    }
+    private func isSearch(_ item: PackageStore.Installed) -> Bool {
+        item.package.commands.contains { $0.surfaces.contains(.search) }
+    }
+
     var body: some View {
+        let search = sorted.filter(isSearch), others = sorted.filter { !isSearch($0) }
         SettingsPage {
             SettingsHubHeader(pane: .packages)
             SettingsCard(title: "Search",
                          footnote: localOnly ? "Paused in local-only mode."
                              : "Packages marked Every search add results first. The rest fill in when results are thin.") {
                 webSearchRow
-                ForEach(store.broken) { broken in
-                    PackageRow(icon: PackageIcon(package: nil), name: broken.id,
-                               status: PackageStatus(text: "Can't be used: \(broken.problems.count) problem\(broken.problems.count == 1 ? "" : "s")",
-                                                     needsAction: true, hidesSwitch: true),
-                               isOn: .constant(false), open: { openPackage(broken.id) })
+                ForEach(search) { row($0) }
+                if others.isEmpty {
+                    ForEach(store.broken) { brokenRow($0) }
+                    if store.installed.isEmpty, store.broken.isEmpty { emptyRow }
+                    addStrip
                 }
-                ForEach(store.installed.sorted { $0.package.name.localizedCaseInsensitiveCompare($1.package.name) == .orderedAscending }) { item in
-                    PackageRow(icon: PackageIcon(package: item.package), name: item.package.name,
-                               status: PackageStatus.of(item, localOnly: localOnly),
-                               isOn: Binding(get: { item.enabled }, set: { store.setEnabled(item.id, $0) }),
-                               open: { openPackage(item.id) })
+            }
+            if !others.isEmpty {
+                SettingsCard(title: "Buttons and commands") {
+                    ForEach(others) { row($0) }
+                    ForEach(store.broken) { brokenRow($0) }
+                    addStrip
                 }
-                if store.installed.isEmpty, store.broken.isEmpty { emptyRow }
-                addStrip
             }
         }
         .sheet(isPresented: $adding) {
             AddPackageSheet(dismiss: { adding = false }, added: { id in adding = false; openPackage(id) })
         }
+    }
+
+    private func row(_ item: PackageStore.Installed) -> some View {
+        PackageRow(icon: PackageIcon(package: item.package), name: item.package.name,
+                   status: PackageStatus.of(item, localOnly: localOnly),
+                   isOn: Binding(get: { item.enabled }, set: { store.setEnabled(item.id, $0) }),
+                   open: { openPackage(item.id) })
+    }
+
+    private func brokenRow(_ broken: PackageStore.Broken) -> some View {
+        PackageRow(icon: PackageIcon(package: nil), name: broken.id,
+                   status: PackageStatus(text: "Can't be used: \(broken.problems.count) problem\(broken.problems.count == 1 ? "" : "s")",
+                                         needsAction: true, hidesSwitch: true),
+                   isOn: .constant(false), open: { openPackage(broken.id) })
     }
 
     private var webSearchRow: some View {
@@ -155,7 +198,7 @@ struct PackagesHub: View {
     private var emptyRow: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Text("No search packages yet. Add Tavily, SerpApi or a package file for stronger, ranked results.")
+                Text("No packages yet. Add Tavily or SerpApi for stronger search results, or a package file for new buttons and commands.")
                     .font(SettingsFont.sub).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
@@ -237,15 +280,18 @@ struct PackageRow<Icon: View>: View {
 
 struct PackagePermissionsList: View {
     let package: LassoPackage
+    /// Off on a package's page when its Commands card already says where each command shows.
+    var showsWhatItDoes = true
     /// The version it replaces or was approved as: what's new is tagged.
     var compareTo: LassoPackage?
     var values: [String: String] = [:]
 
     var body: some View {
-        SettingsCard(title: "What it does") {
+        if showsWhatItDoes { SettingsCard(title: "What it does") {
             ForEach(package.commands, id: \.id) { command in
-                line("magnifyingglass", PackageStatus.roleLine(command),
-                     tag: tag(changed: compareTo.map { old in old.command(command.id)?.run.role != command.run.role } ?? false,
+                line(command.surfaces.contains(.search) ? "magnifyingglass" : (command.symbol ?? "shippingbox"),
+                     PackagePermissionsList.doesLine(command),
+                     tag: tag(changed: compareTo.map { old in old.command(command.id)?.http?.role != command.http?.role } ?? false,
                               new: compareTo.map { $0.command(command.id) == nil } ?? false))
             }
             if let old = compareTo {
@@ -253,10 +299,15 @@ struct PackagePermissionsList: View {
                     line("minus.circle", "No longer: \(gone.title)", tag: nil)
                 }
             }
-        }
+        } }
         SettingsCard(title: "What it can reach") {
+            if package.commands.contains(where: { $0.prompt != nil }) {
+                line("cpu", Self.modelLine, tag: tag(changed: false, new: compareTo.map { !$0.commands.contains { $0.prompt != nil } } ?? false))
+            }
             ForEach(package.hosts, id: \.self) { host in
-                line("network", "Sends your searches to \(host)",
+                line("network", package.commands.allSatisfy { $0.surfaces.contains(.search) }
+                         ? "Sends your searches to \(host)"
+                         : package.commands.contains { $0.http != nil && $0.output != .open } ? "Sends the text you run it on to \(host)" : "Opens pages on \(host) in your browser",
                      tag: tag(changed: false, new: compareTo.map { !$0.hosts.contains(host) } ?? false))
             }
             ForEach(package.settings.filter { $0.kind == .server }, id: \.id) { setting in
@@ -269,11 +320,52 @@ struct PackagePermissionsList: View {
                 line("key.fill", "Needs \(article(setting.label)) \(setting.label). It's kept in your Keychain and sent only to \(hostList).",
                      tag: tag(changed: false, new: compareTo.map { $0.setting(setting.id) == nil } ?? false))
             }
+            if package.commands.contains(where: { $0.input.contains(.source) }) {
+                line("app.badge", "Sees which app the text came from", tag: nil)
+            }
+            if package.commands.contains(where: { $0.output == .replace }) {
+                line("text.cursor", "Pastes over your highlighted text", tag: nil)
+            }
+            if package.commands.contains(where: { $0.output == .open }) {
+                line("arrow.up.forward.square", "Opens pages in your browser", tag: nil)
+            }
+            if package.commands.contains(where: { $0.output == .copy }) {
+                line("doc.on.doc", "Copies results to your clipboard", tag: nil)
+            }
             if let limits = package.limits {
                 line("gauge.with.needle", limitsLine(limits), tag: tag(changed: compareTo.map { $0.limits != limits } ?? false, new: false))
             }
-            line("lock.fill", reachesOffMac ? "Paused in local-only mode." : "Works in local-only mode.", tag: nil)
+            line("lock.fill", reachesOffMac ? (package.commands.contains { $0.prompt != nil } ? "Its web requests pause in local-only mode." : "Paused in local-only mode.")
+                                            : "Works in local-only mode while your model is on this Mac.", tag: nil)
         }
+    }
+
+    /// Where a prompt's text goes: the model chosen in Settings, said plainly (it follows the setting).
+    @MainActor static var modelLine: String {
+        let intelligence = IntelligenceCoordinator.shared
+        let local = intelligence.effectivePreferred.isLocalKind
+        // "MLX · Qwen3.5-9B…" rather than the whole Hugging Face id with its organisation.
+        let label = intelligence.textEngineLabel.replacingOccurrences(of: "[^ ·/]+/", with: "", options: .regularExpression)
+        return "Sends the text you run it on to your language model, chosen in Settings › Models. Now that's "
+            + "\(label), \(local ? "on this Mac." : "in the cloud. Your text leaves your Mac.")"
+    }
+
+    /// One sentence for where a command appears.
+    static func doesLine(_ command: PackageCommand) -> String {
+        if command.surfaces.contains(.search) { return PackageStatus.roleLine(command) }
+        var places: [String] = []
+        for surface in command.surfaces {
+            switch surface {
+            case .toolbar:
+                let when = ActionBarCatalog.whenPhrase(command.when).replacingOccurrences(of: " · ", with: "")
+                places.append("in the capture toolbar" + (when.isEmpty ? "" : " (\(when))"))
+            case .send: places.append("in Send to, on captures and chat replies")
+            case .slash: places.append("as /\(command.id) in chat")
+            case .hotkey: places.append("on text you highlight, with a hotkey you set")
+            default: break
+            }
+        }
+        return "\(command.title): " + (places.count > 1 ? places.dropLast().joined(separator: ", ") + ", and " + places.last! : places.joined())
     }
 
     private var hostList: String {
@@ -693,9 +785,23 @@ struct PackagePage: View {
             }
         } else {
             SettingsCard(title: "") {
-                SettingsRow("Use \(package.name)", caption: package.commands.first.map(PackageStatus.roleLine)) {
+                SettingsRow("Use \(package.name)",
+                            caption: package.commands.allSatisfy { $0.surfaces.contains(.search) } ? package.commands.first.map(PackageStatus.roleLine) : nil) {
                     SettingsSwitch(title: "", isOn: Binding(get: { item.enabled }, set: { store.setEnabled(id, $0); test = .idle }))
                         .disabled(PackageStatus.of(item, localOnly: localOnly).switchDisabled)
+                }
+            }
+        }
+        if package.commands.contains(where: { !$0.surfaces.contains(.search) }) {
+            SettingsCard(title: "Commands") {
+                ForEach(package.commands, id: \.id) { command in
+                    SettingsRow(command.title, symbol: command.symbol ?? package.iconSymbol ?? "shippingbox",
+                                caption: Self.whereLine(package, command)) {
+                        if package.commands.count > 1 {
+                            SettingsSwitch(title: "", isOn: Binding(get: { store.isCommandEnabled(id, command.id) },
+                                                                    set: { store.setCommandEnabled(id, command.id, $0) }))
+                        }
+                    }
                 }
             }
         }
@@ -709,7 +815,10 @@ struct PackagePage: View {
         }
         if let limits = package.limits { usage(package, limits) }
         if let command = package.commands.first(where: { $0.surfaces.contains(.search) }) { testCard(item, command) }
-        PackagePermissionsList(package: package, values: store.settingValues(for: package).values)
+        else if let command = package.commands.first(where: Self.isSafeToTest) { commandTestCard(item, command) }
+        PackagePermissionsList(package: package,
+                               showsWhatItDoes: !package.commands.contains { !$0.surfaces.contains(.search) },
+                               values: store.settingValues(for: package).values)
         removeCard(package)
     }
 
@@ -743,6 +852,70 @@ struct PackagePage: View {
         .background(SettingsPalette.cardFill, in: RoundedRectangle(cornerRadius: SettingsMetrics.cardRadius, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: SettingsMetrics.cardRadius, style: .continuous)
             .strokeBorder(SettingsPalette.cardBorder, lineWidth: 1))
+    }
+
+    /// Where a command appears, with its hotkey when it has one.
+    static func whereLine(_ package: LassoPackage, _ command: PackageCommand) -> String {
+        var parts: [String] = []
+        if command.surfaces.contains(.toolbar) { parts.append("Toolbar\(ActionBarCatalog.whenPhrase(command.when))") }
+        if command.surfaces.contains(.slash) { parts.append("/\(command.id) in chat") }
+        if command.surfaces.contains(.send) { parts.append("Send to, on captures and chat replies") }
+        if command.surfaces.contains(.hotkey) {
+            let key = KeyboardShortcuts.getShortcut(for: PackageHotkeys.name(package.id, command.id))?.description
+            parts.append("Hotkey: \(key ?? "not set, in Settings › Keyboard Shortcuts")")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Test only what has no side effects: a prompt, a GET, or an `open` (shown, not opened). A POST
+    /// could create a real task or send a real message.
+    static func isSafeToTest(_ command: PackageCommand) -> Bool {
+        command.prompt != nil || (command.http?.method == "GET" && command.output != .notify)
+    }
+
+    private func commandTestCard(_ item: PackageStore.Installed, _ command: PackageCommand) -> some View {
+        let package = item.package
+        let sample = command.testText ?? "Lasso is a Mac app that reads, translates and explains whatever you select on screen."
+        let blocked: String? = item.changedOnDisk ? "Review its changes first."
+            : PackageStatus.of(item, localOnly: localOnly).switchDisabled && command.http != nil ? "Paused in local-only mode."
+            : store.missingSettings(package).contains { $0.kind == .secret } ? "Add your API key first."
+            : nil
+        return SettingsCard(title: "Test") {
+            SettingsRow("Test \(command.title)", caption: blocked ?? "Runs on sample text\(command.http != nil ? ". Counts toward its limit." : ".")") {
+                switch test {
+                case .running: SettingsStatusChip(text: "Testing…", tint: .secondary, busy: true)
+                case .ok(_, let ms, _): SettingsStatusChip(text: "Worked in \(ms) ms", tint: .green)
+                case .failed(let reason): SettingsStatusChip(text: reason, tint: .orange)
+                case .idle: EmptyView()
+                }
+                Button("Test") { runCommandTest(package, command, sample: sample) }
+                    .buttonStyle(.bordered)
+                    .disabled(blocked != nil || test == .running)
+            }
+            if case .ok(_, _, let lines) = test, let first = lines.first {
+                Text(first).font(SettingsFont.sub).foregroundStyle(.secondary).lineLimit(6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, SettingsMetrics.rowPaddingH).padding(.vertical, 10)
+            }
+        }
+    }
+
+    private func runCommandTest(_ package: LassoPackage, _ command: PackageCommand, sample: String) {
+        let s = store.settingValues(for: package)
+        let entry = PackageRegistry.Entry(package: package, values: s.values, secrets: s.secrets, ready: true)
+        test = .running
+        let started = Date()
+        Task {
+            do {
+                let result = try await PackageCommandRunner.run(entry, command, input: PackageInput(text: sample))
+                let text: String = if case .url(let url) = result { "Would open \(url.absoluteString)" }
+                                   else { try await PackageOutput.text(result) }
+                usageTick += 1
+                test = .ok(count: 1, ms: Int(Date().timeIntervalSince(started) * 1000), hits: [String(text.prefix(600))])
+            } catch {
+                test = .failed(PackageOutput.failure(error, entry, command))
+            }
+        }
     }
 
     static func originText(_ origin: PackageStore.Origin) -> String {

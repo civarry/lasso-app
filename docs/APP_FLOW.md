@@ -845,6 +845,37 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **One Keychain prompt per update, not one per key; Settings opens on the first click.** Inspected the
+  real login Keychain: all 13 Lasso items had their access list open to any app (the 0.16 fix), yet
+  each carried a partition list of `cdhash:` values, one per build the user had approved. Lasso's
+  self-signed certificate has no Team ID (tested: not even with an OU), so macOS locks an item to the
+  exact build, and after every update each item asked again. The 0.16 test checked only the access
+  list, so it passed while the prompts went on. Now every key lives in one item, `lasso.vault` (JSON,
+  read once per launch, never written when it can't be read so a cancelled prompt can't wipe keys, and
+  a cancel isn't re-asked per key); old per-key items move in the first time each is read, then are
+  deleted. Tests count Keychain items. Settings from the menu bar: `NSApp.activate()` ran while the
+  menu was still closing, which macOS ignores for an accessory app, so the window opened behind the
+  front app; `SettingsWindow.open` now brings it forward again after the menu closes (lookup by the
+  scene's `settings` identifier, checked in the real window).
+- **Packages, build step 2: buttons and commands.** The `prompt` runner (the model chosen in Settings,
+  `scope: .none` so no fallback provider; `{{text}}` fenced between `<<<LASSO-CONTENT>>>` markers with a
+  rule not to follow instructions inside, a marker inside the text defused; secrets can't go into a
+  prompt) and non-search `http` (`answer` path, 4,000 characters; `open` builds the address without
+  fetching it). Surfaces: `toolbar` (`PackageCommandAction`, priority 70, its own band; hidden when
+  `match`/`detects`/`apps` fail, greyed for length; Compact capped at 12), `send` (a "Send to" pill,
+  `builtin.sendTo` at 62, only when a target applies; in a reply's ⋯ menu with in-place feedback),
+  `slash` (palette after Lasso's own, through `ChatController.send` so Enter, Edit and Regenerate share
+  one path; the bubble shows what was typed, later turns see "Title: text", the reply carries a
+  caption naming the package and model; a `when` failure keeps the text and says why over the
+  composer) and `hotkey` (Settings › Keyboard Shortcuts › Highlighted text, with Proofread moved there;
+  Proofread's copy, paste-back and clipboard restore, "Replaced. ⌘Z to undo"; read-only text shows a
+  card). `when.detects` adds flights, tracking numbers and money from Apple's DataDetection, run only
+  when a package asks; a pattern gives up after 50 ms. Designed with a separate UI/UX review; agreed
+  spec changes: `replace` only for hotkeys, `open` only from http (a model's answer can't choose what
+  opens), Send to only notify/copy/open, reserved slash names, `when` in chat, notify text, Test only
+  for side-effect-free commands. Also: Copy text now says "Copied"; a per-command switch; package pages
+  list where each command shows and its hotkey. Live-checked on MLX: `/explain` answered in 6 s and
+  didn't follow an instruction planted in the text.
 - **Packages, build step 1: search packages** (`docs/PACKAGES.md`, reviewed and fixed before building:
   Agent tool list and approvals, usage carry-over, detection source, key migration, build order).
   Tavily and SerpApi are no longer Swift: they're bundled packages, and a saved key moves to the

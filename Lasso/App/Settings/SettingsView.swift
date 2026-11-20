@@ -449,11 +449,6 @@ struct SettingsView: View {
             Section("Global") {
                 LabeledContent("Capture") { recorder(.capture) }
                 LabeledContent("Chat") { recorder(.chat) }
-                // Proofreads text you've already highlighted, in place — no screenshot, no box to
-                // drag. The toolbar's Proofread action (a dragged selection) has its own hotkey in
-                // Toolbar actions below; they're different jobs, so they get separate bindings.
-                LabeledContent("Proofread highlighted text") { recorder(.grammarSelection) }
-
                 LabeledContent("Full screen") {
                     HStack(spacing: directRecorderGap) {
                         recorder(.identifyFullScreen)
@@ -469,6 +464,24 @@ struct SettingsView: View {
                     }
                 }
             }
+            // Commands that work on text already highlighted in any app: no screenshot, no box to drag.
+            // The toolbar's Proofread action (a dragged selection) has its own hotkey in Toolbar
+            // actions below; they're different jobs, so they get separate bindings.
+            Section("Highlighted text") {
+                LabeledContent("Proofread highlighted text") { recorder(.grammarSelection) }
+                ForEach(PackageRegistry.shared.commands(for: .hotkey), id: \.command.id) { item in
+                    LabeledContent {
+                        recorder(PackageHotkeys.name(item.entry.package.id, item.command.id))
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Label(item.command.title, systemImage: item.command.symbol ?? item.entry.package.iconSymbol ?? "shippingbox")
+                            Text(item.entry.package.name + (item.command.output == .replace ? " · Pastes over your highlighted text" : ""))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                caption("Copies what you've highlighted in any app and runs on it.")
+            }
             Section("Toolbar actions") {
                 ForEach(orderedToolbarActions, id: \.id) { entry in
                     // `LabeledContent`, like every row here that holds a recorder (see
@@ -482,7 +495,12 @@ struct SettingsView: View {
                                 .frame(width: directRecorderWidth, alignment: .center)
                         }
                     } label: {
-                        Label(entry.title, systemImage: entry.systemImage)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Label(entry.title, systemImage: entry.systemImage)
+                            if let source = entry.source {
+                                Text(source).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
                     }
                 }
                 caption("A hotkey starts a capture and runs that action directly.")
@@ -610,9 +628,16 @@ struct SettingsView: View {
                     .frame(width: 18)
                     .foregroundStyle(draft.actionHidden.contains(entry.id) ? AnyShapeStyle(.tertiary)
                                                                            : AnyShapeStyle(.primary))
-                Text(entry.title)
-                    .foregroundStyle(draft.actionHidden.contains(entry.id) ? AnyShapeStyle(.secondary)
-                                                                           : AnyShapeStyle(.primary))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(entry.title)
+                        .foregroundStyle(draft.actionHidden.contains(entry.id) ? AnyShapeStyle(.secondary)
+                                                                               : AnyShapeStyle(.primary))
+                    // A package's button: which package, and when it shows (a contextual button that
+                    // never appears would otherwise look broken).
+                    if let source = entry.source {
+                        Text(source).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
         }
     }
