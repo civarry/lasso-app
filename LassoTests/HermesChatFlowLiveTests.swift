@@ -14,6 +14,14 @@ struct HermesChatFlowLiveTests {
 
     private func lastReply() -> ChatMessage? { chat.messages.last { $0.role == .assistant } }
 
+    /// These test Lasso's own Hermes: "Use my own Hermes" is turned off for the test and put back after.
+    private func usingLassosHermes() -> () -> Void {
+        let key = HermesAgent.useOwnHermesKey
+        let was = UserDefaults.standard.object(forKey: key)
+        UserDefaults.standard.set(false, forKey: key)
+        return { UserDefaults.standard.set(was, forKey: key) }
+    }
+
     private func waitUntil(_ seconds: Double = 120, _ condition: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(seconds)
         while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(200)) }
@@ -31,6 +39,8 @@ struct HermesChatFlowLiveTests {
     }
 
     @Test func agentTurnsThroughTheController() async throws {
+        let restoreOwnHermes = usingLassosHermes()
+        defer { restoreOwnHermes() }
         let agentWasOn = chat.hermesSelected
         chat.newChat()
         let conversation = chat.active.id
@@ -101,6 +111,8 @@ struct HermesChatFlowLiveTests {
     /// not fall back to Hermes's own model. Needs TEST_RUNNER_LASSO_TEST_MLX=<model id>.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["LASSO_TEST_MLX"] != nil), .timeLimit(.minutes(15)))
     func agentRunsOnLassosMLXModel() async throws {
+        let restoreOwnHermes = usingLassosHermes()
+        defer { restoreOwnHermes() }
         let model = try #require(ProcessInfo.processInfo.environment["LASSO_TEST_MLX"])
         let intelligence = IntelligenceCoordinator.shared
         let (providerWas, mlxWas, agentWas) = (intelligence.preferred, intelligence.mlxModel, chat.hermesSelected)
@@ -123,7 +135,7 @@ struct HermesChatFlowLiveTests {
         let config = { (try? String(contentsOf: HermesRuntime.profileDirectory.appending(path: "config.yaml"), encoding: .utf8)) ?? "" }
 
         for (n, ask) in ["Reply with exactly: lasso-ok. Use no tools.",
-                         "Run the terminal command `echo lasso-tool-ok` and tell me what it printed."].enumerated() {
+                         "Run the terminal command `touch lasso-workspace-check && echo lasso-tool-ok` and tell me what it printed."].enumerated() {
             let started = Date()
             chat.send(text: ask)
             try await Task.sleep(for: .milliseconds(100))
@@ -137,6 +149,10 @@ struct HermesChatFlowLiveTests {
             #expect(reply.text.contains(n == 0 ? "lasso-ok" : "lasso-tool-ok"))
             if n == 1 { #expect(reply.steps.contains { $0.text.hasPrefix("Ran a command") }, "no tool actually ran") }
         }
+        // The command ran in the agent's workspace, not the hidden profile or the home folder.
+        let check = HermesRuntime.workspaceDirectory.appending(path: "lasso-workspace-check")
+        #expect(FileManager.default.fileExists(atPath: check.path), "the agent's command didn't run in ~/LassoWorkspace")
+        try? FileManager.default.removeItem(at: check)
         // A fresh profile, and Hermes's main model is Lasso's (its side tasks follow it), not a cloud default.
         #expect(HermesRuntime.profileIsFresh)
         let block = config().components(separatedBy: HermesProfileFiles.beginMarker).last ?? ""
@@ -148,6 +164,8 @@ struct HermesChatFlowLiveTests {
     /// every turn hit the 4,096-token default. Needs TEST_RUNNER_LASSO_TEST_OLLAMA=<model> and Ollama running.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["LASSO_TEST_OLLAMA"] != nil), .timeLimit(.minutes(15)))
     func agentRunsOnOllamaWithEnoughContext() async throws {
+        let restoreOwnHermes = usingLassosHermes()
+        defer { restoreOwnHermes() }
         let model = try #require(ProcessInfo.processInfo.environment["LASSO_TEST_OLLAMA"])
         let intelligence = IntelligenceCoordinator.shared
         let (providerWas, modelWas, agentWas) = (intelligence.preferred, intelligence.ollamaModel, chat.hermesSelected)
@@ -167,7 +185,7 @@ struct HermesChatFlowLiveTests {
         #expect(await OllamaAgentModel.numCtx(of: OllamaAgentModel.name(for: model), baseURL: OllamaEndpoint.baseURL) ?? 0 >= 64_000)
         if !chat.hermesSelected { chat.toggleAgent() }
         for (n, ask) in ["Reply with exactly: lasso-ok. Use no tools.",
-                         "Run the terminal command `echo lasso-tool-ok` and tell me what it printed."].enumerated() {
+                         "Run the terminal command `touch lasso-workspace-check && echo lasso-tool-ok` and tell me what it printed."].enumerated() {
             let started = Date()
             chat.send(text: ask)
             try await Task.sleep(for: .milliseconds(100))
@@ -180,6 +198,10 @@ struct HermesChatFlowLiveTests {
             // "output" as text (seen with an imported Gemma 4 GGUF). The command must actually have run.
             if n == 1 { #expect(reply.steps.contains { $0.text.hasPrefix("Ran a command") }, "no tool actually ran") }
         }
+        // The command ran in the agent's workspace, not the hidden profile or the home folder.
+        let check = HermesRuntime.workspaceDirectory.appending(path: "lasso-workspace-check")
+        #expect(FileManager.default.fileExists(atPath: check.path), "the agent's command didn't run in ~/LassoWorkspace")
+        try? FileManager.default.removeItem(at: check)
     }
 
     /// After Agent is turned off, the regular model must not take the Agent's "I opened Chrome" in the

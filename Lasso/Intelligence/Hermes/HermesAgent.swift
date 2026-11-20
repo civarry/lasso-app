@@ -125,6 +125,18 @@ enum HermesAgent {
 
     /// Added to Hermes's own system prompt for every Lasso turn. Lasso folds text it read off the screen
     /// into the message; that text can come from any web page or email, so it must not steer the agent.
+    /// Lasso's built-in agent also gets where it works (`HermesRuntime.workspaceDirectory`); the user's
+    /// own Hermes keeps whatever folder they set up.
+    static func instructions(builtIn: Bool) -> String {
+        guard builtIn else { return instructions }
+        return instructions + """
+
+            Your working folder is \(HermesRuntime.workspaceDirectory.path), and commands start there. Put \
+            files you make in it (a subfolder per task when there are several) unless the user names another \
+            place, and give their full paths. Don't leave files in the home folder, Desktop or Documents unasked.
+            """
+    }
+
     static let instructions = """
         You are the agent in Lasso's chat panel, a narrow window on the user's Mac. What it can and can't \
         do (this replaces any earlier guidance about an unknown or plain-text client):

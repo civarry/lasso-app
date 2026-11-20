@@ -2612,7 +2612,7 @@ final class ChatController {
             text: userText, imageJPEGBase64s: images, history: Self.hermesHistory(from: earlier),
             sessionID: HermesAgent.sessionID(conversation: session.id,
                                              firstMessage: session.messages.first?.id ?? userID),
-            instructions: HermesAgent.instructions)
+            instructions: HermesAgent.instructions(builtIn: !HermesAgent.usesOwnHermes))
 
         // Reachable, and set to ask before risky commands; nothing is sent otherwise.
         do {

@@ -479,7 +479,10 @@ device date/time as background ("use it only when the question needs it"); calli
 a local Qwen3.5 answer greetings with the date (`ChatDatePromptLiveTests`). **Voice input** (`Chat/Voice/`):
 English speech-to-text on this Mac with Apple's `SpeechTranscriber`, no model or connection involved.
 The mic in the composer streams into the message box at the caret (replacing a selection, like system
-dictation; text typed before or after is kept), stops itself ~2 s after you pause (`SpeechActivity`), and
+dictation; text typed before or after is kept), stops itself when you've finished (`SpeechActivity`: 1.3 s after a sentence ending in . ? !, 3.5 s
+after a comma or a word a sentence doesn't end on, "and", "the", "um", 2.2 s otherwise; more words from
+the recognizer count as speech, capitals and a full stop added to the same words don't; loud sound with
+no new words holds it open at most 3 s past the last word), and
 never sends; Send finishes the dictation first, and a session number keeps late recognizer updates out of
 the box. The box is an `NSTextView` (`ComposerTextView`): it grows to 6 lines then scrolls, keeps the
 newest word in view unless you scroll up, and greys the recognizer's unconfirmed words. **Cleanup**
@@ -499,7 +502,7 @@ Apple Intelligence only the rules run. Needs the `com.apple.security.device.audi
 flowchart LR
   MIC["mic tap"] --> ST["SpeechTranscriber (live)"]
   ST -->|confirmed + grey tail| BOX["message box at caret"]
-  ST -->|stop / 2 s pause| RAW["raw text in box"]
+  ST -->|stop / pause: 1.3–3.5 s by how the words end| RAW["raw text in box"]
   RAW -->|cleanup off| DONE["you edit and send"]
   RAW -->|cleanup on| R["tidy: ums, repeats"]
   R -->|no Apple Intelligence| SW
@@ -624,7 +627,8 @@ user's own Hermes setup, model, keys or memory, is used; an older cloned profile
 `profile: fresh`, is deleted and recreated), then Lasso owns two things in that profile: `.env` loses every messaging-platform credential (a second gateway on the user's bot would take
 their messages) and gets Lasso's own API key (Keychain `hermes.managedKey`); `config.yaml` gets a block
 at the end, between `HermesProfileFiles` markers, with the API server on loopback, `approvals.mode:
-manual`, every messaging platform off, and the model, as the top-level `model:` (Hermes's side tasks,
+manual`, every messaging platform off, `terminal.cwd` set to `~/LassoWorkspace` (where the agent's
+commands start and its files go), and the model, as the top-level `model:` (Hermes's side tasks,
 titles and history summaries, follow it rather than the request's route; a fresh profile otherwise
 defaults to a cloud Claude) and as the route. Hermes reads YAML with PyYAML, where a repeated top-level
 key replaces the earlier one, so the block wins (checked with Hermes's own `load_config`). The user's
@@ -819,6 +823,18 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Agent workspace, scroll-follow, smarter dictation stop.** Lasso's agent works in `~/LassoWorkspace`
+  (`HermesRuntime.workspaceDirectory`): the managed block sets `terminal.cwd` (Hermes's commands start
+  there and its file tools resolve relative paths against it; Hermes defaulted to the home folder), the
+  folder is created before each start, the built-in agent's instructions say to keep its files there
+  (`HermesAgent.instructions(builtIn:)`; the user's own Hermes isn't told), and Settings ▸ Agent has a
+  Workspace row with Show in Finder. Verified live on MLX: a relative `touch` lands in the workspace.
+  The chat now follows an Agent's steps, thinking and approval card, not just the reply's text
+  (`ScrollFollow.growth`), and stops following only when the reader scrolls up (the offset goes down),
+  not whenever the content is momentarily taller than the view (`ScrollFollow.follows`); before, steps
+  left the view behind, it decided the reader had scrolled away, and showed "Latest" mid-reply
+  (`ChatScrollFollowLiveTests` fails on the old view). Dictation waits for a pause that fits how the words
+  end instead of a fixed 2 s (see Voice input).
 - **Chat, release 2 of the UI/UX review: the composer.** Built on the dictation text box
   (`ComposerTextView`, committed with the dictation cleanup). The box gets the full width and grows to
   six lines, with the mic and send inside its trailing edge (at 340 pt the four icon buttons had left it

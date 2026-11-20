@@ -4,7 +4,8 @@ import Observation
 
 /// Chat voice input: click the mic and talk instead of typing. English, on this Mac, using Apple's
 /// built-in speech recognition, so it depends on no model or connection and nothing leaves the Mac.
-/// Words appear in the message box as you speak; it stops by itself when you pause; the text is left
+/// Words appear in the message box as you speak; it stops by itself when you've finished (see
+/// `SpeechActivity`); the text is left
 /// for you to edit and send. It never sends itself.
 @MainActor
 @Observable
@@ -25,6 +26,7 @@ final class VoiceInputController {
     private var live: AppleLiveTranscription?
     private var clearFailure: Task<Void, Never>?
     private var silenceWatch: Task<Void, Never>?
+    private var activity: SpeechActivity?
     /// Bumped whenever a dictation ends, so a recognizer update that arrives late (after Send, Esc or
     /// stop) can't write into the message box. Before this, sent text reappeared in the box.
     private(set) var session = 0
@@ -97,6 +99,7 @@ final class VoiceInputController {
             let activity = SpeechActivity()
             Self.installTap(on: input, format: format, sink: live, activity: activity)
             self.live = live
+            self.activity = activity
             let session = self.session
             try await live.start { finalized, volatile in
                 Task { @MainActor in
@@ -199,6 +202,7 @@ final class VoiceInputController {
         guard session == self.session else { return }
         let editor = Composer.current
         let heard = (finalized + volatile).trimmingCharacters(in: .whitespacesAndNewlines)
+        activity?.note(transcript: heard, at: Date())
         let text = heard.isEmpty ? replaced : lead + heard + trail
         guard NSMaxRange(span) <= (editor.text as NSString).length else { return }
         let caret = span.location + (heard.isEmpty ? text : lead + heard).utf16.count
@@ -301,6 +305,7 @@ final class VoiceInputController {
         engine?.stop()
         engine = nil
         live = nil
+        activity = nil
     }
 
     private func fail(_ message: String) {
@@ -418,32 +423,84 @@ final class BufferConverter: @unchecked Sendable {
     }
 }
 
-/// Tells speech from silence by loudness, so dictation can end itself. Written from the audio thread,
-/// read from the main actor.
+/// Decides when dictation is over, from loudness and from what's been said. Written from the audio
+/// thread and the recognizer, read from the main actor.
+///
+/// A fixed 2 s pause cut people off mid-thought ("I want to… and"). The pause it waits for now depends
+/// on the words so far: short after a finished sentence, long after "and", "so", "the", "um" or a comma,
+/// in between otherwise. New words from the recognizer count as speech, so a quiet voice isn't cut off;
+/// loudness covers the moment before the recognizer catches up, but noise that brings no words (a fan,
+/// music) can only hold dictation open a little past the last word.
 final class SpeechActivity: @unchecked Sendable {
     enum Decision: Equatable { case keepListening, stop, nothingHeard }
 
     /// RMS above this is speech (about -34 dBFS). Room noise and a quiet fan sit well below it.
     static let speechLevel: Float = 0.02
-    /// Stop this long after the last speech.
-    static let silenceAfterSpeech: TimeInterval = 2.0
     /// Give up if nothing is said for this long after starting.
     static let noSpeechTimeout: TimeInterval = 8.0
+    /// Loud sound with no new words keeps listening at most this long after the last word.
+    static let noiseWithoutWords: TimeInterval = 3.0
+
+    /// How long a pause ends dictation, by how the words so far end.
+    static let pauseAfterSentence: TimeInterval = 1.3
+    static let pauseMidSentence: TimeInterval = 2.2
+    static let pauseMidThought: TimeInterval = 3.5
 
     private let lock = NSLock()
-    private var lastSpeech: Date?
+    private var lastLoud: Date?
+    private var lastWords: Date?
+    private var transcript = ""
 
     func note(level: Float, at time: Date) {
         guard level >= Self.speechLevel else { return }
-        lock.lock(); lastSpeech = time; lock.unlock()
+        lock.withLock { lastLoud = time }
+    }
+
+    /// Everything heard so far. More words mean the person is still talking; the recognizer revising
+    /// what it already has (capitals and a full stop when it settles a sentence) doesn't.
+    func note(transcript text: String, at time: Date) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        lock.withLock {
+            if Self.wordCount(text) > Self.wordCount(transcript) { lastWords = time }
+            transcript = text
+        }
+    }
+
+    static func wordCount(_ text: String) -> Int {
+        text.split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "'" }).count
     }
 
     func decision(now: Date, startedAt: Date) -> Decision {
-        lock.lock(); let last = lastSpeech; lock.unlock()
-        guard let last else {
+        let (loud, words, text) = lock.withLock { (lastLoud, lastWords, transcript) }
+        // Before any words, loudness alone: the recognizer takes a moment, and stopping then still
+        // returns what it was working on. After words, noise only counts for a little.
+        let loudThatCounts = loud.map { loud in words.map { min(loud, $0.addingTimeInterval(Self.noiseWithoutWords)) } ?? loud }
+        guard let last = [words, loudThatCounts].compactMap({ $0 }).max() else {
             return now.timeIntervalSince(startedAt) >= Self.noSpeechTimeout ? .nothingHeard : .keepListening
         }
-        return now.timeIntervalSince(last) >= Self.silenceAfterSpeech ? .stop : .keepListening
+        if words == nil, now.timeIntervalSince(startedAt) >= Self.noSpeechTimeout { return .nothingHeard }
+        return now.timeIntervalSince(last) >= Self.pause(after: text) ? .stop : .keepListening
+    }
+
+    /// Words a sentence doesn't end on: someone who stops after one is still thinking.
+    /// Pronouns and words like "that" or "on" are left out: plenty of sentences end on them ("thank
+    /// you", "turn it on"), and those shouldn't wait the long pause.
+    static let continuers: Set<String> = [
+        "and", "but", "or", "so", "because", "cause", "if", "than", "which", "while", "like",
+        "um", "uh", "er", "erm", "hmm", "the", "a", "an", "to", "of", "for", "with", "from", "into",
+        "my", "your", "our", "their", "its", "i", "we", "is", "are", "was", "were", "be", "am",
+        "can", "could", "should", "would", "will", "just", "and then", "kind of", "sort of",
+    ]
+
+    static func pause(after text: String) -> TimeInterval {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let last = text.last else { return pauseMidSentence }
+        if ".?!".contains(last) { return pauseAfterSentence }
+        if ",;:-".contains(last) || last == "\u{2026}" { return pauseMidThought }
+        let words = text.lowercased().split(whereSeparator: { !$0.isLetter && $0 != "'" })
+        guard let word = words.last.map(String.init) else { return pauseMidSentence }
+        let pair = words.count >= 2 ? "\(words[words.count - 2]) \(word)" : ""
+        return continuers.contains(word) || continuers.contains(pair) ? pauseMidThought : pauseMidSentence
     }
 
     /// RMS of the first channel, for float or 16-bit buffers.

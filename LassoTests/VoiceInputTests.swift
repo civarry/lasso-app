@@ -80,23 +80,89 @@ private nonisolated func makeToneSource(_ format: AVAudioFormat) -> AVAudioSourc
     }
 }
 
-/// Dictation ends itself: 2 s after you stop talking, or after 8 s if nothing was said.
+/// Dictation ends itself once you've finished: the pause it waits for depends on how your words end,
+/// new words keep it open however quietly you speak, and noise without words can't hold it open.
 struct SpeechActivityTests {
     private let t0 = Date(timeIntervalSinceReferenceDate: 0)
+    private func at(_ s: TimeInterval) -> Date { t0.addingTimeInterval(s) }
 
-    @Test func stopsAfterAPauseFollowingSpeech() {
+    @Test func pauseDependsOnHowTheWordsEnd() {
+        #expect(SpeechActivity.pause(after: "Book a table for two.") == SpeechActivity.pauseAfterSentence)
+        #expect(SpeechActivity.pause(after: "What time is it?") == SpeechActivity.pauseAfterSentence)
+        #expect(SpeechActivity.pause(after: "I want to go and") == SpeechActivity.pauseMidThought)
+        #expect(SpeechActivity.pause(after: "send it to the") == SpeechActivity.pauseMidThought)
+        #expect(SpeechActivity.pause(after: "first the report, um") == SpeechActivity.pauseMidThought)
+        #expect(SpeechActivity.pause(after: "first the report,") == SpeechActivity.pauseMidThought)
+        #expect(SpeechActivity.pause(after: "it was kind of") == SpeechActivity.pauseMidThought)
+        #expect(SpeechActivity.pause(after: "thank you") == SpeechActivity.pauseMidSentence)
+        #expect(SpeechActivity.pause(after: "turn it on") == SpeechActivity.pauseMidSentence)
+        #expect(SpeechActivity.pauseAfterSentence < SpeechActivity.pauseMidSentence)
+        #expect(SpeechActivity.pauseMidSentence < SpeechActivity.pauseMidThought)
+    }
+
+    @Test func stopsSoonAfterAFinishedSentence() {
         let activity = SpeechActivity()
-        #expect(activity.decision(now: t0.addingTimeInterval(1), startedAt: t0) == .keepListening)
-        activity.note(level: 0.1, at: t0.addingTimeInterval(1.5))
-        #expect(activity.decision(now: t0.addingTimeInterval(3.0), startedAt: t0) == .keepListening)
-        #expect(activity.decision(now: t0.addingTimeInterval(3.6), startedAt: t0) == .stop)
+        activity.note(level: 0.1, at: at(1))
+        activity.note(transcript: "Remind me at five.", at: at(1.5))
+        #expect(activity.decision(now: at(2.6), startedAt: t0) == .keepListening)
+        #expect(activity.decision(now: at(2.9), startedAt: t0) == .stop)
+    }
+
+    @Test func waitsLongerMidThought() {
+        let activity = SpeechActivity()
+        activity.note(level: 0.1, at: at(1))
+        activity.note(transcript: "I need to email Sam and", at: at(1.5))
+        // The old fixed 2 s pause stopped here, mid-sentence.
+        #expect(activity.decision(now: at(4.0), startedAt: t0) == .keepListening)
+        #expect(activity.decision(now: at(5.1), startedAt: t0) == .stop)
+    }
+
+    @Test func newWordsCountAsSpeechEvenWhenQuiet() {
+        let activity = SpeechActivity()
+        activity.note(level: 0.005, at: at(1))   // below the loudness threshold
+        activity.note(transcript: "hello", at: at(1.2))
+        activity.note(transcript: "hello there", at: at(3.0))
+        #expect(activity.decision(now: at(4.5), startedAt: t0) == .keepListening)
+        #expect(activity.decision(now: at(5.3), startedAt: t0) == .stop)
+    }
+
+    @Test func revisingTheSameWordsIsNotMoreSpeech() {
+        let activity = SpeechActivity()
+        activity.note(transcript: "remind me at five", at: at(1))
+        // The recognizer settles the sentence a moment into the pause.
+        activity.note(transcript: "Remind me at five.", at: at(2))
+        #expect(activity.decision(now: at(2.4), startedAt: t0) == .stop)
+    }
+
+    @Test func noiseWithoutWordsCantHoldItOpen() {
+        let activity = SpeechActivity()
+        activity.note(transcript: "Remind me at five.", at: at(1))
+        for tick in stride(from: 1.0, through: 20, by: 0.1) { activity.note(level: 0.1, at: at(tick)) }
+        let limit = 1 + SpeechActivity.noiseWithoutWords + SpeechActivity.pauseAfterSentence
+        #expect(activity.decision(now: at(limit - 0.1), startedAt: t0) == .keepListening)
+        #expect(activity.decision(now: at(limit + 0.1), startedAt: t0) == .stop)
+    }
+
+    @Test func noiseAloneEndsAsNothingHeard() {
+        let activity = SpeechActivity()
+        for tick in stride(from: 0.0, through: 10, by: 0.1) { activity.note(level: 0.1, at: at(tick)) }
+        #expect(activity.decision(now: at(7.9), startedAt: t0) == .keepListening)
+        #expect(activity.decision(now: at(8.0), startedAt: t0) == .nothingHeard)
+    }
+
+    @Test func loudnessBeforeTheFirstWordsCounts() {
+        // The recognizer lags: speech was heard, then a pause, before any words arrived.
+        let activity = SpeechActivity()
+        activity.note(level: 0.1, at: at(1.5))
+        #expect(activity.decision(now: at(3.0), startedAt: t0) == .keepListening)
+        #expect(activity.decision(now: at(3.8), startedAt: t0) == .stop)
     }
 
     @Test func quietRoomNoiseIsNotSpeech() {
         let activity = SpeechActivity()
-        activity.note(level: 0.005, at: t0.addingTimeInterval(1))
-        #expect(activity.decision(now: t0.addingTimeInterval(7.9), startedAt: t0) == .keepListening)
-        #expect(activity.decision(now: t0.addingTimeInterval(8.0), startedAt: t0) == .nothingHeard)
+        activity.note(level: 0.005, at: at(1))
+        #expect(activity.decision(now: at(7.9), startedAt: t0) == .keepListening)
+        #expect(activity.decision(now: at(8.0), startedAt: t0) == .nothingHeard)
     }
 
     @Test func levelIsTheRMSOfTheBuffer() throws {
