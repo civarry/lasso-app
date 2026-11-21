@@ -118,11 +118,19 @@ final class LassoToolServer: @unchecked Sendable {
         case "ping":
             return success(id: id, [:])
         case "tools/list":
-            return success(id: id, ["tools": LassoAgentTools.definitions])
+            // Lasso's own, then the packages' tools (the Agent restarts when those change).
+            let packages = PackageToolCall.agentDefinitions()
+            return success(id: id, ["tools": LassoAgentTools.definitions + packages])
         case "tools/call":
             guard let name = params["name"] as? String else { return failure(id: id, code: -32602, "Missing tool name") }
             let arguments = params["arguments"] as? [String: Any] ?? [:]
             let sendable = SendableArguments(arguments)
+            if HermesTurn.lassoTool(name) == nil, PackageRegistry.shared.tools().contains(where: { $0.name == name }) {
+                let result = await PackageToolCall.call(name, arguments: sendable.value) { request in
+                    await ChatController.shared.askForAgentTool(request)
+                }
+                return success(id: id, ["content": [["type": "text", "text": result.text]], "isError": result.isError])
+            }
             let result = await LassoAgentTools.call(name, arguments: sendable.value)
             return success(id: id, ["content": [["type": "text", "text": result.text]], "isError": result.isError])
         default:

@@ -642,6 +642,7 @@ final class ChatController {
         if let last = messages.indices.last, messages[last].role == .assistant {
             messages[last].isStreaming = false
             messages[last].approval = nil
+            if let request = messages[last].toolApproval { answerToolApproval(request.id, allow: false) }
             if messages[last].text.isEmpty { messages[last].text = "(Stopped.)" }
         }
     }
@@ -1147,7 +1148,9 @@ final class ChatController {
         // by the *model*: a tool-capable provider gets a `web_search` tool and calls it mid-generation
         // (industry standard); on the heuristic path (MLX/Apple) a single model call both decides and
         // rewrites the query with conversation references resolved ("latest about her?" → the real name).
-        let providerTools = allowGround ? await intelligence.activeTextProviderSupportsTools() : false
+        // Package tools are offered whenever the model can call tools, with or without web search.
+        let packageTools = PackageToolCall.chatTools()
+        let providerTools = allowGround || !packageTools.isEmpty ? await intelligence.activeTextProviderSupportsTools() : false
         let intent = Self.webIntent(typed: typed, hasImage: !attachments.isEmpty)
         let grounding = await decideGrounding(typed: typed, hasImage: !attachments.isEmpty,
                                               allowGround: allowGround, providerTools: providerTools)
@@ -1156,9 +1159,10 @@ final class ChatController {
         // there is one tool, and the cap plus the turn-scoped policy are what keep it that way as more
         // are registered (see `Toolbelt`).
         let exposedTools = Toolbelt.expose(for: .init(providerSupportsTools: providerTools,
-                                                      webGroundingAllowed: allowGround))
-        let toolPath = !exposedTools.isEmpty && benefits
-        let heuristicGround = allowGround && exposedTools.isEmpty && benefits
+                                                      webGroundingAllowed: allowGround && benefits,
+                                                      packageTools: packageTools))
+        let toolPath = !exposedTools.isEmpty
+        let heuristicGround = allowGround && !providerTools && benefits
         if allowGround && !benefits {
             Log.chat.notice("runTurn · grounding skipped — turn doesn't benefit from web (intent=\(String(describing: intent), privacy: .public))")
         }
@@ -1344,6 +1348,9 @@ final class ChatController {
         let executor: ToolExecutor = { [weak self] call in
             await toolMemo.result(for: call) { [weak self] in
                 guard let self else { return "Web search is unavailable." }
+                if call.name != ChatTool.webSearch.name {
+                    return await self.runPackageTool(call, assistantID: assistantID)
+                }
                 let query = call.string("query") ?? typed
                 return await self.runWebSearchTool(query: query, boxed: toolBoxed,
                                                    ocrText: toolOCR, assistantID: assistantID)
@@ -2669,6 +2676,13 @@ final class ChatController {
 
         guard !PrivacyMode.localOnly else { end(error: HermesError.localOnly.localizedDescription); return }
         edit(assistantID) { $0.viaAgent = true }
+        agentReply = (session, assistantID)
+        defer {
+            if agentReply?.id == assistantID { agentReply = nil }
+            if let request = session.messages.first(where: { $0.id == assistantID })?.toolApproval {
+                answerToolApproval(request.id, allow: false)
+            }
+        }
         let t0 = Date()
         // Lasso's own Hermes, thinking with the model chosen in Lasso when Hermes can reach it; or, in
         // Settings' advanced mode, a Hermes the user runs.
@@ -2694,7 +2708,7 @@ final class ChatController {
                                               done: true))
             }
             let runtime = HermesRuntime.shared
-            if runtime.state != .running || runtime.activeRoute != route {
+            if runtime.needsStart(for: route) {
                 edit(assistantID) { $0.steps = leadSteps + [ActivityStep(icon: "bolt", text: "Starting the agent…")] }
             }
             do {
@@ -2872,6 +2886,72 @@ final class ChatController {
             out.append((m.role == .user ? "user" : "assistant", trimmed))
         }
         return out.reversed()
+    }
+
+    // MARK: - Package tools
+
+    /// Approvals for a model's call to a package command, waiting on the user, by request id.
+    private var toolApprovalWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    /// The Agent reply being written now: where an Agent's call to a package tool asks.
+    var agentReply: (session: Conversation, id: UUID)?
+
+    /// The chat model's call to a package tool, shown as a step; acting commands ask first.
+    func runPackageTool(_ call: ToolCall, assistantID: UUID) async -> String {
+        let session = active
+        let arguments = call.argumentsJSON.data(using: .utf8)
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        let label = PackageToolCall.stepLabel(call.name) ?? "Used \(call.name)"
+        let step = addStep(assistantID, icon: "shippingbox", text: label)
+        let result = await PackageToolCall.call(call.name, arguments: arguments) { [weak self] request in
+            await self?.askToolApproval(request, in: session, messageID: assistantID) ?? false
+        }
+        Log.chat.notice("package tool · \(call.name, privacy: .public) denied=\(result.denied, privacy: .public) error=\(result.isError, privacy: .public)")
+        if let i = session.messages.firstIndex(where: { $0.id == assistantID }),
+           let j = session.messages[i].steps.firstIndex(where: { $0.id == step }) {
+            session.messages[i].steps[j].done = true
+            if result.denied { session.messages[i].steps[j].text = "\(label): you didn't allow it" }
+            else if result.isError { session.messages[i].steps[j].text = "\(label) (failed)" }
+        }
+        return result.text
+    }
+
+    /// The Agent's call to a package tool that acts: Lasso's approval card in the Agent's reply, with
+    /// the call held until the user answers. No Agent reply being written means no one to ask: denied.
+    func askForAgentTool(_ request: PackageToolRequest) async -> Bool {
+        guard let reply = agentReply else { return false }
+        return await askToolApproval(request, in: reply.session, messageID: reply.id)
+    }
+
+    /// Shows `request` on the reply and waits for Allow or Deny. Denied after `timeout` (before the
+    /// Agent's own wait gives up), when the reply stops, or when it isn't being written any more.
+    func askToolApproval(_ request: PackageToolRequest, in session: Conversation, messageID: UUID,
+                         timeout: Duration = .seconds(280)) async -> Bool {
+        func message() -> ChatMessage? { session.messages.first { $0.id == messageID } }
+        func edit(_ mutate: (inout ChatMessage) -> Void) {
+            if let i = session.messages.firstIndex(where: { $0.id == messageID }) { mutate(&session.messages[i]) }
+        }
+        // One card at a time: a second call waits for the first answer.
+        while message()?.toolApproval != nil, message()?.isStreaming == true {
+            try? await Task.sleep(for: .milliseconds(150))
+        }
+        guard message()?.isStreaming == true else { return false }
+        edit { $0.toolApproval = request }
+        let id = request.id
+        let timer = Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            if !Task.isCancelled { self?.answerToolApproval(id, allow: false) }
+        }
+        let allowed = await withCheckedContinuation { toolApprovalWaiters[id] = $0 }
+        timer.cancel()
+        edit { if $0.toolApproval?.id == id { $0.toolApproval = nil } }
+        return allowed
+    }
+
+    /// The user's answer on the card (or a stop or timeout, as a no).
+    func answerToolApproval(_ requestID: UUID, allow: Bool) {
+        guard let waiter = toolApprovalWaiters.removeValue(forKey: requestID) else { return }
+        Log.chat.notice("package tool · approval \(allow ? "allowed" : "denied", privacy: .public)")
+        waiter.resume(returning: allow)
     }
 
     // MARK: - Message mutation helpers

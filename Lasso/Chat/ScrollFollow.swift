@@ -28,7 +28,7 @@ enum ScrollFollow {
 
     static func growth(_ m: ChatMessage) -> Growth {
         Growth(text: m.text.count, reasoning: m.reasoning.count, steps: m.steps.count,
-               stepsDone: m.steps.filter(\.done).count, status: m.statusText, approval: m.approval != nil,
+               stepsDone: m.steps.filter(\.done).count, status: m.statusText, approval: m.approval != nil || m.toolApproval != nil,
                sources: m.sources.count, notice: m.notice != nil)
     }
 }

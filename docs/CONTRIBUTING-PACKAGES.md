@@ -4,11 +4,11 @@ A package adds something to Lasso without changing Lasso's code. This version of
 
 - **Search packages**: a web service Lasso asks when it searches the web (in chat, Identify and the
   Agent).
-- **Commands**: a button in the capture toolbar, a `/command` in chat, a "Send to" target, or a hotkey
-  on text highlighted in any app. A command either runs a prompt on the model the user chose in Lasso,
-  or calls a web service.
+- **Commands**: a button in the capture toolbar, a `/command` in chat, a "Send to" target, a hotkey
+  on text highlighted in any app, or a tool the chat model and Lasso's Agent can call. A command either
+  runs a prompt on the model the user chose in Lasso, or calls a web service.
 
-Tools for the model, Shortcuts and scripts come in later steps; they're described in
+Shortcuts and scripts come in later steps; they're described in
 [PACKAGES.md](PACKAGES.md), which is the full format and the source of truth when this guide and it
 disagree.
 
@@ -165,6 +165,8 @@ is on their Mac:
   `notify`, `copy` or `open`.
 - `hotkey`: listed in Settings › Keyboard Shortcuts under Highlighted text; the user sets a key that runs
   it on the text highlighted in any app. Your package never picks the key.
+- `tool`: a tool the chat model (when it can call tools) and Lasso's Agent can use. Needs a `tool`
+  object, below.
 
 **How it runs**
 - `prompt` runs on the model the user chose in Settings › Models, never another one. `{{text}}` is
@@ -195,8 +197,32 @@ For example, a button that opens parcel tracking only when there's a tracking nu
 
 with `"hosts": ["parcelsapp.com"]` at the top.
 
-**Not yet:** images as input, tools for the model and the Agent, Shortcuts, scripts, and files as
-output. A package using one is refused with "This version of Lasso can't … yet".
+**Tools for models.** Add `"tool"` to `surfaces` and describe it for the model:
+
+```json
+{ "id": "convert", "title": "Convert currency", "surfaces": ["tool"], "input": ["args"], "output": "markdown",
+  "run": { "http": { "url": "https://api.example.com/convert",
+                     "query": { "amount": "{{args.amount}}", "to": "{{args.to}}" } }, "answer": "result" },
+  "tool": { "name": "convert_currency", "description": "Convert an amount to another currency at today's rate.",
+            "args": { "amount": "number", "to": "string" } },
+  "test": { "args": { "amount": 5, "to": "EUR" } } }
+```
+
+- `name`: lowercase letters, digits and `_`, starting with a letter, at most 40. If it clashes with
+  another package's or one Lasso has, it's offered as `<package_id>_<name>`.
+- `description`: at most 200 characters, read by the model with every request. Say what it does and
+  when to use it. All offered tools share a 1,500-character budget, so short is kind: the user turns off
+  the ones that don't fit.
+- `args`: up to 6, `string`, `number` or `boolean`, all required; use them as `{{args.<name>}}`. A command
+  with the `args` input is only a tool. To make one command both Send to and a tool, take `text` and give
+  the tool a `text` argument.
+- `output`: `markdown`, `copy`, `notify` or `open`. Lasso asks the user first, on its own card, whenever
+  a model runs one that does more than return text: `copy`, `notify`, `open`, or an `http` method other
+  than `GET`. A model can never run a `replace` command.
+
+What your tool returns goes to the model as content, fenced, at most 4,000 characters.
+
+**Not yet:** images as input, Shortcuts, scripts, and files as output. A package using one is refused with "This version of Lasso can't … yet".
 
 ## Editor help
 

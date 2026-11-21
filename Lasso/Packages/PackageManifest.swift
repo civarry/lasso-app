@@ -57,9 +57,30 @@ struct PackageCommand: Sendable, Equatable {
     var when: PackageWhen?
     var testQuery: String?
     var testText: String?
+    /// The `tool` surface's definition for models.
+    var tool: PackageTool? = nil
+    /// Sample tool arguments for the Test button.
+    var testArgs: [String: String] = [:]
 
     var http: PackageHTTPRun? { if case .http(let h) = runner { h } else { nil } }
     var prompt: PackagePromptRun? { if case .prompt(let p) = runner { p } else { nil } }
+}
+
+/// A command as a tool for the chat model and the Agent (spec, "Model and Agent tools").
+struct PackageTool: Sendable, Equatable {
+    enum ArgType: String, Sendable, CaseIterable { case string, number, boolean }
+    struct Arg: Sendable, Equatable {
+        var name: String
+        var type: ArgType
+    }
+    var name: String
+    var description: String
+    /// Sorted by name, all required.
+    var args: [Arg]
+
+    static let namePattern = "[a-z][a-z0-9_]{0,39}"
+    static let maxArgs = 6
+    static let maxDescription = 200
 }
 
 /// The `prompt` runner: a prompt run on the model chosen in Lasso's Settings.
@@ -421,9 +442,6 @@ private struct Reader {
                 guard let surface = PackageCommand.Surface(rawValue: name) else {
                     problem("\(path).surfaces[\(i)]", "Unknown surface \"\(name)\"."); continue
                 }
-                if surface == .tool {
-                    problem("\(path).surfaces[\(i)]", "This version of Lasso can't show commands on \"\(name)\" yet.")
-                }
                 surfaces.append(surface)
             }
         } else { problem(join(path, "surfaces"), "Required: a list of where the command appears.") }
@@ -437,7 +455,9 @@ private struct Reader {
                     problem("\(path).input[\(i)]", "Unknown input \"\(name)\"."); continue
                 }
                 if input == .image { problem("\(path).input[\(i)]", "This version of Lasso can't give commands images yet.") }
-                if input == .args { problem("\(path).input[\(i)]", "\"args\" comes with the tool surface, which this version of Lasso can't show yet.") }
+                if input == .args, surfaces != [.tool] {
+                    problem("\(path).input[\(i)]", "\"args\" is only for commands whose one surface is \"tool\": elsewhere no model fills them in.")
+                }
                 if input == .query, !isSearch { problem("\(path).input[\(i)]", "\"query\" is only for search commands.") }
                 inputs.append(input)
             }
@@ -479,14 +499,40 @@ private struct Reader {
                 problem(join(join(path, "when"), "hasImage"), "Hotkeys and chat commands run on text, never an image.")
             }
         }
-        if o["tool"] != nil { problem(join(path, "tool"), "This version of Lasso can't offer commands as tools yet.") }
+        var tool: PackageTool?
+        if let raw = o["tool"] {
+            if surfaces.contains(.tool) { tool = self.tool(raw, at: join(path, "tool")) }
+            else { problem(join(path, "tool"), "Only for commands with the \"tool\" surface.") }
+        } else if surfaces.contains(.tool) {
+            problem(join(path, "tool"), "Required with the \"tool\" surface: a name, a description and the arguments.")
+        }
+        if let tool, inputs.contains(.text), !tool.args.contains(where: { $0.name == "text" }) {
+            problem(join(join(path, "tool"), "args"), "The command takes \"text\", so the tool needs a \"text\" argument for the model to fill in.")
+        }
+        if tool != nil, let output, ![.markdown, .copy, .notify, .open].contains(output) {
+            problem(join(path, "output"), "A tool's output is markdown, copy, notify or open.")
+        }
 
-        var testQuery: String?, testText: String?
+        var testQuery: String?, testText: String?, testArgs: [String: String] = [:]
         if let test = o["test"] {
             if let t = test as? [String: Any] {
                 onlyKnown(t, ["text", "query", "args", "image"], at: join(path, "test"))
                 testQuery = string(t, "query", at: join(path, "test"), required: false)
                 testText = string(t, "text", at: join(path, "test"), required: false)
+                if let raw = t["args"] {
+                    if let args = raw as? [String: Any] {
+                        for (key, value) in args {
+                            if let v = value as? String { testArgs[key] = v }
+                            else if let n = value as? NSNumber { testArgs[key] = PackageTool.text(n) }
+                            else { problem("\(join(path, "test")).args.\(key)", "Must be text, a number or true/false.") }
+                        }
+                        if let tool {
+                            for key in testArgs.keys where !tool.args.contains(where: { $0.name == key }) {
+                                problem("\(join(path, "test")).args.\(key)", "The tool has no argument \"\(key)\".")
+                            }
+                        }
+                    } else { problem(join(join(path, "test"), "args"), "Must be an object.") }
+                }
             } else { problem(join(path, "test"), "Must be an object.") }
         }
         if isSearch, testQuery?.isEmpty != false {
@@ -496,11 +542,43 @@ private struct Reader {
         guard let runObject = o["run"] as? [String: Any] else { problem(join(path, "run"), "Required."); return nil }
         var names = Set(inputs.map(\.rawValue)).union(["language"])
         if inputs.contains(.source) { names.formUnion(["source.app", "source.url"]); names.remove("source") }
+        if inputs.contains(.args) {
+            names.remove("args")
+            names.formUnion((tool?.args ?? []).map { "args.\($0.name)" })
+        }
         guard let runner = self.runner(runObject, at: join(path, "run"), hosts: hosts, settings: settings,
                                        values: names, output: output, isSearch: isSearch) else { return nil }
         guard let output else { return nil }
         return PackageCommand(id: id, title: title, symbol: symbol, surfaces: surfaces, input: inputs, output: output,
-                              runner: runner, when: when, testQuery: testQuery, testText: testText)
+                              runner: runner, when: when, testQuery: testQuery, testText: testText,
+                              tool: tool, testArgs: testArgs)
+    }
+
+    mutating func tool(_ raw: Any, at path: String) -> PackageTool? {
+        guard let o = raw as? [String: Any] else { problem(path, "Must be an object."); return nil }
+        onlyKnown(o, ["name", "description", "args"], at: path)
+        let name = string(o, "name", at: path, length: 1...40) ?? ""
+        if !name.isEmpty, !PackageValidator.matches(name, PackageTool.namePattern) {
+            problem(join(path, "name"), "Lowercase letters, digits and \"_\", starting with a letter.")
+        }
+        let description = string(o, "description", at: path, length: 1...PackageTool.maxDescription) ?? ""
+        var args: [PackageTool.Arg] = []
+        if let raw = o["args"] {
+            if let object = raw as? [String: Any] {
+                if object.count > PackageTool.maxArgs { problem(join(path, "args"), "At most \(PackageTool.maxArgs) arguments.") }
+                for key in object.keys.sorted() {
+                    if !PackageValidator.matches(key, PackageTool.namePattern) {
+                        problem("\(path).args.\(key)", "Lowercase letters, digits and \"_\", starting with a letter.")
+                    }
+                    guard let typeName = object[key] as? String, let type = PackageTool.ArgType(rawValue: typeName) else {
+                        problem("\(path).args.\(key)", "Must be \"string\", \"number\" or \"boolean\"."); continue
+                    }
+                    args.append(.init(name: key, type: type))
+                }
+            } else { problem(join(path, "args"), "Must be an object of name: type.") }
+        }
+        guard !name.isEmpty, !description.isEmpty else { return nil }
+        return PackageTool(name: name, description: description, args: args)
     }
 
     mutating func when(_ raw: Any, at path: String) -> PackageWhen? {

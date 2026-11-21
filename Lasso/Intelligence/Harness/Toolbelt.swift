@@ -31,6 +31,9 @@ enum Toolbelt {
         var providerSupportsTools: Bool
         /// Web grounding is permitted right now: globe on, a connector active, not local-only.
         var webGroundingAllowed: Bool
+        /// Package commands offered as tools (`PackageToolCall.chatTools`): already filtered for
+        /// local-only, keys and the 1,500-character budget, so they aren't counted against `maxExposed`.
+        var packageTools: [ChatTool] = []
     }
 
     /// The tools to offer for this turn. Empty means "no tool loop": the caller answers in one pass.
@@ -38,6 +41,6 @@ enum Toolbelt {
         guard context.providerSupportsTools else { return [] }
         var tools: [ChatTool] = []
         if context.webGroundingAllowed { tools.append(.webSearch) }
-        return Array(tools.prefix(maxExposed))
+        return Array(tools.prefix(maxExposed)) + context.packageTools
     }
 }

@@ -136,6 +136,7 @@ struct HermesTurn {
         case "look_at_image": return "Looked at an image"
         default: break
         }
+        if let label = PackageToolCall.stepLabel(tool) { return label }
         return switch tool {
         case "terminal", "process": "Ran a command"
         case "web_search": "Searched the web"
@@ -157,6 +158,7 @@ struct HermesTurn {
 
     static func icon(for tool: String) -> String {
         if lassoTool(tool) != nil { return "eye" }
+        if PackageToolCall.stepLabel(tool) != nil { return "shippingbox" }
         return switch tool {
         case "terminal", "process", "execute_code": "terminal"
         case "web_search", "web_extract": "globe"

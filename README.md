@@ -113,9 +113,14 @@ with its key, how much of its free tier you've used, and a Test button. Local-on
 that reach off your Mac.
 
 Packages can also add commands: a button in the capture toolbar, a `/command` in chat, a "Send to"
-target on captures and chat replies, or a hotkey that runs on text highlighted in any app (and can
-paste the result back over it). A command runs a prompt on the model you chose in Lasso, never another
-one, or calls a web service. Tools for the model and the Agent, Shortcuts and scripts are planned in
+target on captures and chat replies, a hotkey that runs on text highlighted in any app (and can
+paste the result back over it), or a tool the chat model and the Agent can use. A command runs a
+prompt on the model you chose in Lasso, never another one, or calls a web service. Tools are offered
+to the chat model when it can call tools (Ollama and cloud models; with Apple Intelligence or MLX,
+only the Agent gets them), and their descriptions share a 1,500-character budget so a local model
+isn't slowed down; Settings › Packages › Tools for models chooses which are offered. When a model
+wants to run one that does something (copies, notifies, opens a page, or sends data), Lasso shows
+what it will run with what and waits for you to allow it. Shortcuts and scripts are planned in
 the same format: [`docs/PACKAGES.md`](docs/PACKAGES.md) is the
 full design, and [`docs/CONTRIBUTING-PACKAGES.md`](docs/CONTRIBUTING-PACKAGES.md) shows how to make
 one, with a working example, the rules Lasso checks, and a JSON Schema for your editor.

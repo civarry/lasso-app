@@ -61,6 +61,8 @@ final class PackageStore {
         var approved: Data?
         /// Commands the user switched off (the package's other commands keep working).
         var disabledCommands: [String]?
+        /// Commands the user stopped offering to models as tools (they keep their other surfaces).
+        var offTools: [String]?
     }
 
     private var recordsKey: String { "packages.records" }
@@ -107,7 +109,8 @@ final class PackageStore {
             package.commands.removeAll { off.contains($0.id) }
             return package
         }
-        PackageRegistry.shared.update(active, settings: settingValues(for:))
+        PackageRegistry.shared.update(active, settings: settingValues(for:),
+                                      offTools: { Set(records[$0]?.offTools ?? []) })
         NotificationCenter.default.post(name: PackageStore.didChange, object: nil)
     }
 
@@ -225,6 +228,22 @@ final class PackageStore {
         reload()
     }
 
+    func isToolOffered(_ id: String, _ command: String) -> Bool {
+        !(records[id]?.offTools ?? []).contains(command)
+    }
+
+    /// Whether models are offered this command as a tool (Settings › Packages › Tools).
+    func setToolOffered(_ id: String, _ command: String, _ on: Bool) {
+        var records = self.records
+        guard var record = records[id] else { return }
+        var off = Set(record.offTools ?? [])
+        if on { off.remove(command) } else { off.insert(command) }
+        record.offTools = off.sorted()
+        records[id] = record
+        self.records = records
+        reload()
+    }
+
     // MARK: Settings
 
     private func settingKey(_ id: String, _ setting: String) -> String { "package.\(id).setting.\(setting)" }
@@ -273,6 +292,8 @@ final class PackageRegistry: @unchecked Sendable {
         var secrets: [String]
         /// Every setting it needs has a value.
         var ready: Bool
+        /// Command ids the user doesn't offer to models as tools.
+        var offTools: Set<String> = []
     }
 
     private let lock = NSLock()
@@ -281,13 +302,14 @@ final class PackageRegistry: @unchecked Sendable {
     var all: [Entry] { lock.withLock { entries } }
 
     @MainActor
-    func update(_ packages: [LassoPackage], settings: (LassoPackage) -> (values: [String: String], secrets: [String])) {
+    func update(_ packages: [LassoPackage], settings: (LassoPackage) -> (values: [String: String], secrets: [String]),
+                offTools: (String) -> Set<String> = { _ in [] }) {
         let built = packages.map { package -> Entry in
             let s = settings(package)
             let ready = package.settings.allSatisfy { setting in
                 setting.kind == .toggle || setting.kind == .choice || !(s.values["settings.\(setting.id)"] ?? "").isEmpty
             }
-            return Entry(package: package, values: s.values, secrets: s.secrets, ready: ready)
+            return Entry(package: package, values: s.values, secrets: s.secrets, ready: ready, offTools: offTools(package.id))
         }
         lock.withLock { entries = built }
     }
