@@ -10,6 +10,10 @@ final class PackageCatalog {
     static let shared = PackageCatalog()
 
     nonisolated static let indexURL = URL(string: "https://raw.githubusercontent.com/civarry/lasso-packages/main/index.json")!
+    /// The newest commit on the catalog's main branch. GitHub's file server keeps serving a branch's old
+    /// files for minutes after a change (even with a cache-busting query), so the index is read at
+    /// that exact commit instead.
+    nonisolated static let latestCommitURL = URL(string: "https://api.github.com/repos/civarry/lasso-packages/commits/main")!
     nonisolated static let host = "raw.githubusercontent.com"
 
     struct Entry: Identifiable, Equatable, Sendable {
@@ -64,15 +68,16 @@ final class PackageCatalog {
         self.indexURL = indexURL
     }
 
-    /// Whether Browse should read the index again (not read yet, or over 5 minutes ago).
-    var isStale: Bool { checked.map { Date().timeIntervalSince($0) > 300 } ?? true }
+    /// Whether Browse should read the index again: every time it opens (it's the user asking), at most
+    /// every 10 seconds. The list already read shows meanwhile.
+    var isStale: Bool { checked.map { Date().timeIntervalSince($0) > 10 } ?? true }
 
     /// Reads the index (the user opened Browse, or chose Check for Updates).
     func refresh(localOnly: Bool = PrivacyMode.localOnly) async {
         guard !localOnly else { state = .failed(LoadError.localOnly.localizedDescription); return }
         state = .loading
         do {
-            var request = URLRequest(url: indexURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+            var request = URLRequest(url: await freshIndexURL(), cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
             request.setValue("Lasso/\(Bundle.main.lassoVersion)", forHTTPHeaderField: "User-Agent")
             let (data, response) = try await session.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw LoadError.unreachable("HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)") }
@@ -84,6 +89,20 @@ final class PackageCatalog {
         } catch {
             state = .failed(LoadError.unreachable(error.localizedDescription).localizedDescription)
         }
+    }
+
+    /// The index at the newest commit, or the branch's when that can't be read (then possibly a few
+    /// minutes old).
+    private func freshIndexURL() async -> URL {
+        guard indexURL == Self.indexURL else { return indexURL }
+        var request = URLRequest(url: Self.latestCommitURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 8)
+        request.setValue("application/vnd.github.sha", forHTTPHeaderField: "Accept")
+        request.setValue("Lasso/\(Bundle.main.lassoVersion)", forHTTPHeaderField: "User-Agent")
+        guard let (data, response) = try? await session.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let sha = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              PackageValidator.matches(sha, "[0-9a-f]{40}") else { return indexURL }
+        return URL(string: "https://raw.githubusercontent.com/civarry/lasso-packages/\(sha)/index.json") ?? indexURL
     }
 
     nonisolated static func parse(_ data: Data) throws -> [Entry] {

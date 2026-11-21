@@ -652,7 +652,8 @@ CONTRIBUTING.md                                    how to write, test and submit
 `index.json` lists for each package: `id`, `version`, `name`, `summary`, `author`, `category`, its
 commands' titles and surfaces, its permissions (hosts, a key, a script, network, a Shortcut, the model,
 patches), `minLasso`, its icon, the download URL and SHA-256. Lasso fetches it only when the user opens
-Browse (at most every 5 minutes), never in local-only mode, trusts download URLs only on
+Browse (at most every 10 seconds), never in local-only mode, at the newest commit of `main` (GitHub's file
+server keeps a branch's old files for minutes after a change), trusts download URLs only on
 `raw.githubusercontent.com`, and refuses a download whose SHA-256 doesn't match. Browse lists updates
 first; nothing updates by itself.
 
