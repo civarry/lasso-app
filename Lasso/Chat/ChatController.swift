@@ -2784,7 +2784,19 @@ final class ChatController {
         if !mentioned.isEmpty {
             let looked = await lookInSources(typed: typed, mentioned: mentioned, excluded: excluded, session: session,
                                              assistantID: assistantID, automatic: false)
+            // Say what the source is, so "my notes" isn't taken for Apple Notes or anything else.
+            let sources = PackageRegistry.shared.sources().filter { mentioned.contains($0.id) }
+            let where_ = sources.map { source in
+                SourceSearch.folder(of: source).map { "\(source.name) is the folder \(($0.path as NSString).abbreviatingWithTildeInPath) on this Mac" }
+                    ?? "\(source.name) is a source in Lasso"
+            }
+            if !where_.isEmpty {
+                userText += "\n\n[The user mentioned their Lasso source: \(where_.joined(separator: "; ")). It's not Apple Notes or "
+                    + "another app. Use what Lasso found below; read files in that folder with your file tools if you need more.]"
+            }
             if let evidence = looked.evidence { userText += "\n\n" + evidence }
+            // Keep its step ("Searched My notes · …"): the Agent's own steps come after it.
+            if let steps = session.messages.first(where: { $0.id == assistantID })?.steps { leadSteps = steps }
         }
         let images = attachments.compactMap { ImageEncoder.jpegBase64($0.image) }
         // Same record as a native-vision turn, so a later turn on a regular model keeps the context.
@@ -3032,6 +3044,8 @@ final class ChatController {
             switch outcome.status {
             case .matched(let n) where own.isEmpty:
                 text = "\(verb) \(name) · \(n) match\(n == 1 ? "" : "es") · didn't send them"
+            case .matched where own.first?.title.hasPrefix("Files in ") == true:
+                text = "Listed the files in \(name)"
             case .matched:
                 text = "\(verb) \(name) · \(own.count) match\(own.count == 1 ? "" : "es")"
                 if outcome.automatic {

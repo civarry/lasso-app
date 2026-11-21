@@ -337,6 +337,19 @@ struct SourceChatTests {
         }
     }
 
+    @Test func askingAboutTheSourceItselfListsItsFiles() async throws {
+        try await withNotes { chat, _ in
+            IntelligenceCoordinator.shared.preferred = .mlx
+            let id = reply(chat)
+            let looked = await chat.lookInSources(typed: "can you list all my notes?", mentioned: ["my-notes"], excluded: [],
+                                                  session: chat.active, assistantID: id)
+            let message = try #require(chat.active.messages.first { $0.id == id })
+            #expect(looked.evidence?.contains("2 files in") == true, "\(looked.evidence ?? "nil")")
+            #expect(looked.evidence?.contains("pricing.md") == true && looked.evidence?.contains("groceries.md") == true)
+            #expect(message.steps.first?.text == "Listed the files in My notes")
+        }
+    }
+
     @Test func aCloudModelAsksFirstPerCompany() async throws {
         try await withNotes { chat, _ in
             let intelligence = IntelligenceCoordinator.shared
