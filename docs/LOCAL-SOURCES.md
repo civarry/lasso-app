@@ -1,11 +1,21 @@
 # Sources: `@` to look in your notes (and other places), apart from web search
 
-**Status: agreed design, not built.** Settled by a design panel (product manager, product designer, UI
+**Status: built (Lasso 0.23.0).** Settled by a design panel (product manager, product designer, UI
 designer, UX designer, Claude as moderator) over five rounds. The owner's `@` proposal replaced the first
 signed version (round 4); the owner then asked for Lasso to decide by itself without MCP-style context
 bloat on local models (round 5, after research on Cloudflare's Code Mode and Anthropic's progressive tool
-disclosure). All four signed each version. When built, it becomes part of [`PACKAGES.md`](PACKAGES.md) and
-[`APP_FLOW.md`](APP_FLOW.md).
+disclosure). All four signed each version. [`PACKAGES.md`](PACKAGES.md) and [`APP_FLOW.md`](APP_FLOW.md) describe the format and flow; this
+records the design and why.
+
+**Where the build differs from the plan below** (simpler, checked by the same tests):
+
+- **No planning call for sources.** Lasso's own ranking keeps at most 2 sources that share words with
+  What's in it; running them takes milliseconds on this Mac, and the lexical gate decides whether
+  anything reaches the model. So choosing a source costs no model call at all.
+- **Tools:** with 3 or fewer installed, all are offered, as before (a currency tool must still hear "$5
+  in euros", which shares no words with its description); with more, the 3 that fit the message best
+  plus any used last turn. The Agent keeps the 1,500-character budget: it reads its tools once, when it
+  starts.
 
 ## The problem
 

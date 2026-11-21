@@ -37,7 +37,8 @@ enum PackageSearch {
 
     /// A script as a search source: it answers `{"results": [{"title", "url", "snippet"}]}`, at most 10.
     static func script(_ entry: PackageRegistry.Entry, _ command: PackageCommand, query: String) async throws -> [WebSourcesProvider.Hit] {
-        guard let run = command.script, let places = entry.places else { return [] }
+        guard let run = command.script else { return [] }
+        guard let places = entry.places else { throw PackageScript.RunError.missing(run.path) }
         let request = PackageScript.Request(command: command.id, stdin: PackageScript.stdin(entry, command, input: PackageInput(), query: query),
                                             secrets: PackageScript.secrets(entry), run: run, unsandboxed: entry.fullAccess)
         guard case .results(let list) = try await PackageScript.run(request, places: places) else {

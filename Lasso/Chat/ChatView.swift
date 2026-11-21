@@ -15,6 +15,7 @@ struct ChatView: View {
     /// The conversation is scrolled to the bottom (so new text is followed).
     @State private var followsLatest = true
     @State private var slashSelection = 0
+    @State private var mentionSelection = 0
     @Environment(\.openWindow) private var openWindow
     private var voice = VoiceInputController.shared
 
@@ -411,7 +412,7 @@ struct ChatView: View {
     private var composer: some View {
         VStack(spacing: 8) {
             // Seeded capture context + pending image attachment chips.
-            if chat.seededContext != nil || !chat.pendingAttachments.isEmpty || !chat.pendingFiles.isEmpty {
+            if chat.seededContext != nil || !chat.pendingAttachments.isEmpty || !chat.pendingFiles.isEmpty || !mentionChips.isEmpty {
                 // Scrolls sideways: five attachments don't fit a 340 pt panel.
                 ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
@@ -442,12 +443,15 @@ struct ChatView: View {
                     if let context = chat.seededContext {
                         contextChip(context)
                     }
+                    ForEach(mentionChips) { mentionChip($0) }
                 }
                 }
             }
 
             // Slash-command palette — appears while typing a "/…" token.
             if inputFocused, !slashMatches.isEmpty { slashPalette }
+            // Sources palette — appears while typing an "@…" token.
+            if inputFocused, slashMatches.isEmpty, let mentions = mentionMatches { mentionPalette(mentions) }
             // A package command that can't run as typed says why here, and goes on the next edit.
             if let notice = chat.composerNotice {
                 Label(notice, systemImage: "exclamationmark.circle")
@@ -461,11 +465,12 @@ struct ChatView: View {
             HStack(alignment: .bottom, spacing: 6) {
                 ComposerTextView(text: Binding(get: { chat.active.input }, set: { chat.active.input = $0 }),
                                  isFocused: $inputFocused, height: $inputHeight,
-                                 placeholder: voice.isActive ? "Listening…" : "Message…",
+                                 placeholder: voice.isActive ? "Listening…" : composerPlaceholder,
                                  onKey: composerKey)
                     .frame(height: inputHeight)
                     .onChange(of: chat.active.input) { _, _ in
                         if slashSelection >= slashMatches.count { slashSelection = 0 }
+                        if mentionSelection >= (mentionMatches?.count ?? 0) { mentionSelection = 0 }
                         if chat.active.input != chat.composerNoticeInput { chat.composerNotice = nil }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -561,8 +566,146 @@ struct ChatView: View {
             }
             return true
         }
+        if let mentions = mentionMatches {
+            let pickable = mentions.filter { mentionProblem($0) == nil }
+            switch key {
+            case .down: mentionSelection = min(mentionSelection + 1, max(mentions.count - 1, 0))
+            case .up: mentionSelection = max(mentionSelection - 1, 0)
+            case .submit, .tab:
+                if mentions.indices.contains(mentionSelection), mentionProblem(mentions[mentionSelection]) == nil {
+                    pickMention(mentions[mentionSelection])
+                } else if let first = pickable.first { pickMention(first) }
+            case .escape: dropMentionToken()
+            }
+            return true
+        }
         if key == .submit { Task { await voice.sendEndingDictation() }; return true }
         return false
+    }
+
+    // MARK: - Sources: @
+
+    /// "Message… or @ for My notes" while a source is installed.
+    private var composerPlaceholder: String {
+        let sources = PackageRegistry.shared.sources(localOnly: false)
+        switch sources.count {
+        case 0: return "Message…"
+        case 1: return "Message… or @ for \(sources[0].name)"
+        default: return "Message… or @ to search"
+        }
+    }
+
+    /// The "@…" being typed at the end of the message, if any.
+    private var mentionToken: String? {
+        let text = chat.active.input
+        guard let at = text.lastIndex(of: "@") else { return nil }
+        let token = String(text[text.index(after: at)...])
+        // At the start of a word, and still one name (names have spaces, so allow two words).
+        if at != text.startIndex, !(text[text.index(before: at)].isWhitespace) { return nil }
+        guard token.count <= 30, token.split(separator: " ").count <= 2, !token.hasSuffix("  ") else { return nil }
+        return token
+    }
+
+    /// Sources matching the "@…" token: On this Mac first, then Web search. nil when no token.
+    private var mentionMatches: [PackageSource]? {
+        guard let token = mentionToken else { return nil }
+        let q = token.lowercased().trimmingCharacters(in: .whitespaces)
+        let all = PackageRegistry.shared.sources(localOnly: false)
+        return all.filter { q.isEmpty || $0.name.lowercased().hasPrefix(q) || $0.name.lowercased().contains(q) }
+    }
+
+    /// Why a source can't be picked now (local-only for a Web one, a folder that's gone).
+    private func mentionProblem(_ source: PackageSource) -> String? {
+        if !source.isOnThisMac, PrivacyMode.localOnly { return "Paused in local-only mode" }
+        for setting in source.entry.package.settings where setting.kind == .folder {
+            let path = source.entry.values["settings.\(setting.id)"] ?? ""
+            if !path.isEmpty, !FileManager.default.fileExists(atPath: path) {
+                return "Can't find \((path as NSString).abbreviatingWithTildeInPath)"
+            }
+        }
+        return nil
+    }
+
+    private func dropMentionToken() {
+        guard let at = chat.active.input.lastIndex(of: "@") else { return }
+        chat.active.input = String(chat.active.input[..<at]).trimmingCharacters(in: .whitespaces)
+    }
+
+    private func pickMention(_ source: PackageSource) {
+        dropMentionToken()
+        if !chat.active.input.isEmpty { chat.active.input += " " }
+        chat.mention(source.id)
+        mentionSelection = 0
+        inputFocused = true
+    }
+
+    private func mentionPalette(_ sources: [PackageSource]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if sources.isEmpty {
+                HStack(spacing: 6) {
+                    Text("Nothing to search yet.").foregroundStyle(.secondary)
+                    Button("Add from Packages") { SettingsWindow.openPane(.packages) }.buttonStyle(.link)
+                }
+                .font(.caption).padding(.horizontal, 10).padding(.vertical, 8)
+            }
+            ForEach(Array(sources.enumerated()), id: \.element.id) { idx, source in
+                if idx == 0 || sources[idx - 1].isOnThisMac != source.isOnThisMac {
+                    Text(source.isOnThisMac ? "On this Mac" : "Web search")
+                        .font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+                        .padding(.horizontal, 10).padding(.top, idx == 0 ? 4 : 8).padding(.bottom, 2)
+                }
+                let problem = mentionProblem(source)
+                HStack(spacing: 10) {
+                    Image(systemName: problem == nil ? (source.entry.package.iconSymbol ?? "text.magnifyingglass") : (source.isOnThisMac ? "exclamationmark.triangle" : "lock"))
+                        .font(.system(size: 12)).frame(width: 16)
+                        .foregroundStyle(problem != nil ? (source.isOnThisMac ? Color.orange : Color.secondary)
+                                         : idx == mentionSelection ? Color.accentColor : Color.secondary)
+                    Text(source.name).font(.callout)
+                    Text(problem ?? mentionDetail(source)).font(.caption)
+                        .foregroundStyle(problem != nil && source.isOnThisMac ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .opacity(problem != nil && !source.isOnThisMac ? 0.5 : 1)
+                .background(idx == mentionSelection && problem == nil ? Color.accentColor.opacity(0.15) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 7))
+                .contentShape(Rectangle())
+                .onTapGesture { if problem == nil { pickMention(source) } }
+                .onHover { if $0 { mentionSelection = idx } }
+            }
+        }
+        .padding(4)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(.white.opacity(0.12)))
+    }
+
+    /// Its folder, or its host.
+    private func mentionDetail(_ source: PackageSource) -> String {
+        if let folder = source.entry.package.settings.first(where: { $0.kind == .folder }),
+           let path = source.entry.values["settings.\(folder.id)"], !path.isEmpty {
+            return (path as NSString).abbreviatingWithTildeInPath
+        }
+        return PackageHTTP.allowedHosts(source.entry.package, values: source.entry.values).sorted().first ?? ""
+    }
+
+    /// The sources mentioned in this chat, as chips.
+    private var mentionChips: [PackageSource] {
+        let all = PackageRegistry.shared.sources(localOnly: false)
+        return chat.active.mentions.compactMap { id in all.first { $0.id == id } }
+    }
+
+    private func mentionChip(_ source: PackageSource) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: source.entry.package.iconSymbol ?? "text.magnifyingglass").font(.caption)
+            Text("@" + source.name).font(.caption)
+            Button { chat.removeMention(source.id) } label: { Image(systemName: "xmark.circle.fill").font(.caption) }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .help("Stop searching \(source.name) in this chat")
+        }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(.tint.opacity(0.18), in: Capsule())
+        .help("Searched with every message in this chat until you remove it")
     }
 
     /// Web search for this chat. Hidden when it doesn't apply (the agent searches by itself; no web
@@ -1104,6 +1247,10 @@ struct MessageBubble: View {
                 if editing {
                     editView
                 } else {
+                    if isUser, !message.mentions.isEmpty {
+                        Text(message.mentions.map { "@" + $0 }.joined(separator: " "))
+                            .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+                    }
                     if !isUser, let caption = message.caption {
                         Label(caption, systemImage: "shippingbox")
                             .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
@@ -1140,8 +1287,8 @@ struct MessageBubble: View {
                         }
                     }
                     if let request = message.toolApproval {
-                        ToolApprovalCard(request: request, asker: message.viaAgent ? "The Agent" : "The model") {
-                            chat.answerToolApproval(request.id, allow: $0)
+                        ToolApprovalCard(request: request, asker: message.viaAgent ? "The Agent" : "The model") { allow, remember in
+                            chat.answerToolApproval(request.id, allow: allow, remember: remember)
                         }
                     }
                     if message.isError, !message.isStreaming, !isUser {
@@ -1149,6 +1296,7 @@ struct MessageBubble: View {
                             .controlSize(.small)
                             .disabled(chat.active.isStreaming)
                     }
+                    if !isUser, !message.isStreaming { SourcesFooter(message: message) }
                     if !message.isStreaming, !message.text.isEmpty || !message.attachments.isEmpty {
                         // Always on the newest message, on hover for older ones (a long chat used to show
                         // a trash can per message). Faded rather than removed, so rows don't jump.
@@ -1229,11 +1377,12 @@ private struct ApprovalCard: View {
 private struct ToolApprovalCard: View {
     let request: PackageToolRequest
     let asker: String
-    let answer: (Bool) -> Void
+    /// Allowed, and whether to remember it (a source's "Allow for My notes").
+    let answer: (Bool, Bool) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("\(asker) wants to use \(request.title)", systemImage: "hand.raised.fill")
+            Label(request.remember == nil ? "\(asker) wants to use \(request.title)" : request.title, systemImage: "hand.raised.fill")
                 .font(.caption).fontWeight(.semibold)
                 .foregroundStyle(.orange)
             Text("\(request.effect) · \(request.packageName)")
@@ -1258,14 +1407,88 @@ private struct ToolApprovalCard: View {
                 .background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
             }
             HStack(spacing: 8) {
-                Button("Allow") { answer(true) }.buttonStyle(.borderedProminent)
-                Button("Deny", role: .destructive) { answer(false) }.buttonStyle(.bordered)
+                if let remember = request.remember {
+                    Button(remember) { answer(true, true) }.buttonStyle(.borderedProminent)
+                    Button("This time") { answer(true, false) }.buttonStyle(.bordered)
+                    Button("Don't send", role: .destructive) { answer(false, false) }.buttonStyle(.bordered)
+                } else {
+                    Button("Allow") { answer(true, false) }.buttonStyle(.borderedProminent)
+                    Button("Deny", role: .destructive) { answer(false, false) }.buttonStyle(.bordered)
+                }
             }
             .controlSize(.small)
         }
         .padding(10)
         .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.orange.opacity(0.35)))
+    }
+}
+
+// MARK: - Sources under a reply
+
+/// "From My notes" under a reply: the files it answered from (click opens, ⌥-click shows in Finder),
+/// and a source step's one-click fixes ("Answer without it", "Look in My notes for this").
+private struct SourcesFooter: View {
+    let message: ChatMessage
+    private let chat = ChatController.shared
+
+    var body: some View {
+        let groups = Dictionary(grouping: message.sourceHits, by: \.source)
+        let actionable = message.steps.filter { !$0.actions.isEmpty }
+        if !groups.isEmpty || !actionable.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(groups.keys.sorted(), id: \.self) { name in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 8) {
+                            Text("From \(name)").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                            // Its one-click fixes sit on its own line, not repeated as a sentence.
+                            if let step = actionable.first(where: { $0.actions.first?.sourceName == name }) { actions(step) }
+                        }
+                        ForEach(groups[name] ?? []) { hit in row(hit) }
+                    }
+                }
+                ForEach(actionable.filter { step in !groups.keys.contains(step.actions.first?.sourceName ?? "") }) { step in
+                    HStack(spacing: 8) {
+                        Text(step.text).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        actions(step)
+                    }
+                }
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    @ViewBuilder private func actions(_ step: ActivityStep) -> some View {
+        Button(step.actions[0].title) { chat.perform(step.actions[0], on: message.id) }
+            .buttonStyle(.link).font(.caption2).disabled(chat.active.isStreaming)
+        if step.actions.count > 1 {
+            Menu {
+                ForEach(Array(step.actions.dropFirst().enumerated()), id: \.offset) { _, action in
+                    Button(action.title) { chat.perform(action, on: message.id) }
+                }
+            } label: { Image(systemName: "ellipsis") }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .font(.caption2).disabled(chat.active.isStreaming)
+        }
+    }
+
+    private func row(_ hit: SourceHit) -> some View {
+        Button {
+            guard let url = hit.url else { return }
+            if NSEvent.modifierFlags.contains(.option), url.isFileURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+            else { NSWorkspace.shared.open(url) }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: hit.url?.isFileURL == true ? "doc.text" : "link").font(.caption2)
+                Text(hit.url?.lastPathComponent ?? hit.title).font(.caption2).lineLimit(1)
+                if let folder = hit.url?.deletingLastPathComponent(), hit.url?.isFileURL == true {
+                    Text((folder.path as NSString).abbreviatingWithTildeInPath).font(.caption2).foregroundStyle(.tertiary)
+                        .lineLimit(1).truncationMode(.head)
+                }
+            }
+        }
+        .buttonStyle(.plain).foregroundStyle(.secondary)
+        .help(hit.url?.isFileURL == true ? "Open · ⌥-click to show in Finder" : "Open")
     }
 }
 

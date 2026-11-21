@@ -58,6 +58,12 @@ final class Conversation: Identifiable {
 
     // MARK: Conversation state
     var messages: [ChatMessage] = []
+    /// Sources mentioned with `@` (package ids): chips that stay for follow-ups until removed.
+    var mentions: [String] = []
+    /// Sources the next turn leaves out ("Answer without it").
+    var excludedOnce: Set<String> = []
+    /// Package tools used in the last turn: still offered next turn, so a follow-up works.
+    var recentTools: Set<String> = []
     var input = ""
     var pendingAttachments: [Attachment] = []
     var pendingFiles: [FileAttachment] = []

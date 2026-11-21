@@ -259,6 +259,10 @@ my-package/
   scripts/to-csv.py
 ```
 
+- **A search script on this Mac** (no `network`) becomes a source: people type **@** and its name in chat,
+  or Lasso picks it when a message fits the "What's in it" line they set. It gets their own words in
+  `query`; return the files that hold at least two of them, with the lines that hold the most as the
+  snippet. Only the 3 best passages in all reach the model.
 - It runs **in a sandbox**: it can write only its own folder (also its `HOME`) and `TMPDIR`, read only
   the system, its package and any `folder` setting the user picked, and has no internet unless the
   command says `"network": true`. Files it returns are copied to `~/LassoWorkspace/<package>/`.

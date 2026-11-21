@@ -290,6 +290,12 @@ enum SettingsWindow {
     /// which has no SwiftUI environment to open a window with.
     @MainActor static var opener: OpenWindowAction?
 
+    /// Opens Settings at a pane (a link in chat, a `lasso://` link).
+    @MainActor static func openPane(_ pane: SettingsPane) {
+        UserDefaults.standard.set(pane.rawValue, forKey: SettingsView.paneKey)
+        openFromAnywhere()
+    }
+
     /// Opens Settings from outside SwiftUI (a link).
     @MainActor static func openFromAnywhere() {
         if let opener { open(with: opener) } else { bringForward() }

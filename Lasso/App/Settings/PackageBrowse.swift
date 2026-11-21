@@ -223,8 +223,7 @@ enum PackageLinks {
               let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "id" })?.value,
               PackageValidator.matches(id, PackageValidator.idPattern) else { return false }
         requested = id
-        UserDefaults.standard.set(SettingsPane.packages.rawValue, forKey: SettingsView.paneKey)
-        SettingsWindow.openFromAnywhere()
+        SettingsWindow.openPane(.packages)
         Log.app.notice("packages · link asked to show \(id, privacy: .public) in Browse")
         return true
     }
