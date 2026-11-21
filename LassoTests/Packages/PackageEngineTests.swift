@@ -87,7 +87,7 @@ struct PackageValidatorTests {
         let prompt = messages(Self.search.replacingOccurrences(of: "\"run\": {\"http\"", with: "\"run\": {\"prompt\": \"x\", \"http\""))
         #expect(prompt.contains("commands[0].run: Use one runner, not http and prompt."))
         let image = messages(Self.search.replacingOccurrences(of: "\"input\": [\"query\"]", with: "\"input\": [\"query\", \"image\"]"))
-        #expect(image.contains { $0.contains("can't give commands images yet") }, "\(image)")
+        #expect(image.contains { $0.contains("comes from a capture") }, "a search gets no image: \(image)")
         let script = messages(Self.search.replacingOccurrences(of: "\"run\": {\"http\"", with: "\"run\": {\"script\": {}, \"http\""))
         #expect(script.contains("commands[0].run: Use one runner, not http and script."))
     }

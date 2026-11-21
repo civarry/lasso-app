@@ -17,22 +17,33 @@
 
 <p align="center"><img src="screenshots/hero.png" alt="Drag a box around anything on screen and translate it in place"></p>
 
-**Jump to:** [What's new](#whats-new-in-024) · [What it does](#what-it-does) · [Chat](#chat) ·
+**Jump to:** [What's new](#whats-new-in-025) · [What it does](#what-it-does) · [Chat](#chat) ·
 [Agent](#agent) · [Packages](#packages) · [Privacy](#privacy) · [Install](#install) ·
 [Updates](#updates) · [AI models](#ai-models) · [Build it](#build-it-yourself)
 
-## What's new in 0.24
+## What's new in 0.25
 
-- **Updates stay installed.** If Lasso was started from somewhere other than Applications (an Xcode
-  build folder, Downloads, the disk image), an update could land in that copy and an older Lasso came
-  back at the next login. Lasso now keeps one copy: the one in Applications owns updates and starting at
-  login, and a copy elsewhere offers to replace it or use it instead. Your settings, keys, chats and
-  packages stay as they are.
-- **Packages can read tables.** Lasso sees the rows and columns of a table you lasso, so **Table to CSV**
-  (1.1.0 in Browse) now shows on tables and saves them as a CSV file. Packages can also say in their
-  own words how to use them.
+**Packages can do more without waiting for a Lasso update.**
 
-<p align="center"><img src="screenshots/app/table-to-csv.png" width="460" alt="Table to CSV's page: how to use it, and that it shows when there's a table"></p>
+- **They can see what you lasso:** the image, and every piece of text with where it sits. A package can
+  read receipts, forms or layouts itself.
+- **They can run by themselves**, on every capture or every finished chat reply, but only after you turn
+  on **Run automatically** on that package's page. It's off by default, and an update that changes what
+  runs turns it off again.
+- **Patches can change more:** the empty chat's greeting, the message box's hint, and the icons of
+  Lasso's actions.
+
+<p align="center"><img src="screenshots/app/events.png" width="460" alt="A package that can run by itself on every capture, once Run automatically is on"></p>
+
+<details>
+<summary>New in 0.24</summary>
+
+- **Updates stay installed:** the copy in Applications owns updates and starting at login.
+- **Packages can read tables:** get Table to CSV 1.1.0 from Browse, lasso a table and click it.
+
+<p align="center"><img src="screenshots/app/table-to-csv.png" width="460" alt="Table to CSV's page"></p>
+
+</details>
 
 <details>
 <summary>New in 0.23</summary>

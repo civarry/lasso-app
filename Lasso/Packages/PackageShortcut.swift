@@ -53,14 +53,18 @@ enum PackageShortcut {
     static func forget() { cache.clear() }
 
     /// Runs it with `text` as its input; returns what it output, as text.
-    static func run(_ run: PackageShortcutRun, text: String?) async throws -> String {
+    static func run(_ run: PackageShortcutRun, text: String?, image: Data? = nil) async throws -> String {
         guard await installedNames().contains(run.name) else { throw RunError.notInstalled(run.name) }
         let fm = FileManager.default
         let folder = fm.temporaryDirectory.appending(path: "lasso-shortcut-\(UUID().uuidString)", directoryHint: .isDirectory)
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: folder) }
         var arguments = [tool, "run", run.name]
-        if let text {
+        if let image {
+            let input = folder.appending(path: "capture.png")
+            try image.write(to: input)
+            arguments += ["--input-path", input.path]
+        } else if let text {
             let input = folder.appending(path: "input.txt")
             try Data(text.utf8).write(to: input)
             arguments += ["--input-path", input.path]

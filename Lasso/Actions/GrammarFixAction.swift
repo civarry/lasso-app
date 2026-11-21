@@ -9,7 +9,7 @@ struct GrammarFixAction: CaptureAction {
     let id = "ai.grammar"
     nonisolated static let defaultTitle = BuiltInContent.Title.proofread
     var title: String { PatchState.title(id, default: Self.defaultTitle) }
-    let systemImage = "text.badge.checkmark"
+    var systemImage: String { PatchState.symbol(id, default: BuiltInContent.Symbol.proofread) }
     let relevancePriority = 25
 
     func isRelevant(to ctx: CaptureContext) -> Bool { true }

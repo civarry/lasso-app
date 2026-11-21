@@ -1,4 +1,6 @@
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 
 /// What a command is run on (spec, "Input").
 struct PackageInput: Sendable, Equatable {
@@ -10,6 +12,24 @@ struct PackageInput: Sendable, Equatable {
     var args: [String: String] = [:]
     /// The capture as a table: tab-separated rows (`table` input).
     var table: String? = nil
+    /// The capture as a PNG (`image` input).
+    var image: Data? = nil
+    /// Every piece of text the capture read, with where it sits (`lines` input).
+    var lines: [OCRLine] = []
+
+    static func == (a: PackageInput, b: PackageInput) -> Bool {
+        a.text == b.text && a.sourceApp == b.sourceApp && a.sourceBundleID == b.sourceBundleID && a.sourceURL == b.sourceURL
+            && a.args == b.args && a.table == b.table && a.image == b.image && a.lines.map(\.string) == b.lines.map(\.string)
+    }
+
+    /// The `lines` input as JSON: text with its box, 0 to 1 from the top-left.
+    var linesJSON: [[String: Any]] {
+        lines.map { line in
+            let box = line.boundingBox
+            return ["text": line.string, "x": Double(box.minX), "y": Double(1 - box.maxY),
+                    "width": Double(box.width), "height": Double(box.height)]
+        }
+    }
 }
 
 /// What a command produced, before its surface decides what to do with it (show, copy, paste, open).
@@ -52,18 +72,21 @@ enum PackageCommandRunner {
             throw RunError.nothingToWorkOn
         }
         if command.input.contains(.table), (input.table ?? "").isEmpty { throw RunError.unavailable("Lasso a table: rows and columns.") }
+        if command.input.contains(.image), input.image == nil { throw RunError.unavailable("There's no image to work on.") }
         if let why = await PackageRequirements.missing(entry.package) { throw RunError.unavailable(why) }
         switch command.runner {
         case .shortcut(let run):
             // A Shortcut can reach the internet unless its author says otherwise.
             if PrivacyMode.localOnly, !run.offline { throw PackageHTTP.RunError.localOnly }
             let text = try await PackageShortcut.run(run, text: command.input.contains(.text) ? input.text
-                                                         : command.input.contains(.args) ? argsText(input.args) : nil)
+                                                         : command.input.contains(.args) ? argsText(input.args) : nil,
+                                                     image: command.input.contains(.image) ? input.image : nil)
             return .text(text)
         case .script(let run):
             guard let places = entry.places else { throw PackageScript.RunError.missing(run.path) }
-            let request = PackageScript.Request(command: command.id, stdin: PackageScript.stdin(entry, command, input: input),
+            var request = PackageScript.Request(command: command.id, stdin: PackageScript.stdin(entry, command, input: input),
                                                 secrets: PackageScript.secrets(entry), run: run, unsandboxed: entry.fullAccess)
+            if command.input.contains(.image), let png = input.image { request.inputFiles["capture.png"] = png }
             // "progress: …" lines show while it runs.
             let progress: @Sendable (String) -> Void = { line in
                 Task { @MainActor in StatusHUD.shared.show(icon: "", text: String(line.prefix(80)), spinner: true) }
@@ -79,7 +102,17 @@ enum PackageCommandRunner {
         case .prompt(let run):
             let (prompt, _) = promptText(run, values: values(entry, input), text: input.text)
             // The model the user chose and no other: no fallback to a provider they didn't pick.
-            let stream = intelligence.respond(prompt: prompt, context: nil, scope: .none)
+            let stream: AsyncThrowingStream<String, Error>
+            if command.input.contains(.image), let png = input.image {
+                guard await intelligence.textModelSupportsVision() else {
+                    throw RunError.unavailable("Your model can't see images. Choose one that can in Settings › Models.")
+                }
+                let jpeg = CGImageSourceCreateWithData(png as CFData, nil).flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
+                    .flatMap { ImageEncoder.jpegData($0) }?.base64EncodedString() ?? ""
+                stream = intelligence.respond(messages: [ChatTurn(role: .user, text: prompt, imageBase64s: [jpeg])], scope: .none)
+            } else {
+                stream = intelligence.respond(prompt: prompt, context: nil, scope: .none)
+            }
             if command.output == .open { return try await .url(url(from: collect(stream))) }
             return .stream(stream)
         case .http(let run):
@@ -113,6 +146,7 @@ enum PackageCommandRunner {
         var values = entry.values
         values["source.app"] = input.sourceApp ?? ""
         values["table"] = input.table ?? ""
+        values["lines"] = input.lines.map { "\($0.string)" }.joined(separator: "\n")
         values["source.url"] = input.sourceURL ?? ""
         for (name, value) in input.args { values["args.\(name)"] = value }
         values["language"] = Locale.current.localizedString(forLanguageCode: Locale.current.language.languageCode?.identifier ?? "en") ?? "English"
@@ -209,6 +243,9 @@ extension PackageScript {
         var out: [String: Any] = ["command": command.id]
         if command.input.contains(.text) { out["text"] = input.text ?? "" }
         if command.input.contains(.table) { out["table"] = input.table ?? "" }
+        if command.input.contains(.lines) { out["lines"] = input.linesJSON }
+        // Written into the script's TMPDIR before it starts.
+        if command.input.contains(.image), input.image != nil { out["image"] = "\(PackageScript.tmpToken)/capture.png" }
         if command.input.contains(.source) { out["source"] = ["app": input.sourceApp ?? "", "url": input.sourceURL ?? ""] }
         if command.input.contains(.query) { out["query"] = query ?? "" }
         if command.input.contains(.args) { out["args"] = input.args }
@@ -228,4 +265,14 @@ extension PackageScript {
         return out
     }
 
+}
+
+extension PackageInput {
+    /// A capture as PNG, for the `image` input.
+    static func png(_ image: CGImage) -> Data? {
+        let data = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dest, image, nil)
+        return CGImageDestinationFinalize(dest) ? data as Data : nil
+    }
 }

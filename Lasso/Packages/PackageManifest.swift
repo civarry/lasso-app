@@ -50,8 +50,10 @@ struct PackageSetting: Sendable, Equatable {
 }
 
 struct PackageCommand: Sendable, Equatable {
-    enum Surface: String, Sendable, CaseIterable { case toolbar, send, slash, tool, search, hotkey }
-    enum Input: String, Sendable, CaseIterable { case text, image, source, query, args, table }
+    enum Surface: String, Sendable, CaseIterable { case toolbar, send, slash, tool, search, hotkey, event }
+    enum Input: String, Sendable, CaseIterable { case text, image, source, query, args, table, lines }
+    /// What an `event` command runs on: after a capture is read, or when a chat reply is finished.
+    enum Event: String, Sendable, CaseIterable { case capture, reply }
     enum Output: String, Sendable, CaseIterable { case markdown, copy, replace, open, image, file, notify, results }
 
     enum Runner: Sendable, Equatable {
@@ -75,6 +77,8 @@ struct PackageCommand: Sendable, Equatable {
     var tool: PackageTool? = nil
     /// The author's one line on how to use it, for "How to use it" (when Lasso's own wording can't say).
     var howTo: String? = nil
+    /// For the `event` surface: what it runs on.
+    var on: [Event] = []
     /// Sample tool arguments for the Test button.
     var testArgs: [String: String] = [:]
 
@@ -474,7 +478,7 @@ private struct Reader {
     // MARK: Commands
 
     mutating func command(_ o: [String: Any], at path: String, hosts: [String], settings: [PackageSetting]) -> PackageCommand? {
-        onlyKnown(o, ["id", "title", "symbol", "surfaces", "input", "when", "run", "output", "tool", "test", "howTo"], at: path)
+        onlyKnown(o, ["id", "title", "symbol", "surfaces", "input", "when", "run", "output", "tool", "test", "howTo", "on"], at: path)
         let howTo = string(o, "howTo", at: path, required: false, length: 1...140)
         let id = string(o, "id", at: path) ?? ""
         if !id.isEmpty, !PackageValidator.matches(id, PackageValidator.commandIDPattern) {
@@ -494,6 +498,19 @@ private struct Reader {
         } else { problem(join(path, "surfaces"), "Required: a list of where the command appears.") }
         let isSearch = surfaces.contains(.search)
         if isSearch, surfaces.count > 1 { problem(join(path, "surfaces"), "A search command can't appear anywhere else.") }
+        // Events: what it runs on, alone on its own surface (it runs with no click, once the user allows it).
+        var on: [PackageCommand.Event] = []
+        if surfaces.contains(.event) {
+            if surfaces.count > 1 { problem(join(path, "surfaces"), "An event command can't appear anywhere else.") }
+            if let list = o["on"] as? [String], !list.isEmpty {
+                for (i, name) in list.enumerated() {
+                    if let event = PackageCommand.Event(rawValue: name) { on.append(event) }
+                    else { problem("\(path).on[\(i)]", "Must be capture or reply.") }
+                }
+            } else { problem(join(path, "on"), "Required with the \"event\" surface: [\"capture\"], [\"reply\"] or both.") }
+        } else if o["on"] != nil {
+            problem(join(path, "on"), "Only for commands with the \"event\" surface.")
+        }
 
         var inputs: [PackageCommand.Input] = []
         if let list = o["input"] as? [String] {
@@ -501,7 +518,15 @@ private struct Reader {
                 guard let input = PackageCommand.Input(rawValue: name) else {
                     problem("\(path).input[\(i)]", "Unknown input \"\(name)\"."); continue
                 }
-                if input == .image { problem("\(path).input[\(i)]", "This version of Lasso can't give commands images yet.") }
+                if input == .image || input == .lines {
+                    // Both come from a capture: a toolbar button, or the capture event.
+                    if surfaces.contains(where: { ![.toolbar, .event].contains($0) }) {
+                        problem("\(path).input[\(i)]", "\"\(input.rawValue)\" comes from a capture: only for toolbar and event commands.")
+                    }
+                    if input == .image, (o["run"] as? [String: Any])?["http"] != nil {
+                        problem("\(path).input[\(i)]", "\"image\" goes to a script, a Shortcut or a prompt, not a web request.")
+                    }
+                }
                 if input == .args, surfaces != [.tool] {
                     problem("\(path).input[\(i)]", "\"args\" is only for commands whose one surface is \"tool\": elsewhere no model fills them in.")
                 }
@@ -519,8 +544,16 @@ private struct Reader {
         let runsCode = (o["run"] as? [String: Any]).map { $0["script"] != nil || $0["shortcut"] != nil } ?? false
         if output == .image || output == .file {
             if !runsCode { problem(join(path, "output"), "\"\(outputName)\" output comes from a script or a Shortcut.") }
-            if let bad = surfaces.first(where: { ![.toolbar, .slash, .hotkey].contains($0) }) {
+            if let bad = surfaces.first(where: { ![.toolbar, .slash, .hotkey, .event].contains($0) }) {
                 problem(join(path, "output"), "\"\(outputName)\" output is for the toolbar, chat commands and hotkeys, not \(bad.rawValue).")
+            }
+        }
+        if surfaces.contains(.event) {
+            if let output, ![.notify, .file].contains(output) {
+                problem(join(path, "output"), "An event command's output is notify or file: it runs with no window to show anything in.")
+            }
+            if on.contains(.reply), let bad = inputs.first(where: { [.image, .lines, .table, .source].contains($0) }) {
+                problem(join(path, "input"), "A reply has only its text: \"\(bad.rawValue)\" comes from a capture.")
             }
         }
         if isSearch {
@@ -605,7 +638,7 @@ private struct Reader {
         guard let output else { return nil }
         return PackageCommand(id: id, title: title, symbol: symbol, surfaces: surfaces, input: inputs, output: output,
                               runner: runner, when: when, testQuery: testQuery, testText: testText,
-                              tool: tool, howTo: howTo, testArgs: testArgs)
+                              tool: tool, howTo: howTo, on: on, testArgs: testArgs)
     }
 
     mutating func tool(_ raw: Any, at path: String) -> PackageTool? {

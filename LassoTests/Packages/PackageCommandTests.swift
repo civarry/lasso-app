@@ -73,7 +73,7 @@ struct PackageCommandTests {
 
     @Test func rulesOnInputsOutputsAndWhen() {
         let image = messages(Self.one(#"{"id": "x", "title": "X", "surfaces": ["toolbar"], "input": ["image"], "output": "markdown", "run": {"prompt": "Describe"}}"#))
-        #expect(image.contains { $0.contains("can't give commands images yet") })
+        #expect(image.isEmpty, "a toolbar prompt can take the captured image (0.25): \(image)")
         let results = messages(Self.one(#"{"id": "x", "title": "X", "surfaces": ["toolbar"], "input": ["text"], "output": "results", "run": {"prompt": "{{text}}"}}"#))
         #expect(results.contains { $0.contains("\"results\" is only for search commands") })
         let query = messages(Self.one(#"{"id": "x", "title": "X", "surfaces": ["slash"], "input": ["query"], "output": "markdown", "run": {"prompt": "{{query}}"}}"#))

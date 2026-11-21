@@ -220,7 +220,8 @@
                 "slash",
                 "tool",
                 "search",
-                "hotkey"
+                "hotkey",
+                "event"
               ]
             }
           },
@@ -233,7 +234,8 @@
                 "source",
                 "query",
                 "args",
-                "table"
+                "table",
+                "lines"
               ]
             }
           },
@@ -509,6 +511,17 @@
             "type": "string",
             "maxLength": 140,
             "description": "One line on how to use it, shown in How to use it (Markdown bold allowed)"
+          },
+          "on": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "capture",
+                "reply"
+              ]
+            },
+            "minItems": 1,
+            "description": "For the event surface: what it runs on"
           }
         }
       }
@@ -538,7 +551,18 @@
               "toolbar.order",
               "toolbar.hidden",
               "chat.suggestions",
-              "chat.instructions"
+              "chat.instructions",
+              "chat.greeting",
+              "chat.placeholder",
+              "action.ocr.copy.symbol",
+              "action.translate.symbol",
+              "action.ai.grammar.symbol",
+              "action.ai.summarize.symbol",
+              "action.ai.ask.symbol",
+              "action.qr.open.symbol",
+              "action.color.pick.symbol",
+              "action.identify.symbol",
+              "action.lens.search.symbol"
             ],
             "description": "What to change. The list with Lasso's own values is in docs/patch-targets.md."
           },

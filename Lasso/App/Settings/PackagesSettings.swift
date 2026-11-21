@@ -82,6 +82,7 @@ struct PackageStatus: Equatable {
                 case .slash: add("/\(command.id)")
                 case .hotkey: add("Hotkey")
                 case .tool: add("Tool")
+                case .event: add("Runs by itself")
                 default: break
                 }
             }
@@ -412,6 +413,17 @@ struct PackagePermissionsList: View {
             if package.commands.contains(where: { $0.input.contains(.source) }) {
                 line("app.badge", "Sees which app the text came from", tag: nil)
             }
+            if package.commands.contains(where: { $0.input.contains(.image) }) {
+                line("photo", "Sees the image you lasso", tag: tag(changed: false, new: compareTo.map { !$0.commands.contains { $0.input.contains(.image) } } ?? false))
+            }
+            if package.commands.contains(where: { $0.input.contains(.lines) }) {
+                line("text.viewfinder", "Sees the text you lasso and where each piece sits", tag: nil)
+            }
+            if let events = Optional(package.commands.filter { $0.surfaces.contains(.event) }), !events.isEmpty {
+                let on = Set(events.flatMap(\.on)).map { $0 == .capture ? "every capture" : "every chat reply" }.sorted().joined(separator: " and ")
+                line("bolt", "Can run by itself on \(on), only if you turn that on. It's off until you do.",
+                     tag: tag(changed: false, new: compareTo.map { !$0.commands.contains { $0.surfaces.contains(.event) } } ?? false))
+            }
             if package.commands.contains(where: { $0.surfaces.contains(.tool) }) {
                 line("wrench.and.screwdriver", Self.toolLine(package),
                      tag: tag(changed: false, new: compareTo.map { !$0.commands.contains { $0.surfaces.contains(.tool) } } ?? false))
@@ -522,6 +534,9 @@ struct PackagePermissionsList: View {
             case .send: places.append("in Send to, on captures and chat replies")
             case .slash: places.append("as /\(command.id) in chat")
             case .hotkey: places.append("on text you highlight, with a hotkey you set")
+            case .event:
+                places.append("by itself on " + command.on.map { $0 == .capture ? "every capture" : "every chat reply" }.joined(separator: " and ")
+                              + ", once you allow it")
             case .tool:
                 places.append("as a tool the chat model and the Agent can use"
                     + (PackageToolCall.needsApproval(command) ? ", asking you first" : ""))
@@ -957,6 +972,7 @@ struct PackagePage: View {
     @State private var reviewing = false
     @State private var confirmRemove = false
     @State private var confirmFullAccess = false
+    @State private var confirmEvents = false
     /// Developer mode: which command the Test card runs.
     @State private var devCommand: String?
     /// The user's Shortcut names, read when the page opens (and on Check Again).
@@ -1054,6 +1070,7 @@ struct PackagePage: View {
                                showsWhatItDoes: !package.commands.contains { !$0.surfaces.contains(.search) },
                                values: store.settingValues(for: package).values,
                                fullAccess: store.hasFullAccess(id))
+        if package.commands.contains(where: { $0.surfaces.contains(.event) }) { eventsCard(package) }
         if package.commands.contains(where: { $0.script != nil }) { fullAccessCard(package) }
         removeCard(package)
     }
@@ -1139,6 +1156,26 @@ struct PackagePage: View {
         .task { shortcutNames = await PackageShortcut.installedNames() }
     }
 
+    /// Run automatically: the user's choice alone, per package, after saying what it means.
+    private func eventsCard(_ package: LassoPackage) -> some View {
+        let on = Set(package.commands.filter { $0.surfaces.contains(.event) }.flatMap(\.on))
+            .map { $0 == .capture ? "every capture" : "every chat reply" }.sorted().joined(separator: " and ")
+        return SettingsCard(title: "", footnote: PackageEvents.isAllowed(id)
+                            ? "On: it runs on \(on) without a click, with what it can reach listed below."
+                            : "Lets it run on \(on) without a click. Off until you turn it on.") {
+            SettingsRow("Run automatically", symbol: "bolt") {
+                SettingsSwitch(title: "", isOn: Binding(get: { PackageEvents.isAllowed(id) },
+                                                        set: { on in if on { confirmEvents = true } else { PackageEvents.setAllowed(false, id); usageTick += 1 } }))
+            }
+        }
+        .confirmationDialog("Let \(package.name) run by itself?", isPresented: $confirmEvents, titleVisibility: .visible) {
+            Button("Run Automatically") { PackageEvents.setAllowed(true, id); usageTick += 1 }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("It will run on \(on) without asking, and gets what it lists under What it can reach. An update that changes what runs turns this off again.")
+        }
+    }
+
     /// Full access: the user's choice alone, after saying what it means.
     private func fullAccessCard(_ package: LassoPackage) -> some View {
         SettingsCard(title: "", footnote: store.hasFullAccess(id)
@@ -1164,6 +1201,9 @@ struct PackagePage: View {
         if command.surfaces.contains(.toolbar) { parts.append("Toolbar\(ActionBarCatalog.whenPhrase(command.when))") }
         if command.surfaces.contains(.slash) { parts.append("/\(command.id) in chat") }
         if command.surfaces.contains(.send) { parts.append("Send to, on captures and chat replies") }
+        if command.surfaces.contains(.event) {
+            parts.append("Runs by itself on " + command.on.map { $0 == .capture ? "captures" : "chat replies" }.joined(separator: " and "))
+        }
         if command.surfaces.contains(.hotkey) {
             let key = KeyboardShortcuts.getShortcut(for: PackageHotkeys.name(package.id, command.id))?.description
             parts.append("Hotkey: \(key ?? "not set, in Settings › Keyboard Shortcuts")")

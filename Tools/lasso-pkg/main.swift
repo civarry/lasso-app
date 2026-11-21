@@ -9,7 +9,8 @@ struct LassoPkg {
 
       lasso-pkg new <search|send|prompt|shortcut|script> <folder>   a starter package
       lasso-pkg validate <folder or lasso.json>... [--catalog]     every rule Lasso checks
-      lasso-pkg run <folder> <command> [--text T] [--query Q] [--arg name=value]... [--setting id=value]... [--send]
+      lasso-pkg run <folder> <command> [--text T] [--table TSV] [--image file.png] [--query Q] [--arg name=value]...
+                    [--setting id=value]... [--send]
       lasso-pkg pack <folder> [--out file.lassopkg]                 one file to share
       lasso-pkg index <packages folder> --base-url URL --out folder the catalog's index.json and downloads
 
@@ -187,6 +188,16 @@ struct LassoPkg {
             defer { try? FileManager.default.removeItem(at: scratch) }
             var stdin: [String: Any] = ["command": command.id]
             if command.input.contains(.text) { stdin["text"] = text }
+            if command.input.contains(.table) { stdin["table"] = o.values["--table"]?.last ?? text }
+            if command.input.contains(.lines) { stdin["lines"] = [[String: Any]]() }
+            var inputFiles: [String: Data] = [:]
+            if command.input.contains(.image) {
+                guard let path = o.values["--image"]?.last, let png = FileManager.default.contents(atPath: path) else {
+                    fail("This command takes the captured image: add --image file.png")
+                }
+                inputFiles["capture.png"] = png
+                stdin["image"] = "\(PackageScript.tmpToken)/capture.png"
+            }
             if command.input.contains(.query) { stdin["query"] = query }
             if command.input.contains(.args) { stdin["args"] = args }
             stdin["settings"] = Dictionary(uniqueKeysWithValues: package.settings.filter { $0.kind != .secret }.map { ($0.id, values["settings.\($0.id)"] ?? "") })
@@ -198,8 +209,9 @@ struct LassoPkg {
                 .map { URL(fileURLWithPath: $0, isDirectory: true) }
             let places = PackageScript.Places(package: folder, data: scratch.appending(path: "data", directoryHint: .isDirectory),
                                               workspace: scratch.appending(path: "workspace", directoryHint: .isDirectory), folders: folders)
-            let output = try await PackageScript.run(.init(command: command.id, stdin: input, secrets: env, run: run, localOnly: false),
-                                                     places: places, progress: { print("progress: \($0)") })
+            var request = PackageScript.Request(command: command.id, stdin: input, secrets: env, run: run, localOnly: false)
+            request.inputFiles = inputFiles
+            let output = try await PackageScript.run(request, places: places, progress: { print("progress: \($0)") })
             switch output {
             case .text(let t): print("\n" + PackageHTTP.redact(t, secrets: secrets))
             case .url(let u): print("\nurl: \(u)")

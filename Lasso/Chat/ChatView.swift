@@ -348,7 +348,7 @@ struct ChatView: View {
 
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("How can I help?")
+            Text(PackageStore.shared.patches.texts["chat.greeting"] ?? BuiltInContent.chatGreeting)
                 .font(.title2).fontWeight(.semibold)
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(suggestions) { suggestion in
@@ -587,11 +587,12 @@ struct ChatView: View {
 
     /// "Message… or @ for My notes" while a source is installed.
     private var composerPlaceholder: String {
+        let base = PackageStore.shared.patches.texts["chat.placeholder"] ?? BuiltInContent.chatPlaceholder
         let sources = PackageRegistry.shared.sources(localOnly: false)
         switch sources.count {
-        case 0: return "Message…"
-        case 1: return "Message… or @ for \(sources[0].name)"
-        default: return "Message… or @ to search"
+        case 0: return base
+        case 1: return "\(base) or @ for \(sources[0].name)"
+        default: return "\(base) or @ to search"
         }
     }
 

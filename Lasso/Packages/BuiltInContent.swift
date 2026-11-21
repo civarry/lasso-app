@@ -16,6 +16,23 @@ enum BuiltInContent {
         static let translate = "Translate"
     }
 
+    /// Built-in action icons (SF Symbols).
+    enum Symbol {
+        static let askAI = "bubble.left.and.bubble.right"
+        static let copyText = "text.viewfinder"
+        static let identify = "sparkle.magnifyingglass"
+        static let lens = "photo.badge.magnifyingglass"
+        static let openCode = "qrcode.viewfinder"
+        static let pickColor = "eyedropper"
+        static let proofread = "text.badge.checkmark"
+        static let summarize = "text.line.3.summary"
+        static let translate = "translate"
+    }
+
+    /// The empty chat's greeting, and the message box's hint.
+    static let chatGreeting = "How can I help?"
+    static let chatPlaceholder = "Message…"
+
     static let summarizePrompt = "Summarize the on-screen text in 2–3 sentences. Be faithful to the source."
 
     /// The instruction + few-shot examples. Enumerating the error types and showing the hard cases

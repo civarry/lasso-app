@@ -189,7 +189,8 @@ package that silently does nothing.
 | Input | Is |
 |---|---|
 | `text` | The selected or recognized text of a capture, the text after a `/command`, or a reply's text. |
-| `image` | The captured image (a PNG file for `shortcut` and `script`). A `prompt` command with `image` is offered only when the chosen model sees images. |
+| `image` | The captured image: a PNG file for `script` (its path in `image`, inside the script's `TMPDIR`) and `shortcut` (as its input); sent with the prompt to a model that sees images (otherwise the run says to choose one). Not for `http`. Only for `toolbar` and the capture `event`. Lasso 0.25.0 and later. |
+| `lines` | Every piece of text the capture read, with where it sits: `[{"text", "x", "y", "width", "height"}]`, each 0 to 1 from the top-left. For a script (in its standard input) or a prompt (`{{lines}}`, the text only). Only for `toolbar` and the capture `event`. Lasso 0.25.0 and later. |
 | `source` | Where it came from, when Lasso knows: the app's name and bundle id, and the page URL in a browser. |
 | `query` | A search query (the `search` surface). |
 | `args` | The model's tool arguments (the `tool` surface). |
@@ -391,6 +392,26 @@ gives it to models fenced as content, never as instructions.
 
 A failure (non-2xx, a timeout, a non-zero exit) shows "<name> didn't work: <reason>" where the user
 asked for it, and is skipped silently in a background search.
+
+## Events: running by itself
+
+Built (Lasso 0.25.0). A command with the `event` surface runs by itself, with no click:
+
+```json
+{ "id": "log", "title": "Capture log", "surfaces": ["event"], "on": ["capture"],
+  "input": ["text", "source"], "output": "file", "run": { "script": { "path": "scripts/log.py" } } }
+```
+
+- `on`: `capture` (after a capture is read: `text`, `table`, `lines`, `image`, `source` as declared) and/or
+  `reply` (when a chat reply finishes: `text` only).
+- Output: `notify` (a short line shows; nothing for "Done") or `file` (saved to its workspace folder
+  quietly). Failures are logged, never shown in the middle of what you're doing.
+- **Only the user turns it on**: **Run automatically** on the package's page, off by default, after a
+  confirmation that says what runs when. A package can't turn it on, and an update that changes its
+  event commands or any script turns it off again. The review says "Can run by itself on every capture,
+  only if you turn that on".
+- Each run is exactly a click's: the same sandbox, local-only gate, keys and limits.
+- An event command can't appear on any other surface.
 
 ## Sources: search packages on this Mac
 
@@ -869,7 +890,8 @@ Each needs a format addition, decided here before it's built:
 - **More patch targets.** Each needs Lasso to have the thing first:
   - `sound.<event>`: Lasso plays no sounds of its own yet.
   - `theme.<token>`: Lasso's colours aren't named tokens yet.
-  - `string.<key>`: Lasso's wording isn't in a strings file yet (also what a translation of Lasso needs).
+  - `string.<key>`: Lasso's wording isn't in a strings file yet (also what a translation of Lasso needs);
+    `chat.greeting` and `chat.placeholder` (0.25.0) are the first two pieces of wording a package can set.
   - The Translate, Identify and Ask AI prompts. Translate and Identify ask the model for an exact
     format Lasso then reads, so a changed prompt would break them; Ask AI's prompt is the user's
     question.
@@ -877,8 +899,8 @@ Each needs a format addition, decided here before it's built:
 - **The user changing a package's `limits`** (someone on a paid plan held to the free tier's numbers).
   Until then the author's limits apply.
 - **Dependencies between packages**, and installing `requires` automatically.
-- **Commands that run on a schedule** or in the background. Every command runs because the user or a
-  model asked, while Lasso is open.
+- **Commands that run on a schedule.** Every command runs because the user or a model asked, or on an
+  event the user turned on (Events), while Lasso is open.
 
 ## Verification
 

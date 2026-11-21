@@ -10,7 +10,7 @@ struct LensSearchAction: CaptureAction {
     let id = "lens.search"
     nonisolated static let defaultTitle = BuiltInContent.Title.lens
     var title: String { PatchState.title(id, default: Self.defaultTitle) }
-    let systemImage = "photo.badge.magnifyingglass"
+    var systemImage: String { PatchState.symbol(id, default: BuiltInContent.Symbol.lens) }
     let relevancePriority = 13
 
     static let enabledKey = "lens.search.enabled"

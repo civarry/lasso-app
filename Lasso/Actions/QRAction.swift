@@ -5,7 +5,7 @@ struct QRAction: CaptureAction {
     let id = "qr.open"
     nonisolated static let defaultTitle = BuiltInContent.Title.openCode
     var title: String { PatchState.title(id, default: Self.defaultTitle) }
-    let systemImage = "qrcode.viewfinder"
+    var systemImage: String { PatchState.symbol(id, default: BuiltInContent.Symbol.openCode) }
     let relevancePriority = 15
 
     func isRelevant(to ctx: CaptureContext) -> Bool {

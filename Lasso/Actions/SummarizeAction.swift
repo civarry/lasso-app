@@ -7,7 +7,7 @@ struct SummarizeAction: CaptureAction {
     let id = "ai.summarize"
     nonisolated static let defaultTitle = BuiltInContent.Title.summarize
     var title: String { PatchState.title(id, default: Self.defaultTitle) }
-    let systemImage = "text.line.3.summary"
+    var systemImage: String { PatchState.symbol(id, default: BuiltInContent.Symbol.summarize) }
     let relevancePriority = 30
 
     /// A package can replace it (`action.ai.summarize.prompt`); the selected text still follows it.
