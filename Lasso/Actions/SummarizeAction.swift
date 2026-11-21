@@ -5,13 +5,13 @@ struct SummarizeAction: CaptureAction {
     let intelligence: IntelligenceCoordinator
 
     let id = "ai.summarize"
-    nonisolated static let defaultTitle = "Summarize"
+    nonisolated static let defaultTitle = BuiltInContent.Title.summarize
     var title: String { PatchState.title(id, default: Self.defaultTitle) }
     let systemImage = "text.line.3.summary"
     let relevancePriority = 30
 
     /// A package can replace it (`action.ai.summarize.prompt`); the selected text still follows it.
-    nonisolated static let defaultPrompt = "Summarize the on-screen text in 2–3 sentences. Be faithful to the source."
+    nonisolated static let defaultPrompt = BuiltInContent.summarizePrompt
 
     func isRelevant(to ctx: CaptureContext) -> Bool { true }
     func disabledReason(for ctx: CaptureContext, visionAvailable: Bool) -> String? {

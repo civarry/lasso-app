@@ -140,7 +140,10 @@ struct PackagesHub: View {
     let openPackage: (String) -> Void
 
     @State private var adding = false
+    @State private var browsing = false
+    @AppStorage("packages.developerMode") private var developerMode = false
     private var store: PackageStore { .shared }
+    private var catalog: PackageCatalog { .shared }
 
     private var sorted: [PackageStore.Installed] {
         store.installed.sorted { $0.package.name.localizedCaseInsensitiveCompare($1.package.name) == .orderedAscending }
@@ -172,11 +175,28 @@ struct PackagesHub: View {
                 }
             }
             if !tools.isEmpty { toolsCard }
+            SettingsCard(title: "", footnote: localOnly ? "Off in local-only mode: browsing reads the catalog from GitHub." : nil) {
+                SettingsRow("Lasso package catalog", symbol: "square.grid.2x2",
+                            caption: updatesCount > 0 ? "\(updatesCount) update\(updatesCount == 1 ? "" : "s") available"
+                                : "Packages anyone can share, checked before they're listed.") {
+                    Button("Browse…") { browsing = true }.buttonStyle(.bordered).disabled(localOnly)
+                }
+            }
+            PackageDeveloperCard(on: $developerMode, openPackage: openPackage)
         }
         .sheet(isPresented: $adding) {
             AddPackageSheet(dismiss: { adding = false }, added: { id in adding = false; openPackage(id) })
         }
+        .sheet(isPresented: $browsing, onDismiss: { catalog.requested = nil }) {
+            PackageBrowseSheet(dismiss: { browsing = false }, added: { id in browsing = false; openPackage(id) },
+                               focus: catalog.requested)
+        }
+        .onAppear { if catalog.requested != nil { browsing = true }; store.watchDeveloperFolders() }
+        .onChange(of: catalog.requested) { _, id in if id != nil { browsing = true } }
     }
+
+    /// Updates found the last time the catalog was read (it's only read when the user asks).
+    private var updatesCount: Int { catalog.updates(store.installed).count }
 
     /// Every enabled package's tools, whether turned off here or not.
     private var tools: [PackageRegistry.Tool] {
@@ -552,6 +572,10 @@ struct AddPackageSheet: View {
     var reviewing: String?
     /// Open at the review (or problems) of this, as if it had been dropped in.
     var preload: (data: Data, origin: PackageStore.Origin)?
+    /// The files that came with `preload` (a catalog package's scripts).
+    var preloadFiles: PackageFiles.Files = [:]
+    /// Where Back goes from the review, when not to the Add step (Browse).
+    var back: (() -> Void)?
 
     enum Step: Equatable { case add, review, problems }
 
@@ -593,7 +617,7 @@ struct AddPackageSheet: View {
                                       package: item.package, origin: item.origin, replacing: item.approved, turnOn: true)
                 step = .review
             } else if let preload {
-                consider(preload.data, origin: preload.origin)
+                consider(preload.data, files: preloadFiles, origin: preload.origin)
             }
         }
     }
@@ -659,8 +683,8 @@ struct AddPackageSheet: View {
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.json, .folder]
-        panel.message = "Choose a .lasso.json file or a package folder"
+        panel.allowedContentTypes = [.json, .folder, .data]
+        panel.message = "Choose a .lasso.json or .lassopkg file, or a package folder"
         if panel.runModal() == .OK, let url = panel.url { load(url) }
     }
 
@@ -668,6 +692,13 @@ struct AddPackageSheet: View {
     private func load(_ url: URL) {
         var isFolder: ObjCBool = false
         FileManager.default.fileExists(atPath: url.path, isDirectory: &isFolder)
+        if !isFolder.boolValue, url.pathExtension == PackageBundle.fileExtension {
+            guard let bytes = try? Data(contentsOf: url), let unpacked = PackageBundle.unpack(bytes) else {
+                show(problems: [], headline: "This .lassopkg file can't be read.", detail: nil); return
+            }
+            consider(unpacked.manifest, files: unpacked.files, origin: .file)
+            return
+        }
         let file = isFolder.boolValue ? url.appending(path: "lasso.json") : url
         guard let data = try? Data(contentsOf: file) else {
             show(problems: [], headline: "This isn't a Lasso package.",
@@ -770,7 +801,7 @@ struct AddPackageSheet: View {
             }
             .frame(maxHeight: 460)
             HStack {
-                if !c.turnOn { Button("Back") { step = .add } }
+                if !c.turnOn { Button("Back") { if let back { back() } else { step = .add } } }
                 Spacer()
                 if c.alreadyInstalled != nil {
                     Button("Open") { added(c.package.id) }
@@ -824,7 +855,10 @@ struct AddPackageSheet: View {
     @ViewBuilder private func originLine(_ origin: PackageStore.Origin) -> some View {
         switch origin {
         case .bundled, .catalog:
-            Text(origin == .bundled ? "Built into Lasso" : "From the Lasso catalog").font(SettingsFont.sub).foregroundStyle(.secondary)
+            Text(origin == .bundled ? "Built into Lasso" : "From the Lasso catalog. Its scripts were read by a maintainer before it was listed.").font(SettingsFont.sub).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        case .developer:
+            Text("Your own folder, in Developer mode. It reloads when you change its files.").font(SettingsFont.sub).foregroundStyle(.secondary)
         case .file, .pasted:
             Label("\(origin == .file ? "From a file" : "Pasted"). Anyone can make a package and the author's name isn't checked. Only add packages from people you trust.",
                   systemImage: "exclamationmark.triangle")
@@ -883,7 +917,7 @@ struct AddPackageSheet: View {
                 Button("Check for Updates") { AppUpdater.shared.checkForUpdates() }.disabled(PrivacyMode.localOnly)
             }
             Spacer()
-            Button("Back") { step = .add }
+            Button("Back") { if let back { back() } else { step = .add } }
             Button("Done", action: dismiss).keyboardShortcut(.defaultAction)
         }
     }
@@ -899,6 +933,8 @@ struct PackagePage: View {
     @State private var reviewing = false
     @State private var confirmRemove = false
     @State private var confirmFullAccess = false
+    /// Developer mode: which command the Test card runs.
+    @State private var devCommand: String?
     /// The user's Shortcut names, read when the page opens (and on Check Again).
     @State private var shortcutNames: Set<String>?
     @State private var test: TestState = .idle
@@ -965,8 +1001,13 @@ struct PackagePage: View {
                 }
             }
         }
+        if item.origin == .developer { developerCard(package) }
         if let limits = package.limits { usage(package, limits) }
         if let command = package.commands.first(where: { $0.surfaces.contains(.search) }) { testCard(item, command) }
+        else if item.origin == .developer, let command = package.command(devCommand ?? "") ?? package.commands.first {
+            // Your own package: any command can be tried here, side effects included.
+            commandTestCard(item, command)
+        }
         else if let command = package.commands.first(where: Self.isSafeToTest) { commandTestCard(item, command) }
         if !package.commands.compactMap(\.shortcut).isEmpty { shortcutsCard(package) }
         PackagePermissionsList(package: package,
@@ -1007,6 +1048,36 @@ struct PackagePage: View {
         .background(SettingsPalette.cardFill, in: RoundedRectangle(cornerRadius: SettingsMetrics.cardRadius, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: SettingsMetrics.cardRadius, style: .continuous)
             .strokeBorder(SettingsPalette.cardBorder, lineWidth: 1))
+    }
+
+    /// Developer mode: where it's loaded from, and what's wrong with the folder now (the last good
+    /// copy keeps running meanwhile).
+    private func developerCard(_ package: LassoPackage) -> some View {
+        let problems = store.developerProblems[id] ?? []
+        let source = store.developerSource(id)
+        return SettingsCard(title: "Developer", footnote: problems.isEmpty
+                                ? "Saved changes load within 2 seconds."
+                                : "Lasso keeps running the last version without problems until these are fixed.") {
+            SettingsRow("Loaded from", caption: source.map { ($0.path as NSString).abbreviatingWithTildeInPath } ?? "Unknown") {
+                HStack(spacing: 8) {
+                    Button("Show in Finder") { if let source { NSWorkspace.shared.activateFileViewerSelecting([source.appending(path: "lasso.json")]) } }
+                    Button("Reload Now") { store.reloadChangedDeveloperFolders() }
+                }
+                .buttonStyle(.bordered)
+            }
+            if package.commands.filter({ !$0.surfaces.contains(.search) }).count > 1 {
+                SettingsRow("Command to test") {
+                    Picker("", selection: Binding(get: { devCommand ?? package.commands.first?.id ?? "" },
+                                                  set: { devCommand = $0; test = .idle })) {
+                        ForEach(package.commands.filter { !$0.surfaces.contains(.search) }, id: \.id) { Text($0.title).tag($0.id) }
+                    }
+                    .labelsHidden().settingsCappedMenu()
+                }
+            }
+            ForEach(Array(problems.enumerated()), id: \.offset) { _, problem in
+                SettingsRow(problem.message, symbol: "exclamationmark.triangle", caption: problem.path.isEmpty ? nil : problem.path) { EmptyView() }
+            }
+        }
     }
 
     /// Each Shortcut it runs: whether the user has it, and where to get it.
@@ -1100,7 +1171,8 @@ struct PackagePage: View {
 
     private func runCommandTest(_ package: LassoPackage, _ command: PackageCommand, sample: String) {
         let s = store.settingValues(for: package)
-        let entry = PackageRegistry.Entry(package: package, values: s.values, secrets: s.secrets, ready: true)
+        let entry = PackageRegistry.Entry(package: package, values: s.values, secrets: s.secrets, ready: true,
+                                          places: store.places(for: package), fullAccess: store.hasFullAccess(package.id))
         test = .running
         let started = Date()
         Task {
@@ -1125,6 +1197,7 @@ struct PackagePage: View {
         case .catalog: "From the Lasso catalog"
         case .file: "From a file"
         case .pasted: "Pasted"
+        case .developer: "Developer mode"
         }
     }
 

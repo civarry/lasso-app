@@ -740,13 +740,21 @@ flowchart LR
   Req["requires: checked, never installed"] --> Short & Script
   Script -->|"text · file (→ ~/LassoWorkspace/id) · results"| Hits
   Script -.->|"Full access (user's switch,<br/>off when a script changes)"| NoSandbox[no sandbox]
+  subgraph Cat["Catalog (step 6)"]
+    Index["index.json from raw.githubusercontent.com<br/>(Browse opened, ≥ 5 min since last; never local-only)"]
+    Dl[".lassopkg download: SHA-256 must match"]
+  end
+  Browse["Settings ▸ Packages ▸ Browse…<br/>(updates first; lasso://install?id= opens it)"] --> Index --> Dl --> Review
+  Dev["Developer mode: New Package (starters) · Load Folder<br/>(polled every 2 s, reloaded without review;<br/>problems shown, last good copy kept)"] --> Pkgs
 ```
 
 Files: `Intelligence/Connectors.swift` (built-in Web search only), `WebSourcesProvider.swift`
 (`WebSearchSource`, `IdentifySources`), `Packages/` (`PackageManifest` validator, `PackageTemplate`,
 `PackageHTTP`, `PackageStore` + `PackageRegistry`, `PackageSearch`, `PackageMigration`, `Bundled/`),
 `App/Settings/PackagesSettings.swift`, `SearchCache`, `SearchQuota`, `DomainNoise`, `Keychain`. The
-format is `docs/PACKAGES.md` (build steps 1 to 5 of 6 are built; scripts in `PackageScript.swift`,
+format is `docs/PACKAGES.md` (all 6 build steps are built; the catalog in `PackageCatalog.swift` and
+`App/Settings/PackageBrowse.swift`, bundles and starters in `PackageStarters.swift`, the CLI in
+`Tools/lasso-pkg/`; scripts in `PackageScript.swift`,
 Shortcuts in `PackageShortcut.swift`, requirements in `PackageRequirements.swift`; tools in `PackageTools.swift`,
 patches in `PackagePatches.swift` with `App/Settings/PackageChangesCard.swift`); authors use
 `docs/CONTRIBUTING-PACKAGES.md`, `docs/packages/schema-v1.json` and `docs/patch-targets.md` (generated).
@@ -871,6 +879,25 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Packages, build step 6: the catalog and tools for authors.** `civarry/lasso-packages` is public:
+  `packages/<id>/`, CI (macOS) that builds `lasso-pkg` from this repo's source, runs `validate
+  --catalog`, checks versions went up and runs keyless script tests (`Tools/check.py`), and on main
+  writes `index.json` and `dist/<id>-<version>.lassopkg`. A `.lassopkg` is JSON (`manifest` and `files`
+  as base64), so the manifest's bytes and hash survive and nothing needs unzipping; **+** takes one.
+  `PackageCatalog` reads the index only when Browse opens (if older than 5 minutes), never in local-only
+  mode, accepts download URLs only on raw.githubusercontent.com, refuses a download whose SHA-256
+  differs, and hands the files to the normal review (origin `catalog`). Browse lists the linked package
+  first, then updates, then the rest, with tags from the index's permissions ("Uses your model" for a
+  prompt, "Stays on your Mac" only when nothing can leave). `lasso://install?id=` (Info.plist URL type;
+  `AppDelegate.application(_:open:)` → `PackageLinks`) opens Settings › Packages › Browse and never
+  installs; the menu bar view keeps `openWindow` for it. Developer mode: `PackageStarters` (5 templates,
+  also `lasso-pkg new`), Load Folder (origin `developer`, any version, its folder polled every 2 s and
+  reloaded without review; problems kept on its page, last good copy runs), a Test card for any command.
+  `lasso-pkg` (`Tools/lasso-pkg/`, `swiftc` over the shared engine files with two shims) does new,
+  validate, run, pack and index; Lasso's CI builds it and runs it on every starter. To share the engine,
+  built-in action names and prompts moved to `BuiltInContent`, file hashing to `PackageFiles`. UI
+  reviewed separately (one list with updates first, one Browse button, Open for installed packages,
+  Developer mode on its own card).
 - **Packages, build step 4: Shortcuts and scripts.** Two new runners. `shortcut` runs one of the user's
   Shortcuts by name through `/usr/bin/shortcuts run` (text in with `--input-path`, plain text out; it
   must be in `shortcuts list`, cached 10 s; the page offers the package's `get` link while it's missing;

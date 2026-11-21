@@ -3,7 +3,7 @@ import SwiftUI
 /// Translate the recognized text on-device (Translation framework via `TranslationResultView`).
 struct TranslateAction: CaptureAction {
     let id = "translate"
-    nonisolated static let defaultTitle = "Translate"
+    nonisolated static let defaultTitle = BuiltInContent.Title.translate
     var title: String { PatchState.title(id, default: Self.defaultTitle) }
     let systemImage = "translate"
     let relevancePriority = 20

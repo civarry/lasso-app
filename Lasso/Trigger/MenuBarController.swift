@@ -6,6 +6,7 @@ struct MenuBarController: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        let _ = SettingsWindow.opener = openWindow
         Button("Capture Now") {
             CaptureCoordinator.shared.begin()
         }

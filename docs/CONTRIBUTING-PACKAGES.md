@@ -314,15 +314,33 @@ at it for completion and errors as you type. In VS Code, add this to the top of 
 
 Lasso ignores `$schema`; everything else unknown is an error.
 
+## Trying it while you write it
+
+- **In Lasso:** turn on Settings › Packages › **Developer mode**. **New Package…** starts a folder from a
+  template that already works; **Load Folder…** runs your folder and reloads it each time you save
+  (problems show on its page, and the last good version keeps running). Its page's **Test** runs any of
+  its commands.
+- **On the command line:** `lasso-pkg`, built from Lasso's own source
+  (`Tools/lasso-pkg/build.sh ~/bin/lasso-pkg` in a clone of this repo):
+
+```text
+lasso-pkg new script my-package             # a starter: search, send, prompt, shortcut or script
+lasso-pkg validate my-package --catalog     # what Lasso and the catalog check
+lasso-pkg run my-package count --text "a b"  # a script's input and answer; http requests with --send
+lasso-pkg pack my-package                   # my-package-1.0.0.lassopkg, one file to share
+```
+
 ## Sharing it
 
-Until the package catalog opens, share your `.lasso.json` file directly: people add it with **+**,
-and the review tells them it came from a file and what it reaches. Put a short README beside it that
-says what it sends where, what key it needs and where to get one, and what the free tier allows.
+- **The catalog:** [`civarry/lasso-packages`](https://github.com/civarry/lasso-packages). Add your folder
+  at `packages/<id>/` and open a pull request. CI runs `lasso-pkg validate --catalog`, checks the version
+  went up and runs your scripts' tests; a maintainer reads every script before merging. Once merged it's
+  in everyone's Settings › Packages › Browse, and `lasso://install?id=<id>` opens it there.
+- **Directly:** share the `.lassopkg` from `lasso-pkg pack` (or the `.lasso.json` when there are no
+  scripts). People add it with **+**, and the review tells them it came from a file and what it reaches.
 
-When the catalog opens (`civarry/lasso-packages`, see [PACKAGES.md](PACKAGES.md#the-catalog)), a
-package is submitted as a pull request; CI runs the same checks as Lasso, and a maintainer reviews it
-before it's listed.
+Either way, put a README beside it that says what it sends where, what key it needs and where to get
+one, and what the free tier allows.
 
 ## Checklist before you share
 
@@ -335,3 +353,4 @@ before it's listed.
       and nowhere else.
 - [ ] A `replace` command's prompt asks for only the rewritten text (no "Here's your text:").
 - [ ] `version` raised since the last copy you shared.
+- [ ] `lasso-pkg validate <folder> --catalog` passes.

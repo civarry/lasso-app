@@ -32,6 +32,17 @@ jobs:
           xcodebuild -version
           sw_vers
 
+      # lasso-pkg is built from the app's own package engine; the catalog's CI builds it the same way.
+      - name: Build lasso-pkg and check every starter
+        run: |
+          set -euo pipefail
+          Tools/lasso-pkg/build.sh "$PWD/.build/lasso-pkg"
+          pkg="$PWD/.build/lasso-pkg"
+          cd "$RUNNER_TEMP"
+          for kind in search send prompt shortcut script; do "$pkg" new "$kind" "my-$kind"; done
+          "$pkg" validate my-* --catalog
+          "$pkg" run my-script count --text "one two three" | grep -q "3"
+
       - name: Install XcodeGen
         run: brew install xcodegen
 

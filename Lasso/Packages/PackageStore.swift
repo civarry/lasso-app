@@ -24,7 +24,7 @@ final class PackageStore {
         var id: String { package.id }
     }
 
-    enum Origin: String, Codable, Sendable { case file, pasted, bundled, catalog }
+    enum Origin: String, Codable, Sendable { case file, pasted, bundled, catalog, developer }
 
     /// One problem package found at launch (it stays listed so the user can remove it).
     struct Broken: Identifiable, Equatable {
@@ -72,6 +72,8 @@ final class PackageStore {
         var files: [String: String]?
         /// The user let this package's scripts run without the sandbox. Never set by a package.
         var fullAccess: Bool?
+        /// Developer mode: the folder it was loaded from, reloaded when it changes.
+        var source: String?
     }
 
     private var recordsKey: String { "packages.records" }
@@ -84,9 +86,7 @@ final class PackageStore {
         set { defaults.set(try? JSONEncoder().encode(newValue), forKey: recordsKey) }
     }
 
-    nonisolated static func sha256(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    }
+    nonisolated static func sha256(_ data: Data) -> String { PackageFiles.sha256(data) }
 
     private func manifestURL(_ id: String) -> URL { root.appending(path: "\(id)/lasso.json") }
 
@@ -94,56 +94,15 @@ final class PackageStore {
     func folder(_ id: String) -> URL { root.appending(path: id, directoryHint: .isDirectory) }
 
     /// Files beside a manifest (`scripts/…`, a README), by path inside the package.
-    typealias Files = [String: Data]
+    typealias Files = PackageFiles.Files
 
-    nonisolated static let maxFolderBytes = 5 * 1024 * 1024
-
-    /// Everything in a package folder but `lasso.json`: no hidden files, no links, at most 5 MB.
+    /// Everything in a package folder but `lasso.json` (`PackageFiles.read`).
     nonisolated static func readFiles(in folder: URL) throws -> Files {
-        let fm = FileManager.default
-        var out: Files = [:], total = 0
-        let base = folder.resolvingSymlinksInPath().path + "/"
-        guard let walker = fm.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
-                                         options: [.skipsHiddenFiles]) else { return [:] }
-        for case let url as URL in walker {
-            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-            if values.isSymbolicLink == true { throw InstallError.invalid([PackageProblem(path: url.lastPathComponent, message: "Links aren't allowed in a package.")]) }
-            guard values.isRegularFile == true else { continue }
-            let path = String(url.resolvingSymlinksInPath().path.dropFirst(base.count))
-            guard path != "lasso.json" else { continue }
-            let data = try Data(contentsOf: url)
-            total += data.count
-            guard total <= maxFolderBytes else {
-                throw InstallError.invalid([PackageProblem(path: "", message: "The package folder is over 5 MB.")])
-            }
-            out[path] = data
-        }
-        return out
+        do { return try PackageFiles.read(folder) } catch let e as PackageFiles.Invalid { throw InstallError.invalid(e.problems) }
     }
-
-    nonisolated static func hashes(_ files: Files) -> [String: String] { files.mapValues(sha256) }
-
-    /// The manifest's hash, with every file's when there are any (a script changed on disk counts).
-    nonisolated static func contentHash(_ manifest: Data, _ files: Files) -> String {
-        guard !files.isEmpty else { return sha256(manifest) }
-        let list = hashes(files).sorted { $0.key < $1.key }.map { "\($0.key)\u{0}\($0.value)" }.joined(separator: "\n")
-        return sha256(manifest + Data(list.utf8))
-    }
-
-    /// Problems with the files a manifest names: each script must be in the package and start with `#!`.
-    nonisolated static func fileProblems(_ package: LassoPackage, _ files: Files) -> [PackageProblem] {
-        var out: [PackageProblem] = []
-        for (i, command) in package.commands.enumerated() {
-            guard let script = command.script else { continue }
-            let at = "commands[\(i)].run.script.path"
-            guard let data = files[script.path] else {
-                out.append(PackageProblem(path: at, message: "\(script.path) isn't in the package. Add the package folder, not only its lasso.json."))
-                continue
-            }
-            if !data.starts(with: Data("#!".utf8)) { out.append(PackageProblem(path: at, message: "\(script.path) must start with a #! line.")) }
-        }
-        return out
-    }
+    nonisolated static func hashes(_ files: Files) -> [String: String] { PackageFiles.hashes(files) }
+    nonisolated static func contentHash(_ manifest: Data, _ files: Files) -> String { PackageFiles.contentHash(manifest, files) }
+    nonisolated static func fileProblems(_ package: LassoPackage, _ files: Files) -> [PackageProblem] { PackageFiles.problems(package, files) }
 
     /// Where a package's scripts run: its folder, data folder, workspace folder and picked folders.
     func places(for package: LassoPackage) -> PackageScript.Places {
@@ -153,6 +112,65 @@ final class PackageStore {
         }
         return PackageScript.Places(package: folder(package.id), data: dataRoot.appending(path: package.id, directoryHint: .isDirectory),
                                     workspace: PackageScript.workspace(package.id), folders: folders)
+    }
+
+    // MARK: Developer mode
+
+    /// Problems in a developer package's folder since it last loaded cleanly (it keeps the last good copy).
+    private(set) var developerProblems: [String: [PackageProblem]] = [:]
+    private var watch: Task<Void, Never>?
+
+    /// The folder a developer package was loaded from.
+    func developerSource(_ id: String) -> URL? { records[id]?.source.map { URL(fileURLWithPath: $0, isDirectory: true) } }
+
+    /// Loads (or reloads) a package from a folder of the user's own, without asking for a newer version.
+    @discardableResult
+    func loadDeveloper(_ folder: URL) throws -> LassoPackage {
+        let data = try Data(contentsOf: folder.appending(path: "lasso.json"))
+        let package = try install(data, files: try Self.readFiles(in: folder), origin: .developer, source: folder)
+        developerProblems[package.id] = nil
+        watchDeveloperFolders()
+        return package
+    }
+
+    /// Every 2 seconds while there are developer packages: a folder that changed is loaded again, or
+    /// its problems are kept to show on the package's page.
+    func watchDeveloperFolders() {
+        guard watch == nil, records.values.contains(where: { $0.source != nil }) else { return }
+        watch = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard let self else { return }
+                if !self.reloadChangedDeveloperFolders() { self.watch = nil; return }
+            }
+        }
+    }
+
+    /// Returns false once there's nothing left to watch.
+    @discardableResult
+    func reloadChangedDeveloperFolders() -> Bool {
+        let developers = records.filter { $0.value.source != nil }
+        for (id, record) in developers {
+            guard let path = record.source else { continue }
+            let folder = URL(fileURLWithPath: path, isDirectory: true)
+            guard let data = try? Data(contentsOf: folder.appending(path: "lasso.json")),
+                  let files = try? Self.readFiles(in: folder) else {
+                developerProblems[id] = [PackageProblem(path: "", message: "Its folder can't be read: \(path)")]
+                continue
+            }
+            guard Self.contentHash(data, files) != record.sha256 else { continue }
+            switch review(data, files: files, anyVersion: true) {
+            case .success(let reviewed) where reviewed.package.id == id:
+                _ = try? install(data, files: files, origin: .developer, enabled: record.enabled, source: folder)
+                developerProblems[id] = nil
+                Log.app.notice("packages · reloaded developer package \(id, privacy: .public)")
+            case .success:
+                developerProblems[id] = [PackageProblem(path: "id", message: "Its id changed. Load the folder again.")]
+            case .failure(let error):
+                if case .invalid(let list) = error { developerProblems[id] = list }
+            }
+        }
+        return !developers.isEmpty
     }
 
     /// Whether the user gave this package's scripts full access.
@@ -254,14 +272,14 @@ final class PackageStore {
     }
 
     /// What installing `data` would do: the package, and whether it updates one already installed.
-    func review(_ data: Data, files: Files = [:]) -> Result<(package: LassoPackage, replacing: LassoPackage?), InstallError> {
+    func review(_ data: Data, files: Files = [:], anyVersion: Bool = false) -> Result<(package: LassoPackage, replacing: LassoPackage?), InstallError> {
         switch PackageValidator.validate(data) {
         case .invalid(let problems): return .failure(.invalid(problems))
         case .valid(let package):
             let missing = Self.fileProblems(package, files)
             if !missing.isEmpty { return .failure(.invalid(missing)) }
             let current = installed.first { $0.id == package.id }?.package
-            if let current, !current.version.isEmpty, !PackageValidator.isNewer(package.version, than: current.version) {
+            if !anyVersion, let current, !current.version.isEmpty, !PackageValidator.isNewer(package.version, than: current.version) {
                 // A manifest changed on disk can be re-approved at the same version.
                 if !(installed.first { $0.id == package.id }?.changedOnDisk ?? false) {
                     return .failure(.alreadyInstalled(current.version))
@@ -273,9 +291,9 @@ final class PackageStore {
 
     /// Installs (or updates) after the user approved the review. Settings carry over by id.
     @discardableResult
-    func install(_ data: Data, files: Files = [:], origin: Origin, enabled: Bool = true) throws -> LassoPackage {
+    func install(_ data: Data, files: Files = [:], origin: Origin, enabled: Bool = true, source: URL? = nil) throws -> LassoPackage {
         let package: LassoPackage
-        switch review(data, files: files) {
+        switch review(data, files: files, anyVersion: origin == .developer) {
         case .failure(let error): throw error
         case .success(let reviewed): package = reviewed.package
         }
@@ -299,7 +317,8 @@ final class PackageStore {
         let keepsFullAccess = old?.fullAccess == true && (old?.files ?? [:]) == Self.hashes(files)
         records[package.id] = Record(sha256: Self.contentHash(data, files), enabled: enabled, origin: origin, approved: data,
                                      disabledCommands: old?.disabledCommands, offTools: old?.offTools,
-                                     files: Self.hashes(files), fullAccess: keepsFullAccess ? true : nil)
+                                     files: Self.hashes(files), fullAccess: keepsFullAccess ? true : nil,
+                                     source: origin == .developer ? (source?.path ?? old?.source) : nil)
         self.records = records
         if !patchOrder.contains(package.id) { patchOrder.append(package.id) }
         reload()

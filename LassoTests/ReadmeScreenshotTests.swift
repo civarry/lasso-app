@@ -81,6 +81,26 @@ struct ReadmeScreenshotTests {
         "run": {"shortcut": {"name": "Add to Reminders from Lasso", "get": "https://www.icloud.com/shortcuts/0123456789abcdef", "offline": true}}}]}
     """
 
+    /// The catalog's packages, as its index lists them (hashes aren't used here).
+    static let catalogIndex: String = {
+        let rows: [(id: String, version: String, name: String, summary: String, permissions: String)] = [
+            ("study-tools", "1.1.0", "Study tools", "Explain and flashcards for anything you lasso.", #"{"hosts": [], "model": true}"#),
+            ("notes-search", "1.0.0", "My notes", "Adds a folder of Markdown notes to Lasso's search.", #"{"hosts": [], "script": true}"#),
+            ("table-to-csv", "1.0.0", "Table to CSV", "Turns a table you lasso into a CSV file.", #"{"hosts": [], "script": true}"#),
+            ("tavily", "1.0.0", "Tavily", "Web search results from Tavily.", #"{"hosts": ["api.tavily.com"], "key": true}"#),
+            ("track-package", "1.0.0", "Track package", "Opens tracking for a parcel number you lasso.", #"{"hosts": ["parcelsapp.com"]}"#),
+            ("writing-kit", "1.0.0", "Writing Kit", "Bullet-point summaries and a calmer toolbar.", #"{"hosts": [], "patches": true}"#),
+        ]
+        let list = rows.map { row in
+            """
+            {"id": "\(row.id)", "version": "\(row.version)", "name": "\(row.name)", "summary": "\(row.summary)", "author": "Lasso",
+             "url": "https://raw.githubusercontent.com/civarry/lasso-packages/main/dist/\(row.id)-\(row.version).lassopkg",
+             "sha256": "0", "permissions": \(row.permissions)}
+            """
+        }
+        return #"{"lasso": 1, "packages": ["# + list.joined(separator: ",") + "]}"
+    }()
+
     @Test func renderTheReadmeScreenshots() async throws {
         // A throwaway package store with a few packages, so nothing of this Mac's shows.
         let name = "lasso-readme-\(UUID().uuidString.prefix(6))"
@@ -96,7 +116,7 @@ struct ReadmeScreenshotTests {
         store.reload()
 
         // Settings › Packages.
-        try await shoot("packages", CGSize(width: 520, height: 780),
+        try await shoot("packages", CGSize(width: 520, height: 1010),
                         PackagesHub(webSearchOn: .constant(true), localOnly: false, openPackage: { _ in })
                             .background(SettingsPalette.pageFill))
         // The review before a package is added.
@@ -121,6 +141,15 @@ struct ReadmeScreenshotTests {
         try await shoot("package-scripts", CGSize(width: 520, height: 1240),
                         ScrollView { PackagePage(id: "meeting-notes", localOnly: false, removed: {}) }
                             .background(SettingsPalette.pageFill))
+        // Browse: the catalog, with one update waiting (Study tools 1.0.0 is installed above).
+        let catalog = PackageCatalog.shared
+        let saved = (catalog.entries, catalog.state, catalog.checked)
+        defer { (catalog.entries, catalog.state, catalog.checked) = saved }
+        catalog.entries = try PackageCatalog.parse(Data(Self.catalogIndex.utf8))
+        catalog.state = .loaded
+        catalog.checked = Date().addingTimeInterval(-60)
+        try await shoot("browse", CGSize(width: 520, height: 600),
+                        PackageBrowseSheet(dismiss: {}, added: { _ in }).background(SettingsPalette.pageFill))
         // Settings › Privacy › Permissions.
         try await shoot("permissions", CGSize(width: 520, height: 236),
                         Form { PermissionsSection() }.formStyle(.grouped).background(SettingsPalette.pageFill))

@@ -17,26 +17,36 @@
 
 <p align="center"><img src="screenshots/hero.png" alt="Drag a box around anything on screen and translate it in place"></p>
 
-**Jump to:** [What's new](#whats-new-in-021) · [What it does](#what-it-does) · [Chat](#chat) ·
+**Jump to:** [What's new](#whats-new-in-022) · [What it does](#what-it-does) · [Chat](#chat) ·
 [Agent](#agent) · [Packages](#packages) · [Privacy](#privacy) · [Install](#install) ·
 [Updates](#updates) · [AI models](#ai-models) · [Build it](#build-it-yourself)
 
-## What's new in 0.21
+## What's new in 0.22
 
-**Packages can now run things on your Mac:**
+**A package catalog.** Settings › Packages › **Browse…** lists packages anyone can share, from
+[civarry/lasso-packages](https://github.com/civarry/lasso-packages):
 
-- **Your Shortcuts.** A package can send what you lasso to one of your own Shortcuts, so it reaches
-  Reminders, Notes, Calendar or Home without an API.
-- **Scripts, in a sandbox.** A package can bring a small program (Python, shell, anything) for what a web
-  request can't do: turn a table into a CSV file, search a folder of notes, convert files. It can't read
-  your files (except a folder you pick), change anything outside its own folder, or reach the internet
-  unless it says so.
-- It tells you what it needs installed (like `pandoc`). Lasso never installs anything.
-- **Full access** is yours alone to give, per package, after a warning. An update that changes a script
-  turns it off again.
-- Models always ask before running a script or a Shortcut.
+- Each one is checked automatically and its scripts are read by a maintainer before it's listed.
+- You see what it can reach before you add it, and Lasso refuses a download that doesn't match the
+  catalog.
+- Updates show at the top of Browse. Nothing updates by itself.
+- A `lasso://install?id=…` link opens Browse at that package. It never installs anything.
 
-<p align="center"><img src="screenshots/app/package-scripts.png" width="460" alt="A package's page: a notes folder to choose, a Shortcut to get, what its sandboxed script can reach, and the Full access switch"></p>
+<p align="center"><img src="screenshots/app/browse.png" width="460" alt="Browse Packages: an update at the top, then packages with what each one needs"></p>
+
+**Make your own:** turn on **Developer mode** to start a package from a template and run it from your
+own folder (it reloads when you save), or use `lasso-pkg` on the command line.
+
+<details>
+<summary>New in 0.21</summary>
+
+- **Packages run your Shortcuts and their own scripts.** Scripts run in a sandbox: they can't read your
+  files (except a folder you pick), change anything outside their own folder, or reach the internet
+  unless they say so. **Full access** is yours alone to give.
+
+<p align="center"><img src="screenshots/app/package-scripts.png" width="460" alt="A package's page: a notes folder, a Shortcut, what its sandboxed script can reach, and Full access"></p>
+
+</details>
 
 <details>
 <summary>New in 0.20</summary>
@@ -140,7 +150,8 @@ search the web, read and write files, run commands. You see every step.
 ## Packages
 
 **Add features to Lasso with a small file, no coding in Lasso needed.** In Settings › Packages,
-click **+** and drop the file or package folder in, choose it, or paste it.
+click **Browse…** for the [catalog](https://github.com/civarry/lasso-packages), or **+** to add a file
+or package folder.
 
 <p align="center"><img src="screenshots/app/package-review.png" width="440" alt="The review Lasso shows before adding a package"></p>
 
@@ -164,8 +175,8 @@ A package can add, or change:
 - Local-only mode pauses packages that reach off your Mac, and cuts scripts off the internet.
 - Scripts run in a sandbox unless you give that package Full access.
 
-Make your own: [`docs/CONTRIBUTING-PACKAGES.md`](docs/CONTRIBUTING-PACKAGES.md) has an example and the
-rules. The full design is in [`docs/PACKAGES.md`](docs/PACKAGES.md), and what can be changed in
+Make your own: [`docs/CONTRIBUTING-PACKAGES.md`](docs/CONTRIBUTING-PACKAGES.md) has examples, the rules,
+Developer mode and `lasso-pkg`. The full design is in [`docs/PACKAGES.md`](docs/PACKAGES.md), and what can be changed in
 [`docs/patch-targets.md`](docs/patch-targets.md).
 
 ## Privacy
@@ -175,6 +186,7 @@ rules. The full design is in [`docs/PACKAGES.md`](docs/PACKAGES.md), and what ca
 - **Runs on your Mac** out of the box: Apple Intelligence for text, a local Ollama model for images.
 - **Leaves your Mac only if you turn it on:** Identify's web lookup, Google Lens, cloud models.
 - **Update check:** asks GitHub for the latest version a few times a day. Sends only Lasso's version.
+- **Package catalog:** read from GitHub only when you open Browse. Off in local-only mode.
 - **Local-only mode** blocks every network call except your local model.
 - **Keys** are encrypted in your Keychain, all in one item. After an update, macOS asks for your
   password once (choose **Always Allow**).

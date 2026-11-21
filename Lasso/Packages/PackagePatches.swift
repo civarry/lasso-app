@@ -37,17 +37,17 @@ enum PatchTargets {
     /// it. Translate's and Identify's prompts ask for an exact output format Lasso then reads, so a
     /// change there would break them: they aren't patch targets.
     static let prompts: [(id: String, name: String, prompt: String)] = [
-        ("ai.summarize", "Summarize", SummarizeAction.defaultPrompt),
-        ("ai.grammar", "Proofread", GrammarFixAction.prompt),
+        ("ai.summarize", "Summarize", BuiltInContent.summarizePrompt),
+        ("ai.grammar", "Proofread", BuiltInContent.proofreadPrompt),
     ]
 
     /// Built-in actions a package can rename, with their own names.
     static let titles: [(id: String, title: String)] = [
-        ("ocr.copy", OCRCopyAction.defaultTitle), ("translate", TranslateAction.defaultTitle),
-        ("ai.grammar", GrammarFixAction.defaultTitle), ("ai.summarize", SummarizeAction.defaultTitle),
-        ("ai.ask", AskAIAction.defaultTitle), ("qr.open", QRAction.defaultTitle),
-        ("color.pick", ColorPickerAction.defaultTitle), ("identify", IdentifyAction.defaultTitle),
-        ("lens.search", LensSearchAction.defaultTitle),
+        ("ocr.copy", BuiltInContent.Title.copyText), ("translate", BuiltInContent.Title.translate),
+        ("ai.grammar", BuiltInContent.Title.proofread), ("ai.summarize", BuiltInContent.Title.summarize),
+        ("ai.ask", BuiltInContent.Title.askAI), ("qr.open", BuiltInContent.Title.openCode),
+        ("color.pick", BuiltInContent.Title.pickColor), ("identify", BuiltInContent.Title.identify),
+        ("lens.search", BuiltInContent.Title.lens),
     ]
 
     /// Ids a toolbar patch can name besides `<package>/<command>`.

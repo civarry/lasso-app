@@ -10,6 +10,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HermesRuntime.shared.stopForQuit()
     }
 
+    /// `lasso://install?id=<id>` opens Browse at that package; nothing installs without the user.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls { PackageLinks.handle(url) }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Before anything reads a setting. Not in the test host, which must not pick up this Mac's settings.
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil { DevSettingsImport.run() }
