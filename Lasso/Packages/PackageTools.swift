@@ -128,6 +128,8 @@ enum PackageToolCall {
     /// something. A model never runs a `replace` command (the validator keeps it off the tool surface).
     static func needsApproval(_ command: PackageCommand) -> Bool {
         if command.output != .markdown { return true }
+        // A Shortcut or a script runs code on the Mac: the model always asks.
+        if command.shortcut != nil || command.script != nil { return true }
         if let http = command.http, http.method != "GET" { return true }
         return false
     }

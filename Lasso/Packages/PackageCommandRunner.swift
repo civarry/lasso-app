@@ -15,6 +15,8 @@ enum PackageCommandResult: Sendable {
     case text(String)
     case stream(AsyncThrowingStream<String, Error>)
     case url(URL)
+    /// A file a script saved, in `~/LassoWorkspace/<package>/` (`file` and `image` output).
+    case file(URL)
 }
 
 /// Runs a package's non-search command (`prompt` or `http`). Search commands go through
@@ -26,6 +28,7 @@ enum PackageCommandRunner {
         case limitReached
         case notAURL
         case empty
+        case unavailable(String)
 
         var errorDescription: String? {
             switch self {
@@ -33,6 +36,7 @@ enum PackageCommandRunner {
             case .limitReached: "Its limit is reached for now."
             case .notAURL: "It didn't give back a web address."
             case .empty: "It gave back nothing."
+            case .unavailable(let why): why
             }
         }
     }
@@ -45,7 +49,30 @@ enum PackageCommandRunner {
         if command.input.contains(.text), (input.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw RunError.nothingToWorkOn
         }
+        if let why = await PackageRequirements.missing(entry.package) { throw RunError.unavailable(why) }
         switch command.runner {
+        case .shortcut(let run):
+            // A Shortcut can reach the internet unless its author says otherwise.
+            if PrivacyMode.localOnly, !run.offline { throw PackageHTTP.RunError.localOnly }
+            let text = try await PackageShortcut.run(run, text: command.input.contains(.text) ? input.text
+                                                         : command.input.contains(.args) ? argsText(input.args) : nil)
+            return .text(text)
+        case .script(let run):
+            guard let places = entry.places else { throw PackageScript.RunError.missing(run.path) }
+            let request = PackageScript.Request(command: command.id, stdin: PackageScript.stdin(entry, command, input: input),
+                                                secrets: PackageScript.secrets(entry), run: run, unsandboxed: entry.fullAccess)
+            // "progress: …" lines show while it runs.
+            let progress: @Sendable (String) -> Void = { line in
+                Task { @MainActor in StatusHUD.shared.show(icon: "", text: String(line.prefix(80)), spinner: true) }
+            }
+            switch try await PackageScript.run(request, places: places, progress: command.output == .markdown ? nil : progress) {
+            case .text(let text):
+                guard !text.isEmpty else { throw RunError.empty }
+                return .text(String(text.prefix(command.output == .markdown ? 4000 : 100_000)))
+            case .file(let url): return .file(url)
+            case .url: throw RunError.notAURL
+            case .results(let list): return .text(list.compactMap { $0["title"] }.joined(separator: "\n"))
+            }
         case .prompt(let run):
             let (prompt, _) = promptText(run, values: values(entry, input), text: input.text)
             // The model the user chose and no other: no fallback to a provider they didn't pick.
@@ -71,6 +98,11 @@ enum PackageCommandRunner {
             guard !answer.isEmpty else { throw RunError.empty }
             return .text(answer)
         }
+    }
+
+    /// A model's arguments for a Shortcut, which takes one text: `name: value` lines, or the value alone.
+    static func argsText(_ args: [String: String]) -> String {
+        args.count == 1 ? args.values.first ?? "" : args.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value)" }.joined(separator: "\n")
     }
 
     /// Template values: inputs, `language`, and the package's own settings.

@@ -68,6 +68,19 @@ struct ReadmeScreenshotTests {
        {"target": "chat.instructions", "add": "Use British spelling. Keep answers under 150 words unless asked for more."}]}
     """
 
+    /// Searches a notes folder with a script, and sends to Reminders with a Shortcut.
+    static let meetingNotes = """
+    {"lasso": 1, "id": "meeting-notes", "version": "1.0.0", "name": "Meeting Notes", "summary": "Search your notes folder, and turn a line into a reminder.",
+     "author": "Lasso", "icon": {"symbol": "note.text"},
+     "settings": [{"id": "notes", "label": "Notes folder", "kind": "folder"}],
+     "requires": [{"command": "sh"}],
+     "commands": [
+       {"id": "search", "title": "My notes", "surfaces": ["search"], "input": ["query"], "output": "results",
+        "run": {"script": {"path": "scripts/search.sh", "timeout": 5}}, "test": {"query": "standup"}},
+       {"id": "remind", "title": "Add to Reminders", "symbol": "checklist", "surfaces": ["send"], "input": ["text"], "output": "notify",
+        "run": {"shortcut": {"name": "Add to Reminders from Lasso", "get": "https://www.icloud.com/shortcuts/0123456789abcdef", "offline": true}}}]}
+    """
+
     @Test func renderTheReadmeScreenshots() async throws {
         // A throwaway package store with a few packages, so nothing of this Mac's shows.
         let name = "lasso-readme-\(UUID().uuidString.prefix(6))"
@@ -99,6 +112,14 @@ struct ReadmeScreenshotTests {
             """.utf8), origin: .file)
         try await shoot("package-patches", CGSize(width: 520, height: 840),
                         ScrollView { PackagePage(id: "writing-kit", localOnly: false, removed: {}) }
+                            .background(SettingsPalette.pageFill))
+        // A package with a script (sandboxed, reading a folder the user picked) and a Shortcut.
+        let notesFolder = FileManager.default.temporaryDirectory.appending(path: "\(name)-files", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: notesFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: notesFolder) }
+        try store.install(Data(Self.meetingNotes.utf8), files: ["scripts/search.sh": Data("#!/bin/sh\necho '{\"results\": []}'\n".utf8)], origin: .file)
+        try await shoot("package-scripts", CGSize(width: 520, height: 1240),
+                        ScrollView { PackagePage(id: "meeting-notes", localOnly: false, removed: {}) }
                             .background(SettingsPalette.pageFill))
         // Settings › Privacy › Permissions.
         try await shoot("permissions", CGSize(width: 520, height: 236),

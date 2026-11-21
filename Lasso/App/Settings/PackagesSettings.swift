@@ -37,8 +37,17 @@ struct PackageStatus: Equatable {
         if store.missingSettings(package).contains(where: { $0.kind == .secret }) {
             return PackageStatus(text: "Needs a key", needsAction: true)
         }
+        if let folder = store.missingSettings(package).first(where: { $0.kind == .folder }) {
+            return PackageStatus(text: "Choose its \(folder.label.lowercased())", needsAction: true)
+        }
         if !store.missingSettings(package).isEmpty {
             return PackageStatus(text: "Needs setting up", needsAction: true)
+        }
+        if let why = PackageRequirements.missingNow(package) {
+            return PackageStatus(text: String(why.prefix { $0 != "." }), needsAction: true)
+        }
+        if let shortcut = package.commands.compactMap(\.shortcut).first(where: { PackageShortcut.isInstalledNow($0.name) == false }) {
+            return PackageStatus(text: "Get the Shortcut “\(shortcut.name)”", needsAction: true)
         }
         let today = usedToday ?? SearchQuota.usedToday(package.id)
         let month = usedMonth ?? SearchQuota.usedMonth(package.id)
@@ -54,9 +63,9 @@ struct PackageStatus: Equatable {
             if let replacedBy, let name = store.installed.first(where: { $0.id == replacedBy })?.package.name {
                 return PackageStatus(text: surfacesSummary(package) + " · Partly replaced by \(name)", needsAction: false)
             }
-            return PackageStatus(text: surfacesSummary(package), needsAction: false)
+            return PackageStatus(text: surfacesSummary(package) + (store.hasFullAccess(package.id) ? " · Full access" : ""), needsAction: false)
         }
-        let role = package.commands.contains { $0.http?.role == .primary } ? "Every search" : "When results are thin"
+        let role = package.commands.contains { $0.surfaces.contains(.search) && $0.searchRole == .primary } ? "Every search" : "When results are thin"
         if let monthly = package.limits?.monthly { return PackageStatus(text: "\(role) · \(month) of \(monthly) this month", needsAction: false) }
         return PackageStatus(text: role, needsAction: false)
     }
@@ -89,7 +98,7 @@ struct PackageStatus: Equatable {
 
     /// The command's role, in words (review, page caption).
     static func roleLine(_ command: PackageCommand) -> String {
-        command.http?.role == .primary ? "Adds results to every web search" : "Adds results when web search comes back thin"
+        command.searchRole == .primary ? "Adds results to every web search" : "Adds results when web search comes back thin"
     }
 }
 
@@ -316,6 +325,10 @@ struct PackagePermissionsList: View {
     /// The version it replaces or was approved as: what's new is tagged.
     var compareTo: LassoPackage?
     var values: [String: String] = [:]
+    /// Files that differ from the installed version (an update's changed scripts).
+    var changedFiles: [String] = []
+    /// The user gave its scripts full access (shown on its page).
+    var fullAccess = false
 
     var body: some View {
         if showsWhatItDoes, !package.commands.isEmpty || !(compareTo?.commands.isEmpty ?? true) { SettingsCard(title: "What it does") {
@@ -352,6 +365,7 @@ struct PackagePermissionsList: View {
                 line("key.fill", "Needs \(article(setting.label)) \(setting.label). It's kept in your Keychain and sent only to \(hostList).",
                      tag: tag(changed: false, new: compareTo.map { $0.setting(setting.id) == nil } ?? false))
             }
+            codeLines
             if package.commands.contains(where: { $0.input.contains(.source) }) {
                 line("app.badge", "Sees which app the text came from", tag: nil)
             }
@@ -377,8 +391,47 @@ struct PackagePermissionsList: View {
             if package.commands.isEmpty, package.hosts.isEmpty {
                 line("checkmark.shield", "Nothing: it only changes Lasso itself, and sends nothing anywhere.", tag: nil)
             } else {
-            line("lock.fill", reachesOffMac ? (package.commands.contains { $0.prompt != nil } ? "Its web requests pause in local-only mode." : "Paused in local-only mode.")
-                                            : "Works in local-only mode while your model is on this Mac.", tag: nil)
+            line("lock.fill", localOnlyLine, tag: nil)
+            }
+        }
+    }
+
+    /// Scripts, Shortcuts, folders and what must be installed.
+    @ViewBuilder private var codeLines: some View {
+        let scripts = package.commands.compactMap(\.script)
+        let hadScripts = compareTo.map { $0.commands.contains { $0.script != nil } }
+        if !scripts.isEmpty {
+            line("terminal", fullAccess
+                    ? "Runs code on your Mac with full access: its scripts can do anything your account can."
+                    : "Runs code on your Mac, in a sandbox: its scripts can't read your files"
+                        + (package.settings.contains { $0.kind == .folder } ? " except a folder you choose" : "")
+                        + ", and can change only their own folders.",
+                 tag: tag(changed: false, new: hadScripts == false))
+            if scripts.contains(where: \.network) {
+                line("network", "Its scripts can reach the internet. The sandbox can't limit them to particular sites.",
+                     tag: tag(changed: false, new: compareTo.map { !$0.commands.contains { $0.script?.network == true } } ?? false))
+            }
+        }
+        if !changedFiles.isEmpty {
+            line("doc.badge.gearshape", "Changed: " + changedFiles.joined(separator: ", "), tag: "Changed")
+            if PackageStore.shared.hasFullAccess(package.id), changedFiles.contains(where: { $0.hasPrefix("scripts/") }) {
+                line("exclamationmark.shield", "Full access will be turned off, because a script changed. You can turn it on again.", tag: nil)
+            }
+        }
+        ForEach(package.commands.compactMap(\.shortcut), id: \.name) { shortcut in
+            line("square.on.square", "Runs your Shortcut “\(shortcut.name)”, with your permissions. "
+                    + (shortcut.offline ? "Its author says it works offline; Lasso can't check that." : "It can reach the internet."),
+                 tag: tag(changed: false, new: compareTo.map { !$0.commands.contains { $0.shortcut?.name == shortcut.name } } ?? false))
+        }
+        ForEach(package.settings.filter { $0.kind == .folder }, id: \.id) { setting in
+            line("folder", "Reads a folder you choose: \(setting.label). Only that folder.",
+                 tag: tag(changed: false, new: compareTo.map { $0.setting(setting.id) == nil } ?? false))
+        }
+        // Only what's missing: an installed tool isn't worth a line.
+        ForEach(Array(package.requires.enumerated()), id: \.offset) { _, requirement in
+            if PackageRequirements.missingNow(LassoPackage(id: "", version: "", name: "", summary: "", author: "", hosts: [], settings: [],
+                                                           commands: [], requires: [requirement])) != nil {
+                line("shippingbox", PackageRequirements.sentence(requirement), tag: "Missing")
             }
         }
     }
@@ -440,6 +493,17 @@ struct PackagePermissionsList: View {
         return hosts.isEmpty ? "its server" : ListFormatter.localizedString(byJoining: hosts)
     }
 
+    /// What local-only mode does to it.
+    private var localOnlyLine: String {
+        var parts: [String] = []
+        if reachesOffMac { parts.append(package.commands.contains { $0.prompt != nil || $0.script != nil } ? "Its web requests pause in local-only mode." : "Paused in local-only mode.") }
+        if package.commands.contains(where: { $0.shortcut.map { !$0.offline } ?? false }) { parts.append("Its Shortcut pauses in local-only mode.") }
+        else if package.commands.contains(where: { $0.shortcut?.offline == true }) { parts.append("Its Shortcut runs in local-only mode, on its author's word that it's offline.") }
+        if package.commands.contains(where: { $0.script?.network == true }) { parts.append("In local-only mode its scripts run without the internet.") }
+        if parts.isEmpty { return package.commands.contains { $0.prompt != nil } ? "Works in local-only mode while your model is on this Mac." : "Works in local-only mode." }
+        return parts.joined(separator: " ")
+    }
+
     private var reachesOffMac: Bool {
         !package.hosts.isEmpty || package.settings.contains { setting in
             setting.kind == .server && !(URL(string: values["settings.\(setting.id)"] ?? "")?.host.map(PackageValidator.isLoopback) ?? false)
@@ -493,6 +557,8 @@ struct AddPackageSheet: View {
 
     struct Candidate {
         var data: Data
+        /// The files beside the manifest in a package folder (its scripts).
+        var files: PackageStore.Files = [:]
         var package: LassoPackage
         var origin: PackageStore.Origin
         var replacing: LassoPackage?
@@ -523,8 +589,8 @@ struct AddPackageSheet: View {
         .frame(width: 480)
         .onAppear {
             if let id = reviewing, let item = store.installed.first(where: { $0.id == id }), let data = store.manifestData(id) {
-                candidate = Candidate(data: data, package: item.package, origin: item.origin,
-                                      replacing: item.approved, turnOn: true)
+                candidate = Candidate(data: data, files: (try? PackageStore.readFiles(in: store.folder(id))) ?? [:],
+                                      package: item.package, origin: item.origin, replacing: item.approved, turnOn: true)
                 step = .review
             } else if let preload {
                 consider(preload.data, origin: preload.origin)
@@ -608,10 +674,18 @@ struct AddPackageSheet: View {
                  detail: "Use a .lasso.json file or a folder with a lasso.json inside.")
             return
         }
-        consider(data, origin: .file)
+        var files: PackageStore.Files = [:]
+        if isFolder.boolValue {
+            do { files = try PackageStore.readFiles(in: url) } catch {
+                show(problems: (error as? PackageStore.InstallError).flatMap { if case .invalid(let p) = $0 { p } else { nil } } ?? [],
+                     headline: "This package folder can't be added", detail: nil)
+                return
+            }
+        }
+        consider(data, files: files, origin: .file)
     }
 
-    private func consider(_ data: Data, origin: PackageStore.Origin) {
+    private func consider(_ data: Data, files: PackageStore.Files = [:], origin: PackageStore.Origin) {
         needsNewerLasso = false
         if data.count > PackageValidator.maxManifestBytes {
             show(problems: [], headline: "This package is larger than 64 KB.", detail: nil); return
@@ -624,9 +698,9 @@ struct AddPackageSheet: View {
         } catch {
             show(problems: [], headline: Self.jsonError(error), detail: nil); return
         }
-        switch store.review(data) {
+        switch store.review(data, files: files) {
         case .success(let reviewed):
-            candidate = Candidate(data: data, package: reviewed.package, origin: origin, replacing: reviewed.replacing)
+            candidate = Candidate(data: data, files: files, package: reviewed.package, origin: origin, replacing: reviewed.replacing)
             step = .review
         case .failure(.alreadyInstalled(let version)):
             guard let package = PackageValidator.validate(data).package else { return }
@@ -672,14 +746,22 @@ struct AddPackageSheet: View {
                     identity(c)
                     if c.alreadyInstalled == nil {
                         PackagePermissionsList(package: c.package, compareTo: c.replacing,
-                                               values: store.settingValues(for: c.package).values)
-                        DisclosureGroup("Show the package file", isExpanded: $showFile) {
+                                               values: store.settingValues(for: c.package).values,
+                                               changedFiles: c.replacing == nil ? [] : store.changedFiles(c.package.id, c.files))
+                        DisclosureGroup(c.files.keys.contains { $0.hasPrefix("scripts/") } ? "Show the package file and scripts" : "Show the package file",
+                                        isExpanded: $showFile) {
                             ScrollView(.horizontal) {
-                                Text(String(decoding: c.data, as: UTF8.self))
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.top, 6)
+                                VStack(alignment: .leading, spacing: 10) {
+                                    ForEach([("lasso.json", c.data)] + c.files.filter { $0.key.hasPrefix("scripts/") }.sorted { $0.key < $1.key }.map { ($0.key, $0.value) },
+                                            id: \.0) { name, contents in
+                                        Text(name).font(SettingsFont.sub.weight(.semibold)).foregroundStyle(.secondary)
+                                        Text(String(decoding: contents, as: UTF8.self))
+                                            .font(.system(size: 11, design: .monospaced))
+                                            .textSelection(.enabled)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.top, 6)
                             }
                         }
                         .font(SettingsFont.label)
@@ -758,7 +840,7 @@ struct AddPackageSheet: View {
             return
         }
         do {
-            let package = try store.install(c.data, origin: c.origin)
+            let package = try store.install(c.data, files: c.files, origin: c.origin)
             added(package.id)
         } catch {
             show(problems: (error as? PackageStore.InstallError).flatMap { if case .invalid(let p) = $0 { p } else { nil } } ?? [],
@@ -816,6 +898,9 @@ struct PackagePage: View {
 
     @State private var reviewing = false
     @State private var confirmRemove = false
+    @State private var confirmFullAccess = false
+    /// The user's Shortcut names, read when the page opens (and on Check Again).
+    @State private var shortcutNames: Set<String>?
     @State private var test: TestState = .idle
     @State private var usageTick = 0
     private var store: PackageStore { .shared }
@@ -883,9 +968,12 @@ struct PackagePage: View {
         if let limits = package.limits { usage(package, limits) }
         if let command = package.commands.first(where: { $0.surfaces.contains(.search) }) { testCard(item, command) }
         else if let command = package.commands.first(where: Self.isSafeToTest) { commandTestCard(item, command) }
+        if !package.commands.compactMap(\.shortcut).isEmpty { shortcutsCard(package) }
         PackagePermissionsList(package: package,
                                showsWhatItDoes: !package.commands.contains { !$0.surfaces.contains(.search) },
-                               values: store.settingValues(for: package).values)
+                               values: store.settingValues(for: package).values,
+                               fullAccess: store.hasFullAccess(id))
+        if package.commands.contains(where: { $0.script != nil }) { fullAccessCard(package) }
         removeCard(package)
     }
 
@@ -921,9 +1009,47 @@ struct PackagePage: View {
             .strokeBorder(SettingsPalette.cardBorder, lineWidth: 1))
     }
 
+    /// Each Shortcut it runs: whether the user has it, and where to get it.
+    private func shortcutsCard(_ package: LassoPackage) -> some View {
+        SettingsCard(title: "Shortcuts", footnote: "The package runs your own Shortcut, by its exact name. Rename it and the package can't find it.") {
+            ForEach(package.commands.compactMap(\.shortcut), id: \.name) { shortcut in
+                let has = shortcutNames?.contains(shortcut.name)
+                SettingsRow("“\(shortcut.name)”", symbol: "square.on.square",
+                            caption: has == nil ? "Checking…" : has! ? "In your Shortcuts" : "Not in your Shortcuts yet") {
+                    if has == false {
+                        HStack(spacing: 8) {
+                            if let link = shortcut.get { Button("Get the Shortcut") { NSWorkspace.shared.open(link) }.buttonStyle(.bordered) }
+                            Button("Check Again") { shortcutNames = nil; PackageShortcut.forget(); Task { shortcutNames = await PackageShortcut.installedNames() } }
+                        }
+                    }
+                }
+            }
+        }
+        .task { shortcutNames = await PackageShortcut.installedNames() }
+    }
+
+    /// Full access: the user's choice alone, after saying what it means.
+    private func fullAccessCard(_ package: LassoPackage) -> some View {
+        SettingsCard(title: "", footnote: store.hasFullAccess(id)
+                        ? "On: its scripts run without the sandbox. Lasso still stops them at their time limit. Local-only mode can't cut off their internet."
+                        : "Turns off the sandbox for this package's scripts. Only for a package you trust.") {
+            SettingsRow("Full access", symbol: "exclamationmark.shield") {
+                SettingsSwitch(title: "", isOn: Binding(get: { store.hasFullAccess(id) },
+                                                        set: { on in if on { confirmFullAccess = true } else { store.setFullAccess(id, false) } }))
+            }
+        }
+        .confirmationDialog("Give \(package.name) full access?", isPresented: $confirmFullAccess, titleVisibility: .visible) {
+            Button("Give Full Access", role: .destructive) { store.setFullAccess(id, true) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This package's scripts can do anything your account can: read your files, reach the internet, run other programs. Lasso can't stop that, even in local-only mode. Turn it on only for a package you trust. An update that changes its scripts turns it off again.")
+        }
+    }
+
     /// Where a command appears, with its hotkey when it has one.
     static func whereLine(_ package: LassoPackage, _ command: PackageCommand) -> String {
         var parts: [String] = []
+        if command.surfaces.contains(.search) { parts.append(PackageStatus.roleLine(command)) }
         if command.surfaces.contains(.toolbar) { parts.append("Toolbar\(ActionBarCatalog.whenPhrase(command.when))") }
         if command.surfaces.contains(.slash) { parts.append("/\(command.id) in chat") }
         if command.surfaces.contains(.send) { parts.append("Send to, on captures and chat replies") }
@@ -942,6 +1068,7 @@ struct PackagePage: View {
     /// could create a real task or send a real message.
     static func isSafeToTest(_ command: PackageCommand) -> Bool {
         command.prompt != nil || (command.http?.method == "GET" && command.output != .notify)
+            || (command.script.map { !$0.network } == true && command.output == .markdown)
     }
 
     private func commandTestCard(_ item: PackageStore.Installed, _ command: PackageCommand) -> some View {
@@ -1023,11 +1150,13 @@ struct PackagePage: View {
         let blocked: String? = item.changedOnDisk ? "Review its changes first."
             : status.switchDisabled ? "Paused in local-only mode."
             : store.missingSettings(package).contains { $0.kind == .secret } ? "Add your API key first."
-            : !store.missingSettings(package).isEmpty ? "Fill in its settings first."
-            : !SearchQuota.canUse(package.id, limits: package.limits) ? "Limit reached."
-            : nil
+            : store.missingSettings(package).first(where: { $0.kind == .folder }).map { "Choose its \($0.label.lowercased()) first." }
+            ?? (!store.missingSettings(package).isEmpty ? "Fill in its settings first."
+            : PackageRequirements.missingNow(package)
+            ?? (!SearchQuota.canUse(package.id, limits: package.limits) ? "Limit reached." : nil))
         return SettingsCard(title: "Test") {
-            SettingsRow("Test", caption: blocked ?? "Searches for \"\(command.testQuery ?? "lasso")\". Counts as one search.") {
+            SettingsRow("Test", caption: blocked ?? (command.script != nil ? "Searches your files for \"\(command.testQuery ?? "lasso")\"."
+                                                     : "Searches for \"\(command.testQuery ?? "lasso")\". Counts as one search.")) {
                 switch test {
                 case .running: SettingsStatusChip(text: "Testing…", tint: .secondary, busy: true)
                 case .ok(let count, let ms, _): SettingsStatusChip(text: "\(count) result\(count == 1 ? "" : "s") in \(ms) ms", tint: .green)
@@ -1085,7 +1214,7 @@ struct PackagePage: View {
             Button("Remove", role: .destructive) { store.remove(package.id); removed() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Its settings and API key are deleted from this Mac. This month's usage count is kept.")
+            Text("Its settings, keys and data are deleted from this Mac. Files it saved in ~/LassoWorkspace and this month's usage count are kept.")
         }
     }
 }
@@ -1147,7 +1276,22 @@ private struct PackageSettingRow: View {
             SettingsKeyField(text: $text, placeholder: setting.label, onClear: { text = "" })
                 .settingsFieldWidth()
                 .onChange(of: text) { _, _ in later() }
-        case .text, .server, .folder:
+        case .folder:
+            HStack(spacing: 8) {
+                Text(text.isEmpty ? "None" : (text as NSString).abbreviatingWithTildeInPath)
+                    .font(SettingsFont.sub).foregroundStyle(text.isEmpty ? .orange : .secondary)
+                    .lineLimit(1).truncationMode(.middle)
+                Button("Choose…") {
+                    let panel = NSOpenPanel()
+                    panel.canChooseFiles = false
+                    panel.canChooseDirectories = true
+                    panel.allowsMultipleSelection = false
+                    panel.message = "Choose the folder \(packageName) can read. It can't read anything else of yours."
+                    if panel.runModal() == .OK, let url = panel.url { text = url.path; commit() }
+                }
+                .buttonStyle(.bordered)
+            }
+        case .text, .server:
             TextField("", text: $text, prompt: Text(setting.kind == .server ? "http://localhost:8888" : ""))
                 .textFieldStyle(.roundedBorder)
                 .settingsFieldWidth()

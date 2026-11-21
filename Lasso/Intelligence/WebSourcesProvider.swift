@@ -56,7 +56,7 @@ struct WebSourcesProvider {
 
         let freeOn = Connectors.webSearch.isActive()
         let packages = PackageRegistry.shared.searchCommands()
-        let primaries = packages.filter { $0.command.http?.role == .primary }
+        let primaries = packages.filter { $0.command.searchRole == .primary }
         let reserves = packages.filter { $0.command.http?.role == .reserve }
 
         // Cache per active config — otherwise enabling/disabling a source would replay stale hits.

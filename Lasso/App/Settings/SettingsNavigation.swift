@@ -169,7 +169,7 @@ struct SettingsSearchEntry: Identifiable, Hashable {
         .init(label: "Use my own Hermes", pane: .agent, route: .ownHermes, keywords: ["gateway", "api key", "address"]),
         .init(label: "Local-only mode", pane: .privacy, route: nil, keywords: ["offline", "network", "privacy"]),
         .init(label: "Web search", pane: .packages, route: nil, keywords: ["internet", "grounding", "connector", "wikipedia", "duckduckgo"]),
-        .init(label: "Add a package", pane: .packages, route: nil, keywords: ["plugin", "install", "extension", "connector", "tavily", "serpapi", "brave", "patch", "mod", "prompt", "customize"]),
+        .init(label: "Add a package", pane: .packages, route: nil, keywords: ["plugin", "install", "extension", "connector", "tavily", "serpapi", "brave", "patch", "mod", "prompt", "customize", "script", "shortcut", "sandbox"]),
         .init(label: "Search with Lens", pane: .privacy, route: nil, keywords: ["google", "reverse image"]),
         .init(label: "Search API keys", pane: .packages, route: nil, keywords: ["tavily", "serpapi", "api key"]),
         .init(label: "Clear chat history", pane: .privacy, route: nil, keywords: ["delete", "conversations"]),

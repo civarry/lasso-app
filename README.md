@@ -17,25 +17,37 @@
 
 <p align="center"><img src="screenshots/hero.png" alt="Drag a box around anything on screen and translate it in place"></p>
 
-**Jump to:** [What's new](#whats-new-in-020) · [What it does](#what-it-does) · [Chat](#chat) ·
+**Jump to:** [What's new](#whats-new-in-021) · [What it does](#what-it-does) · [Chat](#chat) ·
 [Agent](#agent) · [Packages](#packages) · [Privacy](#privacy) · [Install](#install) ·
 [Updates](#updates) · [AI models](#ai-models) · [Build it](#build-it-yourself)
 
-## What's new in 0.20
+## What's new in 0.21
 
-**Packages can now change Lasso itself, not just add to it.** A package can:
+**Packages can now run things on your Mac:**
 
-- rewrite the **Summarize** and **Proofread** prompts (say, "5 bullet points"),
-- **rename** Lasso's actions,
-- set the toolbar's **default order** and which buttons start in the … menu,
-- add or remove **chat suggestions**,
-- add to what the **chat model is told** ("Use British spelling").
+- **Your Shortcuts.** A package can send what you lasso to one of your own Shortcuts, so it reaches
+  Reminders, Notes, Calendar or Home without an API.
+- **Scripts, in a sandbox.** A package can bring a small program (Python, shell, anything) for what a web
+  request can't do: turn a table into a CSV file, search a folder of notes, convert files. It can't read
+  your files (except a folder you pick), change anything outside its own folder, or reach the internet
+  unless it says so.
+- It tells you what it needs installed (like `pandoc`). Lasso never installs anything.
+- **Full access** is yours alone to give, per package, after a warning. An update that changes a script
+  turns it off again.
+- Models always ask before running a script or a Shortcut.
 
-You see every change before adding it. Turn the package off and Lasso is exactly as it was.
-If two packages change the same thing, the page says which one is used, with **Use This One**.
-Your own toolbar choices always win.
+<p align="center"><img src="screenshots/app/package-scripts.png" width="460" alt="A package's page: a notes folder to choose, a Shortcut to get, what its sandboxed script can reach, and the Full access switch"></p>
 
-<p align="center"><img src="screenshots/app/package-patches.png" width="460" alt="A package's page listing what it changes in Lasso, with which package's Summarize prompt is used"></p>
+<details>
+<summary>New in 0.20</summary>
+
+- **Packages can change Lasso itself:** the Summarize and Proofread prompts, action names, the toolbar's
+  defaults, chat suggestions and extra chat instructions. Turn the package off and Lasso is exactly as it
+  was.
+
+<p align="center"><img src="screenshots/app/package-patches.png" width="460" alt="A package's page listing what it changes in Lasso"></p>
+
+</details>
 
 <details>
 <summary>New in 0.19</summary>
@@ -128,7 +140,7 @@ search the web, read and write files, run commands. You see every step.
 ## Packages
 
 **Add features to Lasso with a small file, no coding in Lasso needed.** In Settings › Packages,
-click **+** and drop the file in, choose it, or paste it.
+click **+** and drop the file or package folder in, choose it, or paste it.
 
 <p align="center"><img src="screenshots/app/package-review.png" width="440" alt="The review Lasso shows before adding a package"></p>
 
@@ -140,15 +152,17 @@ A package can add, or change:
 - **"Send to" targets** on captures and chat replies.
 - **Hotkeys** for text you highlight in any app, with the result pasted back.
 - **Tools** for the chat model and the Agent.
-- **Changes to Lasso itself** (new in 0.20): the Summarize and Proofread prompts, action names, the
-  toolbar's defaults, chat suggestions and extra chat instructions. Off undoes them.
+- **Changes to Lasso itself:** the Summarize and Proofread prompts, action names, the toolbar's
+  defaults, chat suggestions and extra chat instructions. Off undoes them.
+- **Shortcuts and sandboxed scripts** (new in 0.21) behind any of the above.
 
 **You stay in control:**
 
 - Before adding, Lasso shows what it does and where it sends data.
 - Keys stay in your Keychain and only go to that package's servers.
 - A command uses **your** chosen model, never another one.
-- Local-only mode pauses packages that reach off your Mac.
+- Local-only mode pauses packages that reach off your Mac, and cuts scripts off the internet.
+- Scripts run in a sandbox unless you give that package Full access.
 
 Make your own: [`docs/CONTRIBUTING-PACKAGES.md`](docs/CONTRIBUTING-PACKAGES.md) has an example and the
 rules. The full design is in [`docs/PACKAGES.md`](docs/PACKAGES.md), and what can be changed in

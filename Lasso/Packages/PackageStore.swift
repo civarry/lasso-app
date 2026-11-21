@@ -40,6 +40,9 @@ final class PackageStore {
     let root: URL
     private let defaults: UserDefaults
 
+    /// Where scripts keep their data (`…/PackageData/<id>/`), beside the packages folder.
+    var dataRoot: URL { root.deletingLastPathComponent().appending(path: root.lastPathComponent == "Packages" ? "PackageData" : root.lastPathComponent + "-data", directoryHint: .isDirectory) }
+
     init(root: URL = PackageStore.defaultRoot, defaults: UserDefaults = .standard) {
         self.root = root
         self.defaults = defaults
@@ -65,6 +68,10 @@ final class PackageStore {
         var disabledCommands: [String]?
         /// Commands the user stopped offering to models as tools (they keep their other surfaces).
         var offTools: [String]?
+        /// SHA-256 of each file beside the manifest (scripts), as approved.
+        var files: [String: String]?
+        /// The user let this package's scripts run without the sandbox. Never set by a package.
+        var fullAccess: Bool?
     }
 
     private var recordsKey: String { "packages.records" }
@@ -83,6 +90,90 @@ final class PackageStore {
 
     private func manifestURL(_ id: String) -> URL { root.appending(path: "\(id)/lasso.json") }
 
+    /// A package's folder on disk.
+    func folder(_ id: String) -> URL { root.appending(path: id, directoryHint: .isDirectory) }
+
+    /// Files beside a manifest (`scripts/…`, a README), by path inside the package.
+    typealias Files = [String: Data]
+
+    nonisolated static let maxFolderBytes = 5 * 1024 * 1024
+
+    /// Everything in a package folder but `lasso.json`: no hidden files, no links, at most 5 MB.
+    nonisolated static func readFiles(in folder: URL) throws -> Files {
+        let fm = FileManager.default
+        var out: Files = [:], total = 0
+        let base = folder.resolvingSymlinksInPath().path + "/"
+        guard let walker = fm.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                                         options: [.skipsHiddenFiles]) else { return [:] }
+        for case let url as URL in walker {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            if values.isSymbolicLink == true { throw InstallError.invalid([PackageProblem(path: url.lastPathComponent, message: "Links aren't allowed in a package.")]) }
+            guard values.isRegularFile == true else { continue }
+            let path = String(url.resolvingSymlinksInPath().path.dropFirst(base.count))
+            guard path != "lasso.json" else { continue }
+            let data = try Data(contentsOf: url)
+            total += data.count
+            guard total <= maxFolderBytes else {
+                throw InstallError.invalid([PackageProblem(path: "", message: "The package folder is over 5 MB.")])
+            }
+            out[path] = data
+        }
+        return out
+    }
+
+    nonisolated static func hashes(_ files: Files) -> [String: String] { files.mapValues(sha256) }
+
+    /// The manifest's hash, with every file's when there are any (a script changed on disk counts).
+    nonisolated static func contentHash(_ manifest: Data, _ files: Files) -> String {
+        guard !files.isEmpty else { return sha256(manifest) }
+        let list = hashes(files).sorted { $0.key < $1.key }.map { "\($0.key)\u{0}\($0.value)" }.joined(separator: "\n")
+        return sha256(manifest + Data(list.utf8))
+    }
+
+    /// Problems with the files a manifest names: each script must be in the package and start with `#!`.
+    nonisolated static func fileProblems(_ package: LassoPackage, _ files: Files) -> [PackageProblem] {
+        var out: [PackageProblem] = []
+        for (i, command) in package.commands.enumerated() {
+            guard let script = command.script else { continue }
+            let at = "commands[\(i)].run.script.path"
+            guard let data = files[script.path] else {
+                out.append(PackageProblem(path: at, message: "\(script.path) isn't in the package. Add the package folder, not only its lasso.json."))
+                continue
+            }
+            if !data.starts(with: Data("#!".utf8)) { out.append(PackageProblem(path: at, message: "\(script.path) must start with a #! line.")) }
+        }
+        return out
+    }
+
+    /// Where a package's scripts run: its folder, data folder, workspace folder and picked folders.
+    func places(for package: LassoPackage) -> PackageScript.Places {
+        let folders = package.settings.filter { $0.kind == .folder }.compactMap { setting -> URL? in
+            let path = value(package.id, setting)
+            return path.isEmpty ? nil : URL(fileURLWithPath: path, isDirectory: true)
+        }
+        return PackageScript.Places(package: folder(package.id), data: dataRoot.appending(path: package.id, directoryHint: .isDirectory),
+                                    workspace: PackageScript.workspace(package.id), folders: folders)
+    }
+
+    /// Whether the user gave this package's scripts full access.
+    func hasFullAccess(_ id: String) -> Bool { records[id]?.fullAccess == true }
+
+    /// The user's switch for full access (Settings, after a warning).
+    func setFullAccess(_ id: String, _ on: Bool) {
+        var records = self.records
+        guard var record = records[id] else { return }
+        record.fullAccess = on
+        records[id] = record
+        self.records = records
+        reload()
+    }
+
+    /// Which files differ from what's installed (for the review of an update).
+    func changedFiles(_ id: String, _ files: Files) -> [String] {
+        let old = records[id]?.files ?? [:], new = Self.hashes(files)
+        return Set(old.keys).union(new.keys).filter { old[$0] != new[$0] }.sorted()
+    }
+
     /// Reads every installed package again (at launch, and after any change).
     func reload() {
         var found: [Installed] = [], problems: [Broken] = []
@@ -91,9 +182,10 @@ final class PackageStore {
         for folder in folders.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             let id = folder.lastPathComponent
             guard let record = records[id], let data = try? Data(contentsOf: manifestURL(id)) else { continue }
+            let files = (try? Self.readFiles(in: folder)) ?? ["": Data()]
             switch PackageValidator.validate(data) {
             case .valid(let package) where package.id == id:
-                let changed = Self.sha256(data) != record.sha256
+                let changed = Self.contentHash(data, files) != record.sha256
                 let approved = changed ? record.approved.flatMap { PackageValidator.validate($0).package } : nil
                 found.append(Installed(package: package, enabled: record.enabled && !changed,
                                        origin: record.origin, changedOnDisk: changed, approved: approved))
@@ -112,7 +204,9 @@ final class PackageStore {
             return package
         }
         PackageRegistry.shared.update(active, settings: settingValues(for:),
-                                      offTools: { Set(records[$0]?.offTools ?? []) })
+                                      offTools: { Set(records[$0]?.offTools ?? []) },
+                                      places: { self.places(for: $0) },
+                                      fullAccess: { records[$0]?.fullAccess == true })
         patches = AppliedPatches.apply(inPatchOrder(active))
         PatchState.shared.update(patches)
         NotificationCenter.default.post(name: PackageStore.didChange, object: nil)
@@ -160,10 +254,12 @@ final class PackageStore {
     }
 
     /// What installing `data` would do: the package, and whether it updates one already installed.
-    func review(_ data: Data) -> Result<(package: LassoPackage, replacing: LassoPackage?), InstallError> {
+    func review(_ data: Data, files: Files = [:]) -> Result<(package: LassoPackage, replacing: LassoPackage?), InstallError> {
         switch PackageValidator.validate(data) {
         case .invalid(let problems): return .failure(.invalid(problems))
         case .valid(let package):
+            let missing = Self.fileProblems(package, files)
+            if !missing.isEmpty { return .failure(.invalid(missing)) }
             let current = installed.first { $0.id == package.id }?.package
             if let current, !current.version.isEmpty, !PackageValidator.isNewer(package.version, than: current.version) {
                 // A manifest changed on disk can be re-approved at the same version.
@@ -177,17 +273,33 @@ final class PackageStore {
 
     /// Installs (or updates) after the user approved the review. Settings carry over by id.
     @discardableResult
-    func install(_ data: Data, origin: Origin, enabled: Bool = true) throws -> LassoPackage {
+    func install(_ data: Data, files: Files = [:], origin: Origin, enabled: Bool = true) throws -> LassoPackage {
         let package: LassoPackage
-        switch review(data) {
+        switch review(data, files: files) {
         case .failure(let error): throw error
         case .success(let reviewed): package = reviewed.package
         }
-        let dir = root.appending(path: package.id, directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try data.write(to: manifestURL(package.id), options: .atomic)
+        let fm = FileManager.default
+        let dir = folder(package.id)
+        // The folder is replaced whole, so a file the update dropped doesn't linger.
+        let staging = root.appending(path: ".\(package.id)-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        try data.write(to: staging.appending(path: "lasso.json"))
+        for (path, contents) in files {
+            let url = staging.appending(path: path)
+            try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try contents.write(to: url)
+            if path.hasPrefix("scripts/") { try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path) }
+        }
+        if fm.fileExists(atPath: dir.path) { try fm.removeItem(at: dir) }
+        try fm.moveItem(at: staging, to: dir)
         var records = self.records
-        records[package.id] = Record(sha256: Self.sha256(data), enabled: enabled, origin: origin, approved: data)
+        let old = records[package.id]
+        // Full access survives an update only when no script changed.
+        let keepsFullAccess = old?.fullAccess == true && (old?.files ?? [:]) == Self.hashes(files)
+        records[package.id] = Record(sha256: Self.contentHash(data, files), enabled: enabled, origin: origin, approved: data,
+                                     disabledCommands: old?.disabledCommands, offTools: old?.offTools,
+                                     files: Self.hashes(files), fullAccess: keepsFullAccess ? true : nil)
         self.records = records
         if !patchOrder.contains(package.id) { patchOrder.append(package.id) }
         reload()
@@ -205,6 +317,8 @@ final class PackageStore {
             else { defaults.removeObject(forKey: settingKey(id, setting.id)) }
         }
         try? FileManager.default.removeItem(at: root.appending(path: id, directoryHint: .isDirectory))
+        // Its data folder goes too; what it saved to ~/LassoWorkspace/<id>/ is the user's.
+        try? FileManager.default.removeItem(at: dataRoot.appending(path: id, directoryHint: .isDirectory))
         var records = self.records
         records[id] = nil
         self.records = records
@@ -230,7 +344,11 @@ final class PackageStore {
         var records = self.records
         guard var record = records[id], let data = try? Data(contentsOf: manifestURL(id)),
               PackageValidator.validate(data).package != nil else { return }
-        record.sha256 = Self.sha256(data)
+        let files = (try? Self.readFiles(in: folder(id))) ?? [:]
+        guard let package = PackageValidator.validate(data).package, Self.fileProblems(package, files).isEmpty else { return }
+        if record.files ?? [:] != Self.hashes(files) { record.fullAccess = nil }
+        record.sha256 = Self.contentHash(data, files)
+        record.files = Self.hashes(files)
         record.approved = data
         record.enabled = true
         records[id] = record
@@ -327,6 +445,10 @@ final class PackageRegistry: @unchecked Sendable {
         var ready: Bool
         /// Command ids the user doesn't offer to models as tools.
         var offTools: Set<String> = []
+        /// Where its scripts run.
+        var places: PackageScript.Places?
+        /// The user let its scripts run without the sandbox.
+        var fullAccess = false
     }
 
     private let lock = NSLock()
@@ -336,20 +458,23 @@ final class PackageRegistry: @unchecked Sendable {
 
     @MainActor
     func update(_ packages: [LassoPackage], settings: (LassoPackage) -> (values: [String: String], secrets: [String]),
-                offTools: (String) -> Set<String> = { _ in [] }) {
+                offTools: (String) -> Set<String> = { _ in [] },
+                places: (LassoPackage) -> PackageScript.Places? = { _ in nil },
+                fullAccess: (String) -> Bool = { _ in false }) {
         let built = packages.map { package -> Entry in
             let s = settings(package)
             let ready = package.settings.allSatisfy { setting in
                 setting.kind == .toggle || setting.kind == .choice || !(s.values["settings.\(setting.id)"] ?? "").isEmpty
             }
-            return Entry(package: package, values: s.values, secrets: s.secrets, ready: ready, offTools: offTools(package.id))
+            return Entry(package: package, values: s.values, secrets: s.secrets, ready: ready, offTools: offTools(package.id),
+                         places: places(package), fullAccess: fullAccess(package.id))
         }
         lock.withLock { entries = built }
     }
 
     /// Search commands that can run now: enabled, set up, and not paused by local-only mode.
     func searchCommands(localOnly: Bool = PrivacyMode.localOnly) -> [(entry: Entry, command: PackageCommand)] {
-        all.filter(\.ready).flatMap { entry in
+        all.filter { $0.ready && PackageRequirements.missingNow($0.package) == nil }.flatMap { entry in
             entry.package.commands.filter { $0.surfaces.contains(.search) }.compactMap { command in
                 let reachesOffMac = !PackageHTTP.allowedHosts(entry.package, values: entry.values)
                     .allSatisfy(PackageValidator.isLoopback)

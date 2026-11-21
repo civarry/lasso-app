@@ -329,7 +329,6 @@ The script writes its result to standard output, either plain text (used as is) 
 | For output | Write |
 |---|---|
 | `markdown`, `copy`, `replace`, `notify` | `{ "text": "…" }` |
-| `open` | `{ "url": "https://…" }` |
 | `image`, `file` | `{ "path": "…" }`, a file in its data folder or `TMPDIR` |
 | `results` | `{ "results": [ { "title": "…", "url": "…", "snippet": "…" } ] }` |
 
@@ -458,7 +457,7 @@ without `commands`.
 | `choice` | Preferences | One of `options`. |
 | `toggle` | Preferences | `true` or `false`. |
 | `server` | Preferences | The base URL of a server the user runs (SearXNG). Its host is allowed and shown at install. `http` only for this Mac (`localhost`, `127.0.0.1`, `::1`). |
-| `folder` | A security-scoped bookmark | Picked in the Open panel; the only folder a script can read beyond its own. |
+| `folder` | Its path, in preferences (Lasso isn't sandboxed itself, so no bookmark is needed) | Picked in the Open panel; the only folder a script can read beyond its own. |
 
 At most 8 settings. `help` is an `https` link shown as "Get a key".
 
@@ -473,7 +472,7 @@ What the review screen shows, and what enforces it:
 | Runs your Shortcut | a `shortcut` command | Only the named Shortcut is run. |
 | Runs code on your Mac | a `script` command | The sandbox profile. |
 | Reads what you lasso | `input` of `text`, `image`, `source` | Only those values are passed. |
-| Reads this folder | a `folder` setting | The sandbox profile and the bookmark. |
+| Reads this folder | a `folder` setting | The sandbox profile. |
 | Changes text in your apps | `output: "replace"` | Only from the user's own hotkey, never from a model. |
 | Needs a key | `secret` settings | The Keychain, per package. |
 | Changes Lasso's content | `patches` | Only the listed targets; undone when the package is off. |
@@ -548,7 +547,7 @@ update widens permissions (new hosts, network, a new runner, new inputs, new set
 script, the review is shown again with what's new highlighted. Settings carry over when their ids are
 unchanged.
 
-**Removing** deletes the package, its preferences, Keychain items, folder bookmarks and data folder.
+**Removing** deletes the package, its preferences (with the folders it was given), Keychain items and data folder.
 Files it saved to `~/LassoWorkspace/<id>/` are the user's and are left, and so are its usage counts, so
 removing and adding it again can't spend a free tier twice in one month.
 
@@ -799,8 +798,9 @@ Each step ships on its own, with its checks from [Verification](#verification), 
    `when`; the `markdown`, `copy`, `replace`, `open` and `notify` outputs.
 3. **Tools** (built: Lasso 0.19.0). The `tool` surface for the chat model and the Agent, the `args`
    input, the tool budget, and asking first.
-4. **Shortcuts and scripts.** Both runners, the sandbox, `requires`, folders, full access, `file` and
-   `image` outputs.
+4. **Shortcuts and scripts** (built: Lasso 0.21.0). Both runners, the sandbox, `requires`, folders,
+   full access, `file` and `image` outputs. Not in this step: `image` input (a command can't be given a
+   picture yet) and `open` output from a script (Lasso builds the addresses it opens, from `http`).
 5. **Patches** (built: Lasso 0.20.0, ahead of step 4: it doesn't need it). The targets in
    [Patches](#patches-changing-lassos-own-content), `docs/patch-targets.md`, patch order and undo.
 6. **Catalog and tools for authors.** `civarry/lasso-packages`, Browse and updates, Developer mode,
@@ -867,7 +867,7 @@ Each MUST, with the check that fails when it's broken. App tests live in `LassoT
 | Tool budget | Registry: with nine 200-character tools, seven are offered and the model gets only those; the eighth is shown as over the limit; turning one off in Tools for models offers the next and keeps the command's other surfaces. The review says when a package's tools won't all fit. |
 | Limits honoured | Engine: after `daily` calls, the next search skips the package. |
 | Review on wider access | Install: an update adding a host, network, a runner or an input shows the review with it highlighted; one changing only a prompt doesn't; one changing a script always does. |
-| Remove deletes everything | Install: the package folder, preferences, Keychain items, bookmarks and data folder are gone; `~/LassoWorkspace/<id>/` and the usage counts are kept. |
+| Remove deletes everything | Install: the package folder, preferences, Keychain items and data folder are gone; `~/LassoWorkspace/<id>/` and the usage counts are kept. |
 | A changed package needs the review | Install: after its file is edited on disk the package is off, its switch can't turn it on, the review shows the approved and the new version, and only Turn On enables it. |
 | Full access is the user's alone | Install: no manifest field, update or `lasso://` link turns on full access; after the user turns it on, an update leaves it on only if no script changed, and the script runs unsandboxed (it can read `~/Documents`); turned off, the sandbox applies again. |
 | Only a person installs | Chat and Agent: a model's attempt to install or update a package (a tool call, a link in a reply) at most opens the review; nothing is installed without the user's click. A package file edited on disk is turned off at the next launch until reviewed. |

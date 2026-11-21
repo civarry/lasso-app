@@ -89,7 +89,7 @@ struct PackageValidatorTests {
         let image = messages(Self.search.replacingOccurrences(of: "\"input\": [\"query\"]", with: "\"input\": [\"query\", \"image\"]"))
         #expect(image.contains { $0.contains("can't give commands images yet") }, "\(image)")
         let script = messages(Self.search.replacingOccurrences(of: "\"run\": {\"http\"", with: "\"run\": {\"script\": {}, \"http\""))
-        #expect(script.contains("commands[0].run.script: This version of Lasso can't run \"script\" commands yet."))
+        #expect(script.contains("commands[0].run: Use one runner, not http and script."))
     }
 
     @Test func minLasso() {
