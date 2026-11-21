@@ -5,7 +5,7 @@ struct OCRCopyAction: CaptureAction {
     let id = "ocr.copy"
     nonisolated static let defaultTitle = BuiltInContent.Title.copyText
     var title: String { PatchState.title(id, default: Self.defaultTitle) }
-    let systemImage = "text.viewfinder"
+    var systemImage: String { PatchState.symbol(id, default: BuiltInContent.Symbol.copyText) }
     let relevancePriority = 10
 
     func isRelevant(to ctx: CaptureContext) -> Bool { true }

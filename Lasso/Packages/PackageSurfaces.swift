@@ -202,7 +202,8 @@ struct PackageCommandAction: CaptureAction {
 
     func perform(_ ctx: CaptureContext) async throws -> ActionResult {
         let input = PackageInput(text: ctx.ocrText, sourceApp: ctx.sourceApp, sourceBundleID: ctx.sourceBundleID,
-                                 table: ctx.tableText)
+                                 table: ctx.tableText, image: command.input.contains(.image) ? PackageInput.png(ctx.image) : nil,
+                                 lines: ctx.ocrLines)
         if command.output != .markdown {
             StatusHUD.shared.show(icon: "", text: "\(command.title)…", spinner: true)
         }

@@ -195,6 +195,16 @@ struct ReadmeScreenshotTests {
         try await shoot("table-to-csv", CGSize(width: 520, height: 470),
                         ScrollView { PackagePage(id: "table-to-csv", localOnly: false, removed: {}) }
                             .background(SettingsPalette.pageFill))
+        // A package that runs by itself on every capture, once allowed.
+        try store.install(Data("""
+            {"lasso": 1, "id": "capture-log", "version": "1.0.0", "name": "Capture Log", "summary": "Keeps a dated log of what you lasso.",
+             "author": "Lasso", "icon": {"symbol": "list.bullet.rectangle"}, "commands": [{"id": "log", "title": "Capture log",
+               "surfaces": ["event"], "on": ["capture"], "input": ["text", "image", "source"], "output": "file",
+               "run": {"script": {"path": "scripts/log.py"}}}]}
+            """.utf8), files: ["scripts/log.py": Data("#!/usr/bin/env python3\n".utf8)], origin: .catalog)
+        try await shoot("events", CGSize(width: 520, height: 880),
+                        ScrollView { PackagePage(id: "capture-log", localOnly: false, removed: {}) }
+                            .background(SettingsPalette.pageFill))
         // Settings › Privacy › Permissions.
         try await shoot("permissions", CGSize(width: 520, height: 236),
                         Form { PermissionsSection() }.formStyle(.grouped).background(SettingsPalette.pageFill))

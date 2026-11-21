@@ -17,6 +17,17 @@ rules are in [PACKAGES.md](PACKAGES.md#patches-changing-lassos-own-content).
 | `action.color.pick.title` | `set` | The name of Pick color in the toolbar, menus and Settings. | Pick color |
 | `action.identify.title` | `set` | The name of Identify in the toolbar, menus and Settings. | Identify |
 | `action.lens.search.title` | `set` | The name of Lens in the toolbar, menus and Settings. | Lens |
+| `action.ocr.copy.symbol` | `set` | The icon of Copy text: an SF Symbol name. | text.viewfinder |
+| `action.translate.symbol` | `set` | The icon of Translate: an SF Symbol name. | translate |
+| `action.ai.grammar.symbol` | `set` | The icon of Proofread: an SF Symbol name. | text.badge.checkmark |
+| `action.ai.summarize.symbol` | `set` | The icon of Summarize: an SF Symbol name. | text.line.3.summary |
+| `action.ai.ask.symbol` | `set` | The icon of Ask AI: an SF Symbol name. | bubble.left.and.bubble.right |
+| `action.qr.open.symbol` | `set` | The icon of Open code: an SF Symbol name. | qrcode.viewfinder |
+| `action.color.pick.symbol` | `set` | The icon of Pick color: an SF Symbol name. | eyedropper |
+| `action.identify.symbol` | `set` | The icon of Identify: an SF Symbol name. | sparkle.magnifyingglass |
+| `action.lens.search.symbol` | `set` | The icon of Lens: an SF Symbol name. | photo.badge.magnifyingglass |
+| `chat.greeting` | `set` | The line at the top of an empty chat. | How can I help? |
+| `chat.placeholder` | `set` | The hint in an empty message box (Lasso adds "or @ …" when you have sources). | Message… |
 | `toolbar.order` | `set` | The toolbar's default order. An order you set in Settings › Toolbar comes first. | Lasso's own order |
 | `toolbar.hidden` | `set`, `add`, `remove` | Toolbar buttons moved to the … menu by default, until you choose in Settings › Toolbar. | None |
 | `chat.suggestions` | `set`, `add`, `remove` | The suggestions on an empty chat (at most 6 show). | What can you do?; Ask about something on screen; Attach a file or image |

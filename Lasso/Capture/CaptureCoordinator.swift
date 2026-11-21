@@ -326,6 +326,12 @@ final class CaptureCoordinator {
             ctx.tableText = table
             ctx.packageKinds.insert("table")
         }
+        // Packages the user lets run on every capture.
+        if PackageEvents.anyFor(.capture) {
+            let read = ctx
+            PackageEvents.fire(.capture, input: PackageInput(text: read.ocrText, sourceApp: read.sourceApp, sourceBundleID: read.sourceBundleID,
+                                                             table: read.tableText, image: PackageInput.png(read.image), lines: read.ocrLines))
+        }
         context = ctx
 
         // Direct shortcut: the context is now complete — run the pre-bound action and skip the bar.

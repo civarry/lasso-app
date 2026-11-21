@@ -315,6 +315,13 @@ final class PackageStore {
         let old = records[package.id]
         // Full access survives an update only when no script changed.
         let keepsFullAccess = old?.fullAccess == true && (old?.files ?? [:]) == Self.hashes(files)
+        // So does running by itself, and only if its event commands are the same ones.
+        if let previous = installed.first(where: { $0.id == package.id })?.package {
+            let events = { (p: LassoPackage) in p.commands.filter { $0.surfaces.contains(.event) } }
+            if events(previous) != events(package) || (old?.files ?? [:]) != Self.hashes(files) {
+                PackageEvents.setAllowed(false, package.id, defaults)
+            }
+        }
         records[package.id] = Record(sha256: Self.contentHash(data, files), enabled: enabled, origin: origin, approved: data,
                                      disabledCommands: old?.disabledCommands, offTools: old?.offTools,
                                      files: Self.hashes(files), fullAccess: keepsFullAccess ? true : nil,
@@ -343,6 +350,7 @@ final class PackageStore {
         self.records = records
         patchOrder.removeAll { $0 == id }
         SourcePreferences.forget(id)
+        PackageEvents.setAllowed(false, id, defaults)
         reload()
         Log.app.notice("packages · removed \(id, privacy: .public)")
     }

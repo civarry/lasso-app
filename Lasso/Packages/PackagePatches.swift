@@ -50,6 +50,15 @@ enum PatchTargets {
         ("lens.search", BuiltInContent.Title.lens),
     ]
 
+    /// Built-in action icons a package can change.
+    static let symbols: [(id: String, symbol: String)] = [
+        ("ocr.copy", BuiltInContent.Symbol.copyText), ("translate", BuiltInContent.Symbol.translate),
+        ("ai.grammar", BuiltInContent.Symbol.proofread), ("ai.summarize", BuiltInContent.Symbol.summarize),
+        ("ai.ask", BuiltInContent.Symbol.askAI), ("qr.open", BuiltInContent.Symbol.openCode),
+        ("color.pick", BuiltInContent.Symbol.pickColor), ("identify", BuiltInContent.Symbol.identify),
+        ("lens.search", BuiltInContent.Symbol.lens),
+    ]
+
     /// Ids a toolbar patch can name besides `<package>/<command>`.
     static var toolbarIDs: [String] {
         titles.map(\.id) + ["builtin.copyImage", "builtin.saveImage", "builtin.sendTo"]
@@ -68,7 +77,15 @@ enum PatchTargets {
         + titles.map { Target(key: "action.\($0.id).title", kind: .text(max: 24), ops: [.set],
                               about: "The name of \($0.title) in the toolbar, menus and Settings.",
                               defaultValue: $0.title) }
+        + symbols.map { item in Target(key: "action.\(item.id).symbol", kind: .text(max: 60), ops: [.set],
+                                       about: "The icon of \(titles.first { $0.id == item.id }?.title ?? item.id): an SF Symbol name.",
+                                       defaultValue: item.symbol) }
         + [
+            Target(key: "chat.greeting", kind: .text(max: 40), ops: [.set],
+                   about: "The line at the top of an empty chat.", defaultValue: BuiltInContent.chatGreeting),
+            Target(key: "chat.placeholder", kind: .text(max: 40), ops: [.set],
+                   about: "The hint in an empty message box (Lasso adds \"or @ …\" when you have sources).",
+                   defaultValue: BuiltInContent.chatPlaceholder),
             Target(key: "toolbar.order", kind: .toolbarIDs, ops: [.set],
                    about: "The toolbar's default order. An order you set in Settings › Toolbar comes first.",
                    defaultValue: "Lasso's own order"),
@@ -168,7 +185,10 @@ extension PackagePatch {
             if target.key.hasSuffix(".prompt"), text.contains("{{") {
                 problem(path, "Lasso adds the text after the prompt itself: leave out {{…}} values."); return nil
             }
-            if target.key.hasSuffix(".title"), text.contains("\n") { problem(path, "Must be one line."); return nil }
+            if target.key.hasSuffix(".title") || target.key.hasPrefix("chat."), text.contains("\n") { problem(path, "Must be one line."); return nil }
+            if target.key.hasSuffix(".symbol"), !PackageValidator.matches(text, "[a-z0-9]+(\\.[a-z0-9]+)*") {
+                problem(path, "Must be an SF Symbol name, like text.bubble."); return nil
+            }
             return PackagePatch(target: target.key, op: op, text: text)
         case .toolbarIDs:
             let ids: [String]
@@ -293,6 +313,15 @@ final class PatchState: @unchecked Sendable {
 
     static func title(_ actionID: String, default value: String) -> String {
         shared.current.texts["action.\(actionID).title"] ?? value
+    }
+
+    static func symbol(_ actionID: String, default value: String) -> String {
+        shared.current.texts["action.\(actionID).symbol"] ?? value
+    }
+
+    /// A patched piece of wording ("chat.greeting"), or Lasso's own.
+    static func text(_ target: String, default value: String) -> String {
+        shared.current.texts[target] ?? value
     }
 
     /// Added after the chat model's own instructions, marked as coming from packages.

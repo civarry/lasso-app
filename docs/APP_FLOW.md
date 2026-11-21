@@ -887,6 +887,17 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Packages: the capture image, text positions, events, more patches.** New inputs, both from a capture
+  (toolbar and the capture event only): `image` (a PNG: written into a script's `TMPDIR` before it starts,
+  its path in `image`; a Shortcut's input file; sent with a prompt to a model that sees images, never to
+  `http`) and `lines` (each OCR line with its box, 0 to 1 from the top-left). New `event` surface with
+  `on: capture | reply`, output `notify` or `file`: `PackageEvents.fire` runs after a capture is read
+  (`CaptureCoordinator`) and when a chat reply finishes (`finishStreaming`), only for packages whose
+  **Run automatically** the user turned on (page card behind a confirmation, off by default, off again
+  when an update changes its event commands or scripts, off on remove); each run is a click's (sandbox,
+  local-only, keys, limits). Patch targets `chat.greeting`, `chat.placeholder` and
+  `action.<id>.symbol` (built-in icons moved to `BuiltInContent.Symbol`). `lasso-pkg run` takes
+  `--image` and `--table`.
 - **The catalog shows a new version right away.** GitHub's file server kept serving `main`'s old
   `index.json` for minutes after a publish (even with a cache-busting query), so Browse showed Table to CSV
   1.0.0 after 1.1.0 was published. `PackageCatalog` now asks `api.github.com` for `main`'s newest commit

@@ -9,7 +9,7 @@ struct IdentifyAction: CaptureAction {
     let id = "identify"
     nonisolated static let defaultTitle = BuiltInContent.Title.identify
     var title: String { PatchState.title(id, default: Self.defaultTitle) }
-    let systemImage = "sparkle.magnifyingglass"
+    var systemImage: String { PatchState.symbol(id, default: BuiltInContent.Symbol.identify) }
     let relevancePriority = 12
 
     func isRelevant(to ctx: CaptureContext) -> Bool { true }

@@ -41,6 +41,8 @@ enum PackageScript {
     }
 
     static let maxOutput = 4 * 1024 * 1024
+    /// Stands for the script's TMPDIR in its standard input until the folder exists.
+    static let tmpToken = "@LASSO_TMPDIR@"
 
     /// The real path, as the sandbox matches it (`/private/var/…`). Foundation's
     /// `resolvingSymlinksInPath` strips `/private`, which the sandbox then doesn't match.
@@ -94,6 +96,8 @@ enum PackageScript {
         /// Full access: no sandbox (the user's choice, per package).
         var unsandboxed: Bool
         var localOnly: Bool
+        /// Files written into its TMPDIR before it starts (the capture image), by name.
+        var inputFiles: [String: Data] = [:]
 
         init(command: String, stdin: Data, secrets: [String: String], run: PackageScriptRun,
              unsandboxed: Bool = false, localOnly: Bool = PrivacyMode.localOnly) {
@@ -122,7 +126,11 @@ enum PackageScript {
         let arguments: [String] = request.unsandboxed
             ? [resolved]
             : ["/usr/bin/sandbox-exec", "-p", profile(places, tmp: tmp, network: network), resolved]
-        let input = request.stdin
+        for (name, data) in request.inputFiles where !name.contains("/") {
+            try data.write(to: tmp.appending(path: name))
+        }
+        let input = Data(String(decoding: request.stdin, as: UTF8.self)
+            .replacingOccurrences(of: tmpToken, with: tmp.path).utf8)
 
         let finished = try await Spawned.run(arguments, environment: env, directory: places.data, stdin: input,
                                              timeout: request.run.timeout, progress: progress)

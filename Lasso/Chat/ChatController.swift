@@ -3303,6 +3303,10 @@ final class ChatController {
                 $0.text = $0.reasoning.isEmpty ? "(No response.)" : "(No answer — see the thinking above.)"
             }
         }
+        // Packages the user lets run on every finished reply.
+        if let reply = messages.first(where: { $0.id == id }), !reply.isError, !reply.text.isEmpty {
+            PackageEvents.fire(.reply, input: PackageInput(text: reply.text))
+        }
         isStreaming = false
         scheduleIndex()
         persist(active)   // a completed turn is the main state change worth saving

@@ -5,7 +5,7 @@ struct TranslateAction: CaptureAction {
     let id = "translate"
     nonisolated static let defaultTitle = BuiltInContent.Title.translate
     var title: String { PatchState.title(id, default: Self.defaultTitle) }
-    let systemImage = "translate"
+    var systemImage: String { PatchState.symbol(id, default: BuiltInContent.Symbol.translate) }
     let relevancePriority = 20
 
     func isRelevant(to ctx: CaptureContext) -> Bool { true }

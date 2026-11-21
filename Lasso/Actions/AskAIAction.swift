@@ -11,7 +11,7 @@ struct AskAIAction: CaptureAction {
     let id = "ai.ask"
     nonisolated static let defaultTitle = BuiltInContent.Title.askAI
     var title: String { PatchState.title(id, default: Self.defaultTitle) }
-    let systemImage = "bubble.left.and.bubble.right"
+    var systemImage: String { PatchState.symbol(id, default: BuiltInContent.Symbol.askAI) }
     let relevancePriority = 40
 
     func isRelevant(to ctx: CaptureContext) -> Bool { true }

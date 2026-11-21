@@ -6,7 +6,7 @@ struct ColorPickerAction: CaptureAction {
     let id = "color.pick"
     nonisolated static let defaultTitle = BuiltInContent.Title.pickColor
     var title: String { PatchState.title(id, default: Self.defaultTitle) }
-    let systemImage = "eyedropper"
+    var systemImage: String { PatchState.symbol(id, default: BuiltInContent.Symbol.pickColor) }
     let relevancePriority = 50
 
     func isRelevant(to ctx: CaptureContext) -> Bool { true }

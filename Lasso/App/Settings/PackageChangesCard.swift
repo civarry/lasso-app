@@ -162,10 +162,13 @@ struct PackageChangesCard: View {
             }
         case "chat.instructions":
             return removed ? "Adds to what the chat model is told" : "Adds to what the chat model is told:"
+        case "chat.greeting": return "Changes the empty chat's greeting to “\(patch.text ?? "")”"
+        case "chat.placeholder": return "Changes the message box's hint to “\(patch.text ?? "")”"
         default:
             let id = patch.target.split(separator: ".").dropFirst().dropLast().joined(separator: ".")
             let name = PatchTargets.titles.first { $0.id == id }?.title ?? id
             if patch.target.hasSuffix(".prompt") { return "Changes the \(name) prompt" }
+            if patch.target.hasSuffix(".symbol") { return "Changes the icon of \(name)" }
             return "Renames \(name) to “\(patch.text ?? "")”"
         }
     }

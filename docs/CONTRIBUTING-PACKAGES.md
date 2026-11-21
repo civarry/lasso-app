@@ -259,6 +259,11 @@ my-package/
   scripts/to-csv.py
 ```
 
+- **The capture itself:** take `image` (a PNG file in your `TMPDIR`) and `lines` (each piece of text with
+  where it sits, 0 to 1 from the top-left) to read receipts, forms or layouts yourself, with no Lasso
+  update. Try it with `lasso-pkg run <folder> <command> --image shot.png` (`lines` is empty there: only Lasso reads text).
+- **Running by itself:** the `event` surface with `"on": ["capture"]` or `["reply"]` runs after each
+  capture or chat reply, once the user turns on **Run automatically** on its page (never before).
 - **A table someone lassoes:** take the `table` input (rows on lines, cells split by tabs) with
   `"when": {"detects": ["table"]}`; Lasso rebuilds the rows and columns from the capture. Add a `howTo`
   line so people know what to lasso.
