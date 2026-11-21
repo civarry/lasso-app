@@ -558,6 +558,7 @@ struct SettingsView: View {
                     }
                 }
             }
+            PermissionsSection()
             Section("Data") {
                 Button("Clear chat history…", role: .destructive) { showClearHistoryConfirm = true }
                 caption("Saved only on this Mac.")

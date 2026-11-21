@@ -14,7 +14,8 @@ import Security
 /// Keys saved by older versions, one item each, move into the vault the first time Lasso reads them,
 /// which asks once more for each key actually used, for the last time.
 enum Keychain {
-    private static var service: String { Bundle.main.bundleIdentifier ?? "com.cjcarito.Lasso" }
+    /// The installed app's ID, also for Xcode builds (`com.cjcarito.Lasso.dev`): they share its saved keys.
+    static let service = "com.cjcarito.Lasso"
 
     /// Inside the unit-test host a Keychain dialog would hang the run (no one answers it), and a test
     /// build is a different app to macOS, so older items would ask. Tests never prompt: a read fails.

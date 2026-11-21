@@ -42,6 +42,12 @@ Then either:
 
 The first build takes several minutes while the Swift packages (MLX in particular) compile.
 
+A build from Xcode (the Debug configuration) is **Lasso Dev**, with its own app ID
+(`com.cjcarito.Lasso.dev`), so macOS gives it its own permissions and running it doesn't take Screen
+Recording away from an installed Lasso. The first time it runs it copies the installed Lasso's settings,
+once; saved keys, chats and packages are shared. A Release build, like the terminal one above, is the
+same app as the downloaded Lasso.
+
 ## First launch
 
 Lasso lives in the menu bar. On first launch it asks for **Screen Recording** permission: turn it on
@@ -90,8 +96,9 @@ A few suites call real models or services and are skipped unless you opt in (for
 - **`missing Metal Toolchain`** during the build: run `xcodebuild -downloadComponent MetalToolchain`.
 - **`Macro "MLXHuggingFaceMacros" … must be enabled before it can be used`:** in Xcode, click
   **Trust & Enable** when asked; from the terminal, add `-skipMacroValidation` to `xcodebuild`.
-- **The capture shows only your wallpaper or nothing:** Screen Recording isn't granted to this build.
-  Remove Lasso from the list in Privacy & Security, add it again, and reopen Lasso.
+- **The capture shows only your wallpaper or nothing, or Lasso is on in Screen Recording but still
+  asks:** the permission belongs to another copy of Lasso. In Lasso, open Settings › Privacy ›
+  Permissions and click **Reset**, switch Lasso on again in System Settings, and reopen Lasso.
 - **`Lasso.xcodeproj` is missing or out of date:** run `xcodegen generate`. The project file isn't
   committed; `project.yml` is the source of truth.
 

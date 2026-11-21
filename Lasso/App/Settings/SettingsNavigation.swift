@@ -173,6 +173,8 @@ struct SettingsSearchEntry: Identifiable, Hashable {
         .init(label: "Search with Lens", pane: .privacy, route: nil, keywords: ["google", "reverse image"]),
         .init(label: "Search API keys", pane: .packages, route: nil, keywords: ["tavily", "serpapi", "api key"]),
         .init(label: "Clear chat history", pane: .privacy, route: nil, keywords: ["delete", "conversations"]),
+        .init(label: "Permissions", pane: .privacy, route: nil,
+              keywords: ["screen recording", "accessibility", "reset", "allow", "tcc"]),
     ]
 
     static func results(for query: String) -> [SettingsSearchEntry] { all.filter { $0.matches(query) } }

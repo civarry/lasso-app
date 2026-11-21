@@ -165,7 +165,9 @@ An update installs only if it's signed with Lasso's update key, so a tampered
 download is rejected. Releases from 0.16.0 on are also signed with one
 long-lived certificate, so macOS keeps your Screen Recording and microphone
 permissions across updates. Coming from 0.15.x or earlier, install 0.16.0 from
-the DMG once and grant those permissions again; after that it's automatic.
+the DMG once and grant those permissions again; after that it's automatic. If
+Lasso is on in Screen Recording but still asks, another copy of Lasso holds the
+permission: Settings → Privacy → Permissions → **Reset** clears it.
 
 ## Requirements
 

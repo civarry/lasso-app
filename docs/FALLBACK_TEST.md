@@ -286,7 +286,7 @@ Capture two things and send them to me:
 2. The log lines for the last few minutes:
 
 ```sh
-/usr/bin/log show --predicate 'subsystem == "com.cjcarito.Lasso" AND (category == "intelligence" OR category == "chat")' --last 10m --style compact | tail -40
+/usr/bin/log show --predicate 'subsystem BEGINSWITH "com.cjcarito.Lasso" AND (category == "intelligence" OR category == "chat")' --last 10m --style compact | tail -40
 ```
 
 Lines worth looking for yourself:

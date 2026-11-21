@@ -11,6 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Before anything reads a setting. Not in the test host, which must not pick up this Mac's settings.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil { DevSettingsImport.run() }
         HermesRuntime.shared.cleanUpAfterCrash()
         AppUpdater.shared.start()
         // Defaults for user settings that should start enabled.
