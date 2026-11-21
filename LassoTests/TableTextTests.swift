@@ -105,7 +105,10 @@ struct TableScreenshotTests {
         #expect(rows.count == 11)
         #expect(rows[1] == ["001", "Alex Morgan", "28", "Engineering", "Software Engineer", "75,000", "Active"])
         #expect(rows.allSatisfy { $0.count == 7 })
-        // Without the image, OCR's joined cells stay joined: the image is what splits them.
-        #expect(TableText.tsv(from: result.lines)?.contains("28 Engineering") == true)
+        // Where Vision joined cells (it does on some Macs, not all), the image is what splits them:
+        // without it they stay joined.
+        if result.lines.contains(where: { $0.string == "28 Engineering" }) {
+            #expect(TableText.tsv(from: result.lines)?.contains("28 Engineering") == true)
+        }
     }
 }
