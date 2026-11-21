@@ -741,7 +741,7 @@ flowchart LR
   Script -->|"text · file (→ ~/LassoWorkspace/id) · results"| Hits
   Script -.->|"Full access (user's switch,<br/>off when a script changes)"| NoSandbox[no sandbox]
   subgraph Cat["Catalog (step 6)"]
-    Index["index.json from raw.githubusercontent.com<br/>(Browse opened, ≥ 5 min since last; never local-only)"]
+    Index["index.json from raw.githubusercontent.com<br/>(Browse opened, ≥ 10 s since last; read at main's<br/>newest commit; never local-only)"]
     Dl[".lassopkg download: SHA-256 must match"]
   end
   Browse["Settings ▸ Packages ▸ Browse…<br/>(updates first; lasso://install?id= opens it)"] --> Index --> Dl --> Review
@@ -887,6 +887,11 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **The catalog shows a new version right away.** GitHub's file server kept serving `main`'s old
+  `index.json` for minutes after a publish (even with a cache-busting query), so Browse showed Table to CSV
+  1.0.0 after 1.1.0 was published. `PackageCatalog` now asks `api.github.com` for `main`'s newest commit
+  and reads the index at that exact commit (falling back to the branch), and Browse reads it each time
+  it opens (at most every 10 seconds), showing the list it has meanwhile.
 - **One Lasso, and tables for packages.** Updates replace the copy that's running, and launch at login
   opens whichever copy registered it, so a copy run from elsewhere (an Xcode build folder that once had
   the release app ID, Downloads, the disk image) took the update and the login item, and the next login

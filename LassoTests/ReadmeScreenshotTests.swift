@@ -147,7 +147,7 @@ struct ReadmeScreenshotTests {
         defer { (catalog.entries, catalog.state, catalog.checked) = saved }
         catalog.entries = try PackageCatalog.parse(Data(Self.catalogIndex.utf8))
         catalog.state = .loaded
-        catalog.checked = Date().addingTimeInterval(-60)
+        catalog.checked = Date()
         try await shoot("browse", CGSize(width: 520, height: 600),
                         PackageBrowseSheet(dismiss: {}, added: { _ in }).background(SettingsPalette.pageFill))
         // A source with its folder chosen: its page, and a chat that looked in it.
