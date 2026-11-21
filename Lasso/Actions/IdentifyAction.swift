@@ -7,7 +7,8 @@ struct IdentifyAction: CaptureAction {
     let intelligence: IntelligenceCoordinator
 
     let id = "identify"
-    let title = "Identify"
+    nonisolated static let defaultTitle = "Identify"
+    var title: String { PatchState.title(id, default: Self.defaultTitle) }
     let systemImage = "sparkle.magnifyingglass"
     let relevancePriority = 12
 

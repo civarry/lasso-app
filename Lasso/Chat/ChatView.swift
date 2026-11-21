@@ -350,7 +350,7 @@ struct ChatView: View {
             Text("How can I help?")
                 .font(.title2).fontWeight(.semibold)
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(Self.suggestions) { suggestion in
+                ForEach(suggestions) { suggestion in
                     Button {
                         switch suggestion.action {
                         case .ask:
@@ -382,7 +382,7 @@ struct ChatView: View {
     /// "What can you do?" chip injects Lasso's real feature list so the answer is grounded.
     private struct Suggestion: Identifiable {
         enum Action { case ask, capture, attach }
-        let id = UUID()
+        var id: String { title }
         let title: String
         var action: Action = .ask
         var context: String?
@@ -392,11 +392,19 @@ struct ChatView: View {
 
     /// Starters that only Lasso has: what it can do, the screen, an image. (Generic chatbot prompts
     /// like "write an email" said nothing about this app.)
-    private static let suggestions: [Suggestion] = [
-        Suggestion(title: "What can you do?", context: ChatController.lassoCapabilities, webSearch: false),
-        Suggestion(title: "Ask about something on screen", action: .capture),
-        Suggestion(title: "Attach a file or image", action: .attach),
-    ]
+    ///
+    /// Packages can add, remove or replace them (`chat.suggestions`); one a package adds is asked as is.
+    private var suggestions: [Suggestion] {
+        PackageStore.shared.patches.suggestions.prefix(PatchTargets.maxSuggestionsShown).map { title in
+            switch title {
+            case ChatSuggestions.whatCanYouDo:
+                Suggestion(title: title, context: ChatController.lassoCapabilities, webSearch: false)
+            case ChatSuggestions.onScreen: Suggestion(title: title, action: .capture)
+            case ChatSuggestions.attach: Suggestion(title: title, action: .attach)
+            default: Suggestion(title: title)
+            }
+        }
+    }
 
     // MARK: - Composer
 

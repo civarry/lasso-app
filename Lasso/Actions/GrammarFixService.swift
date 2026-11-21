@@ -100,7 +100,7 @@ final class GrammarFixService {
             restore(savedClipboard, to: pb)
             StatusHUD.shared.hide()
             FloatingPanelController.shared.present(
-                AnyView(FloatingResultView(title: "Proofread", result: .text(corrected))), anchor: nil)
+                AnyView(FloatingResultView(title: PatchState.title("ai.grammar", default: GrammarFixAction.defaultTitle), result: .text(corrected))), anchor: nil)
         }
     }
 

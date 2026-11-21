@@ -3,7 +3,8 @@ import AppKit
 /// Open or copy a detected QR / barcode payload.
 struct QRAction: CaptureAction {
     let id = "qr.open"
-    let title = "Open code"
+    nonisolated static let defaultTitle = "Open code"
+    var title: String { PatchState.title(id, default: Self.defaultTitle) }
     let systemImage = "qrcode.viewfinder"
     let relevancePriority = 15
 

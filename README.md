@@ -17,28 +17,38 @@
 
 <p align="center"><img src="screenshots/hero.png" alt="Drag a box around anything on screen and translate it in place"></p>
 
-**Jump to:** [What's new](#whats-new-in-019) · [What it does](#what-it-does) · [Chat](#chat) ·
+**Jump to:** [What's new](#whats-new-in-020) · [What it does](#what-it-does) · [Chat](#chat) ·
 [Agent](#agent) · [Packages](#packages) · [Privacy](#privacy) · [Install](#install) ·
 [Updates](#updates) · [AI models](#ai-models) · [Build it](#build-it-yourself)
 
-## What's new in 0.19
+## What's new in 0.20
 
-**Packages can give the chat model and the Agent new tools.** A model can now look things up
-or do things through a package, like converting money or adding a task.
+**Packages can now change Lasso itself, not just add to it.** A package can:
 
-- Tools that only look something up run straight away.
-- Tools that **do** something (send data, copy, open a page) ask you first. Deny, and nothing runs.
+- rewrite the **Summarize** and **Proofread** prompts (say, "5 bullet points"),
+- **rename** Lasso's actions,
+- set the toolbar's **default order** and which buttons start in the … menu,
+- add or remove **chat suggestions**,
+- add to what the **chat model is told** ("Use British spelling").
+
+You see every change before adding it. Turn the package off and Lasso is exactly as it was.
+If two packages change the same thing, the page says which one is used, with **Use This One**.
+Your own toolbar choices always win.
+
+<p align="center"><img src="screenshots/app/package-patches.png" width="460" alt="A package's page listing what it changes in Lasso, with which package's Summarize prompt is used"></p>
+
+<details>
+<summary>New in 0.19</summary>
+
+- **Packages give the chat model and the Agent new tools.** Tools that only look something up run
+  straight away; tools that **do** something ask you first.
+- **Stuck permission? One click.** Settings › Privacy › Permissions › **Reset**.
 
 <p align="center"><img src="screenshots/app/chat-tools.png" width="420" alt="The chat model used a currency tool, then asks before adding a task"></p>
 
-**Choose which tools models get** in Settings › Packages › Tools for models.
-
 <p align="center"><img src="screenshots/app/packages.png" width="460" alt="Settings › Packages with search, commands and the Tools for models list"></p>
 
-**Stuck permission? One click.** If Lasso is switched on in Screen Recording but still can't
-capture, Settings › Privacy › Permissions › **Reset** fixes it (0.19.1).
-
-<p align="center"><img src="screenshots/app/permissions.png" width="460" alt="Settings › Privacy › Permissions with a Reset button"></p>
+</details>
 
 ## What it does
 
@@ -122,14 +132,16 @@ click **+** and drop the file in, choose it, or paste it.
 
 <p align="center"><img src="screenshots/app/package-review.png" width="440" alt="The review Lasso shows before adding a package"></p>
 
-A package can add:
+A package can add, or change:
 
 - **Web search sources** (Tavily and SerpApi are built in).
 - **Toolbar buttons** on captures, shown only when they fit (a tracking number, a flight, long text…).
 - **`/commands`** in chat.
 - **"Send to" targets** on captures and chat replies.
 - **Hotkeys** for text you highlight in any app, with the result pasted back.
-- **Tools** for the chat model and the Agent (new in 0.19).
+- **Tools** for the chat model and the Agent.
+- **Changes to Lasso itself** (new in 0.20): the Summarize and Proofread prompts, action names, the
+  toolbar's defaults, chat suggestions and extra chat instructions. Off undoes them.
 
 **You stay in control:**
 
@@ -139,7 +151,8 @@ A package can add:
 - Local-only mode pauses packages that reach off your Mac.
 
 Make your own: [`docs/CONTRIBUTING-PACKAGES.md`](docs/CONTRIBUTING-PACKAGES.md) has an example and the
-rules. The full design is in [`docs/PACKAGES.md`](docs/PACKAGES.md).
+rules. The full design is in [`docs/PACKAGES.md`](docs/PACKAGES.md), and what can be changed in
+[`docs/patch-targets.md`](docs/patch-targets.md).
 
 ## Privacy
 
@@ -180,6 +193,8 @@ Change this in Settings › General › Software Update, or use **Check for Upda
   the DMG once and allow them again.
 - On in Screen Recording but Lasso still asks? Another copy of Lasso holds the permission.
   Settings › Privacy › Permissions › **Reset** clears it.
+
+<p align="center"><img src="screenshots/app/permissions.png" width="460" alt="Settings › Privacy › Permissions with a Reset button"></p>
 - Local-only mode stops update checks.
 
 </details>

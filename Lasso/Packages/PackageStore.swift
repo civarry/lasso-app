@@ -34,6 +34,8 @@ final class PackageStore {
 
     private(set) var installed: [Installed] = []
     private(set) var broken: [Broken] = []
+    /// Every enabled package's patches, applied in the patch order.
+    private(set) var patches = AppliedPatches()
 
     let root: URL
     private let defaults: UserDefaults
@@ -111,7 +113,36 @@ final class PackageStore {
         }
         PackageRegistry.shared.update(active, settings: settingValues(for:),
                                       offTools: { Set(records[$0]?.offTools ?? []) })
+        patches = AppliedPatches.apply(inPatchOrder(active))
+        PatchState.shared.update(patches)
         NotificationCenter.default.post(name: PackageStore.didChange, object: nil)
+    }
+
+    // MARK: Patch order
+
+    /// Package ids in the order their patches apply: newest install last, unless the user picks one.
+    private var patchOrder: [String] {
+        get { defaults.stringArray(forKey: "packages.patchOrder") ?? [] }
+        set { defaults.set(newValue, forKey: "packages.patchOrder") }
+    }
+
+    /// `packages` sorted by the patch order; any not in it (installed before it existed) come first.
+    func inPatchOrder(_ packages: [LassoPackage]) -> [LassoPackage] {
+        let order = patchOrder
+        return packages.enumerated().sorted { a, b in
+            switch (order.firstIndex(of: a.element.id), order.firstIndex(of: b.element.id)) {
+            case let (x?, y?): x < y
+            case (nil, _?): true
+            case (_?, nil): false
+            case (nil, nil): a.offset < b.offset
+            }
+        }.map(\.element)
+    }
+
+    /// The user chose this package's changes where packages disagree: its patches apply last.
+    func preferPatches(of id: String) {
+        patchOrder = patchOrder.filter { $0 != id } + [id]
+        reload()
     }
 
     // MARK: Install, remove, on/off
@@ -158,6 +189,7 @@ final class PackageStore {
         var records = self.records
         records[package.id] = Record(sha256: Self.sha256(data), enabled: enabled, origin: origin, approved: data)
         self.records = records
+        if !patchOrder.contains(package.id) { patchOrder.append(package.id) }
         reload()
         Log.app.notice("packages · installed \(package.id, privacy: .public) \(package.version, privacy: .public) from \(origin.rawValue, privacy: .public)")
         return package
@@ -176,6 +208,7 @@ final class PackageStore {
         var records = self.records
         records[id] = nil
         self.records = records
+        patchOrder.removeAll { $0 == id }
         reload()
         Log.app.notice("packages · removed \(id, privacy: .public)")
     }

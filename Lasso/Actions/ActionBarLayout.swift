@@ -124,15 +124,28 @@ enum ActionBarPreferences {
         defaults.stringArray(forKey: orderKey) ?? []
     }
 
-    static func hidden(from defaults: UserDefaults = .standard) -> Set<String> {
-        Set(defaults.stringArray(forKey: hiddenKey) ?? [])
+    /// What the bar ranks by: the user's own order, or with none, a package's (`toolbar.order`).
+    /// The package's is never saved as the user's, so turning the package off restores Lasso's.
+    static func effectiveOrder(_ saved: [String], patches: AppliedPatches = PatchState.shared.current) -> [String] {
+        saved.isEmpty ? patches.toolbarOrder ?? [] : saved
+    }
+
+    /// The user's hidden set once they've chosen one in Settings; until then, a package's
+    /// (`toolbar.hidden`), or none.
+    static func hidden(from defaults: UserDefaults = .standard, patches: AppliedPatches = PatchState.shared.current) -> Set<String> {
+        if let saved = defaults.stringArray(forKey: hiddenKey) { return Set(saved) }
+        return patches.toolbarHidden ?? []
     }
 
     /// Commit an order + visibility pair. An empty `order` means "back to the shipped order" and is
-    /// stored as an empty array rather than removed, so the intent is explicit in the defaults.
-    static func save(order: [String], hidden: Set<String>, to defaults: UserDefaults = .standard) {
+    /// stored as an empty array rather than removed, so the intent is explicit in the defaults. A
+    /// hidden set that is still just the packages' isn't saved: it stays theirs, and goes with them.
+    static func save(order: [String], hidden: Set<String>, to defaults: UserDefaults = .standard,
+                     patches: AppliedPatches = PatchState.shared.current) {
         defaults.set(order, forKey: orderKey)
-        defaults.set(hidden.sorted(), forKey: hiddenKey)
+        if defaults.stringArray(forKey: hiddenKey) != nil || hidden != (patches.toolbarHidden ?? []) {
+            defaults.set(hidden.sorted(), forKey: hiddenKey)
+        }
         defaults.set(defaults.integer(forKey: revisionKey) &+ 1, forKey: revisionKey)
     }
 }

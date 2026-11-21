@@ -224,6 +224,35 @@ What your tool returns goes to the model as content, fenced, at most 4,000 chara
 
 **Not yet:** images as input, Shortcuts, scripts, and files as output. A package using one is refused with "This version of Lasso can't … yet".
 
+## Patches: change Lasso itself
+
+A package can also change parts of Lasso instead of adding to it: the prompts behind Summarize and
+Proofread, the names of Lasso's actions, the toolbar's default order and hidden buttons, the suggestions
+on an empty chat, and extra instructions for the chat model. A package can be only patches:
+
+```json
+{
+  "lasso": 1, "id": "writing-kit", "version": "1.0.0", "name": "Writing Kit",
+  "summary": "Bullet-point summaries and British spelling.", "author": "Your name",
+  "patches": [
+    { "target": "action.ai.summarize.prompt", "set": "Summarize the text as at most 5 short bullet points." },
+    { "target": "action.ai.summarize.title", "set": "Bullets" },
+    { "target": "toolbar.hidden", "add": ["lens.search", "color.pick"] },
+    { "target": "chat.suggestions", "add": { "title": "Make this email shorter" } },
+    { "target": "chat.instructions", "add": "Use British spelling." }
+  ]
+}
+```
+
+- Each patch has a `target` and one of `set`, `add` or `remove`. Every target, what it takes and
+  Lasso's own value is in [`patch-targets.md`](patch-targets.md).
+- A prompt is only the instructions: Lasso adds the selected text after it, so leave out `{{text}}`.
+- The user's own toolbar order and choices in Settings › Toolbar always beat yours.
+- `chat.instructions` adds to what the chat model is told; it can't replace Lasso's own. The review shows
+  it word for word, so write it for the person reading it too.
+- If two packages `set` the same thing, the one installed last is used; the user can pick the other.
+  Turning your package off undoes every change.
+
 ## Editor help
 
 [`packages/schema-v1.json`](packages/schema-v1.json) is a JSON Schema for the format. Point your editor

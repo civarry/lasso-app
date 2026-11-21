@@ -71,7 +71,7 @@ Like Stardew Valley's content packs and code mods, from least to most power:
 | Layer | What it is | Can | Status |
 |---|---|---|---|
 | **1. Commands** | Data: web requests, prompts, Shortcuts, scripts | Add buttons, Send to targets, chat commands, model tools, search sources | Format version 1 |
-| **2. Patches** | Data: edits to Lasso's own content | Change the prompts behind Lasso's actions, its suggestions, toolbar, sounds, colours and wording | Format version 1 |
+| **2. Patches** | Data: edits to Lasso's own content | Change the prompts behind Lasso's actions, their names, the toolbar, chat suggestions and the chat model's instructions | Format version 1 (built: 0.20.0) |
 | **3. Code mods** | A program running beside Lasso, talking to it through an API | React to what happens in Lasso, add panels Lasso draws for it, keep state, anything layers 1 and 2 can't | Planned: [direction](#code-mods-layer-3-planned) |
 
 One package can use any of the layers; the review screen shows what each part does.
@@ -387,50 +387,59 @@ asked for it, and is skipped silently in a background search.
 
 ## Patches: changing Lasso's own content
 
-Lasso's built-in content becomes data that packages can change, the way Content Patcher changes
-Stardew Valley's. A package's `patches` list edits named entries; Lasso applies every enabled package's
-patches over its defaults when packages change.
+Built (Lasso 0.20.0). A package's `patches` list edits named parts of Lasso, the way Content Patcher
+changes Stardew Valley's. Lasso works out what's in effect from every enabled package each time packages
+change; nothing is written into the user's own settings.
 
 ```json
 "patches": [
-  { "target": "action.ai.summarize.prompt", "set": "Summarize this as at most 5 bullet points:\n\n{{text}}" },
-  { "target": "chat.suggestions", "add": { "title": "What's on my calendar today?" } },
+  { "target": "action.ai.summarize.prompt", "set": "Summarize the text as at most 5 bullet points." },
+  { "target": "action.ai.summarize.title", "set": "Bullets" },
   { "target": "toolbar.order", "set": ["translate", "ocr.copy", "study-tools/explain", "ai.summarize"] },
-  { "target": "sound.reply.done", "set": "sounds/chime.caf" },
-  { "target": "theme.accent", "set": "teal" },
-  { "target": "string.chat.placeholder", "set": "Ask me anything…" }
+  { "target": "toolbar.hidden", "add": ["lens.search", "color.pick"] },
+  { "target": "chat.suggestions", "add": { "title": "What's on my calendar today?" } },
+  { "target": "chat.instructions", "add": "Use British spelling." }
 ]
 ```
+
+A patch has `target` and exactly one of `set`, `add` or `remove`. A package can have up to 50, with or
+without `commands`.
 
 **What can be patched (version 1):**
 
 | Target | Is | Operations |
 |---|---|---|
-| `action.<id>.prompt`, `action.<id>.title` | The prompt and label of a built-in action (`ai.ask`, `ai.summarize`, `ai.grammar`, `translate`, `identify`) | `set` |
-| `toolbar.order`, `toolbar.hidden` | The capture toolbar's order and hidden buttons, built-in and package ones | `set`, `add`, `remove` |
-| `chat.suggestions` | The suggestions on the empty chat | `set`, `add`, `remove` |
-| `chat.instructions` | Extra instructions added to the chat model's own (never replacing them) | `add` |
-| `sound.<event>` | The sound for `capture`, `send`, `reply.done`, `error` (a `.caf`, `.aiff` or `.wav` file in the package, at most 1 MB) | `set` |
-| `theme.<token>` | Colours from Lasso's palette (`accent`, `bubble`, `panel`), by name, so every theme stays readable | `set` |
-| `string.<key>` | Lasso's interface wording, by key; a set of them is a translation of Lasso | `set` |
+| `action.ai.summarize.prompt`, `action.ai.grammar.prompt` | The instructions behind Summarize and Proofread, up to 4,000 characters. Lasso adds the selected text after them, as before, so they take no `{{…}}` values. | `set` |
+| `action.<id>.title` | The name of a built-in action (`ocr.copy`, `translate`, `ai.grammar`, `ai.summarize`, `ai.ask`, `qr.open`, `color.pick`, `identify`, `lens.search`), one line up to 24 characters | `set` |
+| `toolbar.order` | The toolbar's default order: Lasso's action ids, `builtin.copyImage`, `builtin.saveImage`, `builtin.sendTo`, or `<package>/<command>` | `set` |
+| `toolbar.hidden` | Toolbar buttons that start in the … menu, with the same ids | `set`, `add`, `remove` |
+| `chat.suggestions` | The suggestions on an empty chat (at most 6 show). `set` and `add` take `{"title": "…"}` (or a list of them, up to 60 characters each); `remove` takes a title. A package's suggestion is asked as it is. | `set`, `add`, `remove` |
+| `chat.instructions` | Up to 500 characters added after the chat model's own instructions, under "Added by packages the user installed" | `add` |
 
-Lasso lists the patchable keys and their defaults in `docs/patch-targets.md`, generated from the code so
-it can't go stale. Built-in content moves into data files (`Lasso/Content/`) to make this possible.
+`docs/patch-targets.md` lists every target with Lasso's own value, generated from the code
+(`PatchTargets`): a test fails when it's out of date.
 
 **Rules:**
 
-- A target not in the list, or an operation it doesn't allow, makes the package invalid.
+- A target not in the list, an operation it doesn't allow, or a value of the wrong shape makes the
+  package invalid, with the problem at its path (`patches[2].add`).
 - Patches can't reach Lasso's protections: the fencing of screen text, the local-only gate, approvals
   and the review screen aren't patch targets, and `chat.instructions` only adds text after Lasso's own,
-  which keeps its safety instructions first.
-- **Order:** patches apply in the order the user sets in Settings › Packages (newest install last by
-  default); for the same target a later `set` wins and `add`s accumulate. Settings shows, for each
-  target changed by more than one package, which one is in effect.
-- **Undo:** turning a package off or removing it restores what its patches changed, with no trace.
-- A patched prompt keeps the template values of the original (`{{text}}` and so on) and is validated
-  like a command's.
-- Review: the install screen lists every patch ("Changes the Summarize prompt"), with a Before/After view
-  for prompts.
+  which keeps its rules first.
+- **The user's own choices come first.** `toolbar.order` is the order the bar uses while the user has
+  none of their own (none yet, or after Reset to default order in Settings › Toolbar). `toolbar.hidden`
+  applies until the user chooses which buttons show; saving Settings › Toolbar without touching them
+  keeps them the package's.
+- **Order:** patches apply in install order, newest last; for the same target a later `set` wins and
+  `add`s accumulate. Where two enabled packages `set` the same thing, each package's page says which is
+  used, with **Use This One** (its patches then apply last), and the other's row in Settings › Packages
+  says "Partly replaced by …".
+- **Undo:** turning a package off or removing it restores what its patches changed, exactly, since
+  nothing was saved.
+- Review: the install screen and the package's page list every patch as a sentence ("Changes the
+  Summarize prompt", "Moves Lens to the toolbar's … menu"), with Lasso's and the package's prompt on
+  request, and chat instructions always in full. On an update, patches are tagged New or Changed, and
+  dropped ones show as "No longer: …".
 
 ## Settings and keys
 
@@ -792,7 +801,8 @@ Each step ships on its own, with its checks from [Verification](#verification), 
    input, the tool budget, and asking first.
 4. **Shortcuts and scripts.** Both runners, the sandbox, `requires`, folders, full access, `file` and
    `image` outputs.
-5. **Patches.** Built-in content moved to data files, `docs/patch-targets.md`, patch order and undo.
+5. **Patches** (built: Lasso 0.20.0, ahead of step 4: it doesn't need it). The targets in
+   [Patches](#patches-changing-lassos-own-content), `docs/patch-targets.md`, patch order and undo.
 6. **Catalog and tools for authors.** `civarry/lasso-packages`, Browse and updates, Developer mode,
    `lasso-pkg`.
 
@@ -800,7 +810,7 @@ Step 2 leaves out "drag then run" hotkeys for package toolbar buttons (built-in 
 the `hotkey` surface covers keyboard use for now.
 
 Until the step that builds a part ships, a package using it (a `prompt` command, a `toolbar` surface,
-a `folder` setting, `patches`…) is refused at install with "This version of Lasso can't run <part>
+a `folder` setting, a `script` runner…) is refused at install with "This version of Lasso can't run <part>
 yet", never installed half-working.
 
 ## Out of scope for version 1
@@ -814,6 +824,13 @@ Each needs a format addition, decided here before it's built:
 - **Sending images over http** and multipart uploads (a script with `network` can).
 - **Non-JSON http responses** (XML, HTML).
 - **Local MCP servers** as a runner.
+- **More patch targets.** Each needs Lasso to have the thing first:
+  - `sound.<event>`: Lasso plays no sounds of its own yet.
+  - `theme.<token>`: Lasso's colours aren't named tokens yet.
+  - `string.<key>`: Lasso's wording isn't in a strings file yet (also what a translation of Lasso needs).
+  - The Translate, Identify and Ask AI prompts. Translate and Identify ask the model for an exact
+    format Lasso then reads, so a changed prompt would break them; Ask AI's prompt is the user's
+    question.
 - **Agent skills** (instructions for the Agent) as a package part.
 - **The user changing a package's `limits`** (someone on a paid plan held to the free tier's numbers).
   Until then the author's limits apply.

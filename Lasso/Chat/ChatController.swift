@@ -162,7 +162,13 @@ final class ChatController {
     /// whenever the app happened to launch — a long-running menu-bar session would otherwise drift.
     static var systemPrompt: String { systemPrompt(formatting: .full) }
 
+    /// Lasso's own instructions, then any a package added (`chat.instructions`): after Lasso's, never
+    /// in place of them, so its rules stay first.
     static func systemPrompt(formatting: FormatPolicy) -> String {
+        [ownSystemPrompt(formatting: formatting), PatchState.chatInstructions].compactMap(\.self).joined(separator: "\n\n")
+    }
+
+    private static func ownSystemPrompt(formatting: FormatPolicy) -> String {
     """
     You are Lasso's assistant, living in the user's menu bar. Answer directly and match depth to the \
     task — concise for simple questions, thorough for complex ones like code, debugging, or \

@@ -38,7 +38,7 @@ struct ActionBar: View {
         // hidden actions land in.
         let arrangement = ActionBarLayout.arrange(
             entries: items.map { ActionBarEntry(id: $0.id, priority: $0.priority, available: !$0.disabled) },
-            order: ActionBarPreferences.order(),
+            order: ActionBarPreferences.effectiveOrder(ActionBarPreferences.order()),
             hidden: ActionBarPreferences.hidden(),
             hideUnavailable: hideUnavailable,
             maxMain: style == .compact ? Self.maxCompact : Self.maxLabeled)

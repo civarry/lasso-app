@@ -681,7 +681,7 @@ struct SettingsView: View {
         let byID = Dictionary(catalog.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return ActionBarLayout
             .displayOrder(entries: catalog.map { ActionBarEntry(id: $0.id, priority: $0.priority) },
-                          order: draft.actionOrder)
+                          order: ActionBarPreferences.effectiveOrder(draft.actionOrder))
             .compactMap { byID[$0.id] }
     }
 

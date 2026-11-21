@@ -49,6 +49,11 @@ struct PackageStatus: Equatable {
             return PackageStatus(text: "Monthly limit reached. Back on \(firstOfNextMonth(now))", needsAction: false)
         }
         guard package.commands.contains(where: { $0.surfaces.contains(.search) }) else {
+            // Where another package's change is used instead of this one's, say whose.
+            let replacedBy = package.patches.compactMap { store.patches.winner[$0.target] }.first { $0 != package.id }
+            if let replacedBy, let name = store.installed.first(where: { $0.id == replacedBy })?.package.name {
+                return PackageStatus(text: surfacesSummary(package) + " · Partly replaced by \(name)", needsAction: false)
+            }
             return PackageStatus(text: surfacesSummary(package), needsAction: false)
         }
         let role = package.commands.contains { $0.http?.role == .primary } ? "Every search" : "When results are thin"
@@ -58,7 +63,7 @@ struct PackageStatus: Equatable {
 
     /// "Toolbar · /explain · Send to · Hotkey": where a package's commands show.
     static func surfacesSummary(_ package: LassoPackage) -> String {
-        var parts: [String] = []
+        var parts: [String] = package.patches.isEmpty ? [] : ["Changes Lasso"]
         func add(_ part: String) { if !parts.contains(part) { parts.append(part) } }
         for command in package.commands {
             for surface in command.surfaces {
@@ -313,7 +318,7 @@ struct PackagePermissionsList: View {
     var values: [String: String] = [:]
 
     var body: some View {
-        if showsWhatItDoes { SettingsCard(title: "What it does") {
+        if showsWhatItDoes, !package.commands.isEmpty || !(compareTo?.commands.isEmpty ?? true) { SettingsCard(title: "What it does") {
             ForEach(package.commands, id: \.id) { command in
                 line(command.surfaces.contains(.search) ? "magnifyingglass" : (command.symbol ?? "shippingbox"),
                      PackagePermissionsList.doesLine(command),
@@ -326,6 +331,7 @@ struct PackagePermissionsList: View {
                 }
             }
         } }
+        if !package.patches.isEmpty { PackageChangesCard(package: package, compareTo: compareTo) }
         SettingsCard(title: "What it can reach") {
             if package.commands.contains(where: { $0.prompt != nil }) {
                 line("cpu", Self.modelLine, tag: tag(changed: false, new: compareTo.map { !$0.commands.contains { $0.prompt != nil } } ?? false))
@@ -368,8 +374,12 @@ struct PackagePermissionsList: View {
             if let limits = package.limits {
                 line("gauge.with.needle", limitsLine(limits), tag: tag(changed: compareTo.map { $0.limits != limits } ?? false, new: false))
             }
+            if package.commands.isEmpty, package.hosts.isEmpty {
+                line("checkmark.shield", "Nothing: it only changes Lasso itself, and sends nothing anywhere.", tag: nil)
+            } else {
             line("lock.fill", reachesOffMac ? (package.commands.contains { $0.prompt != nil } ? "Its web requests pause in local-only mode." : "Paused in local-only mode.")
                                             : "Works in local-only mode while your model is on this Mac.", tag: nil)
+            }
         }
     }
 
