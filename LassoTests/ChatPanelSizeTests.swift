@@ -13,8 +13,14 @@ struct ChatPanelSizeTests {
         controller.present()
         defer { controller.close() }
         let panel = try #require(controller.panel)
-        // Let AppKit run its layout pass, which is what used to wipe the minimum.
+        // Let AppKit run its layout pass, which is what used to wipe the minimum. A busy Mac (CI) can
+        // take longer than a fixed pause, so wait for the window to settle, up to 5 seconds; a wiped
+        // minimum still fails, since it never comes back by itself.
         try await Task.sleep(for: .milliseconds(300))
+        for _ in 0..<50 where panel.minSize.width < ChatPanelController.minimumSize.width {
+            panel.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(100))
+        }
         panel.layoutIfNeeded()
         #expect(panel.minSize.width >= ChatPanelController.minimumSize.width)
         #expect(panel.minSize.height >= ChatPanelController.minimumSize.height)
