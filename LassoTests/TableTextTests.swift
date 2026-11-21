@@ -90,3 +90,22 @@ struct TableOCRTests {
                 "OCR lines: \(result.lines.map(\.string))")
     }
 }
+
+/// A real screenshot (a sample dataset a chat model wrote): right-aligned numbers sit close to the next
+/// column, and OCR joins them ("28 Engineering", "75,000 Active", "ID Name"). The image's blank strips
+/// split them back.
+struct TableScreenshotTests {
+    @Test func aRealTableScreenshotReadsBackColumnByColumn() async throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appending(path: "Fixtures/dataset-table.png")
+        let image = try #require(NSImage(contentsOf: url)?.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        let result = try await OCREngine().recognize(image)
+        let table = try #require(TableText.tsv(from: result.lines, image: image))
+        let rows = table.components(separatedBy: "\n").map { $0.components(separatedBy: "\t") }
+        #expect(rows.first == ["ID", "Name", "Age", "Department", "Position", "Salary (USD)", "Status"], "\(table)")
+        #expect(rows.count == 11)
+        #expect(rows[1] == ["001", "Alex Morgan", "28", "Engineering", "Software Engineer", "75,000", "Active"])
+        #expect(rows.allSatisfy { $0.count == 7 })
+        // Without the image, OCR's joined cells stay joined: the image is what splits them.
+        #expect(TableText.tsv(from: result.lines)?.contains("28 Engineering") == true)
+    }
+}
