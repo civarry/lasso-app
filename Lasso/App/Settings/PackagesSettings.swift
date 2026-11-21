@@ -98,7 +98,8 @@ struct PackageStatus: Equatable {
 
     /// The command's role, in words (review, page caption).
     static func roleLine(_ command: PackageCommand) -> String {
-        command.searchRole == .primary ? "Adds results to every web search" : "Adds results when web search comes back thin"
+        if let script = command.script, !script.network { return "Searched when you type @ and its name, or a message fits it" }
+        return command.searchRole == .primary ? "Adds results to every web search" : "Adds results when web search comes back thin"
     }
 }
 
@@ -152,13 +153,31 @@ struct PackagesHub: View {
         item.package.commands.contains { $0.surfaces.contains(.search) }
     }
 
+    /// A search package that never leaves this Mac (My notes): a source, not part of web search.
+    private func isOnThisMac(_ item: PackageStore.Installed) -> Bool {
+        let entry = PackageRegistry.Entry(package: item.package, values: store.settingValues(for: item.package).values,
+                                          secrets: [], ready: true)
+        return item.package.commands.contains { $0.surfaces.contains(.search) && PackageSource.isOnThisMac(entry, $0) }
+    }
+
     var body: some View {
-        let search = sorted.filter(isSearch), others = sorted.filter { !isSearch($0) }
+        let local = sorted.filter { isSearch($0) && isOnThisMac($0) }
+        let search = sorted.filter { isSearch($0) && !isOnThisMac($0) }, others = sorted.filter { !isSearch($0) }
         SettingsPage {
             SettingsHubHeader(pane: .packages)
-            SettingsCard(title: "Search",
+            Label {
+                Text("In chat, type **@** to search a source, **/** to run a command.").font(SettingsFont.sub)
+            } icon: { Image(systemName: "lightbulb") }
+            .foregroundStyle(.secondary).padding(.horizontal, 2)
+            if !local.isEmpty {
+                SettingsCard(title: "On this Mac",
+                             footnote: "Lasso looks in these when a message fits, or when you type @ and the name. Only matches go to your chat model.") {
+                    ForEach(local) { row($0) }
+                }
+            }
+            SettingsCard(title: "Web search",
                          footnote: localOnly ? "Paused in local-only mode."
-                             : "Packages marked Every search add results first. The rest fill in when results are thin.") {
+                             : "Used when the globe is on. Lasso rewrites your question and sends it to these. Every search adds results first; the rest fill in when results are thin.") {
                 webSearchRow
                 ForEach(search) { row($0) }
                 if others.isEmpty {
@@ -208,8 +227,8 @@ struct PackagesHub: View {
     private var toolsCard: some View {
         let used = PackageRegistry.shared.toolBudgetUsed(localOnly: localOnly)
         return SettingsCard(title: "Tools for models",
-                            footnote: "Offered to the chat model (if it supports tools) and the Agent. Descriptions use "
-                                + "\(used.formatted()) of \(PackageRegistry.toolBudget.formatted()) characters.") {
+                            footnote: "The chat model (if it supports tools) is offered the 3 that fit each message best. The Agent gets them all "
+                                + "within \(PackageRegistry.toolBudget.formatted()) characters of descriptions: \(used.formatted()) used.") {
             ForEach(tools, id: \.name) { tool in
                 SettingsRow(tool.command.title,
                             caption: tool.notOffered ?? "\(tool.entry.package.name) · \(tool.name)"
@@ -386,6 +405,10 @@ struct PackagePermissionsList: View {
                      tag: tag(changed: false, new: compareTo.map { $0.setting(setting.id) == nil } ?? false))
             }
             codeLines
+            if package.commands.contains(where: { $0.surfaces.contains(.search) && $0.script.map { !$0.network } == true }) {
+                line("arrow.up.message", "Sends the matching passages to your chat model. With a cloud model they leave this Mac, after you allow it.",
+                     tag: nil)
+            }
             if package.commands.contains(where: { $0.input.contains(.source) }) {
                 line("app.badge", "Sees which app the text came from", tag: nil)
             }
@@ -779,6 +802,7 @@ struct AddPackageSheet: View {
                         PackagePermissionsList(package: c.package, compareTo: c.replacing,
                                                values: store.settingValues(for: c.package).values,
                                                changedFiles: c.replacing == nil ? [] : store.changedFiles(c.package.id, c.files))
+                        PackageHowToCard(package: c.package)
                         DisclosureGroup(c.files.keys.contains { $0.hasPrefix("scripts/") } ? "Show the package file and scripts" : "Show the package file",
                                         isExpanded: $showFile) {
                             ScrollView(.horizontal) {
@@ -962,9 +986,18 @@ struct PackagePage: View {
         }
     }
 
+    /// The package's search command as a source, with its settings now.
+    private func source(_ item: PackageStore.Installed, _ command: PackageCommand) -> PackageSource? {
+        let s = store.settingValues(for: item.package)
+        let entry = PackageRegistry.Entry(package: item.package, values: s.values, secrets: s.secrets, ready: true,
+                                          places: store.places(for: item.package), fullAccess: store.hasFullAccess(item.id))
+        return PackageSource(entry: entry, command: command, isOnThisMac: PackageSource.isOnThisMac(entry, command))
+    }
+
     @ViewBuilder private func content(_ item: PackageStore.Installed) -> some View {
         let package = item.package
         header(package, origin: item.origin)
+        if !item.changedOnDisk { PackageHowToCard(package: package) }
         if item.changedOnDisk {
             SettingsCard(title: "") {
                 SettingsRow("Its file changed outside Lasso. Review the changes to turn it back on.") {
@@ -982,7 +1015,8 @@ struct PackagePage: View {
         }
         if package.commands.contains(where: { !$0.surfaces.contains(.search) }) {
             SettingsCard(title: "Commands") {
-                ForEach(package.commands, id: \.id) { command in
+                // A source isn't a command: it has its own In chat card.
+                ForEach(package.commands.filter { !$0.surfaces.contains(.search) }, id: \.id) { command in
                     SettingsRow(command.title, symbol: command.symbol ?? package.iconSymbol ?? "shippingbox",
                                 caption: Self.whereLine(package, command)) {
                         if package.commands.count > 1 {
@@ -1003,7 +1037,13 @@ struct PackagePage: View {
         }
         if item.origin == .developer { developerCard(package) }
         if let limits = package.limits { usage(package, limits) }
-        if let command = package.commands.first(where: { $0.surfaces.contains(.search) }) { testCard(item, command) }
+        if let command = package.commands.first(where: { $0.surfaces.contains(.search) }), let source = source(item, command), source.isOnThisMac {
+            SourceSettingsCard(source: source)
+            SourceTestCard(source: source, blocked: item.changedOnDisk ? "Review its changes first."
+                           : store.missingSettings(package).first(where: { $0.kind == .folder }).map { "Choose its \($0.label.lowercased()) first." }
+                           ?? PackageRequirements.missingNow(package) ?? (item.enabled ? nil : "Turn it on first."))
+        }
+        else if let command = package.commands.first(where: { $0.surfaces.contains(.search) }) { testCard(item, command) }
         else if item.origin == .developer, let command = package.command(devCommand ?? "") ?? package.commands.first {
             // Your own package: any command can be tried here, side effects included.
             commandTestCard(item, command)
@@ -1258,7 +1298,9 @@ struct PackagePage: View {
 
     private func runTest(_ package: LassoPackage, _ command: PackageCommand) {
         let s = store.settingValues(for: package)
-        let entry = PackageRegistry.Entry(package: package, values: s.values, secrets: s.secrets, ready: true)
+        // With where its scripts run: without them a script search found nothing, in 5 ms.
+        let entry = PackageRegistry.Entry(package: package, values: s.values, secrets: s.secrets, ready: true,
+                                          places: store.places(for: package), fullAccess: store.hasFullAccess(package.id))
         test = .running
         let started = Date()
         Task {
@@ -1360,7 +1402,14 @@ private struct PackageSettingRow: View {
                     panel.canChooseDirectories = true
                     panel.allowsMultipleSelection = false
                     panel.message = "Choose the folder \(packageName) can read. It can't read anything else of yours."
-                    if panel.runModal() == .OK, let url = panel.url { text = url.path; commit() }
+                    if panel.runModal() == .OK, let url = panel.url {
+                        text = url.path; commit()
+                        // A first "What's in it" from the folder, if there's none yet; the user edits it.
+                        if SourcePreferences.about(packageID).isEmpty {
+                            SourcePreferences.setAbout(SourceAbout.suggest(for: url), packageID)
+                            NotificationCenter.default.post(name: SourcePreferences.aboutChanged, object: packageID)
+                        }
+                    }
                 }
                 .buttonStyle(.bordered)
             }

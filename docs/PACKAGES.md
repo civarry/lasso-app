@@ -387,6 +387,25 @@ gives it to models fenced as content, never as instructions.
 A failure (non-2xx, a timeout, a non-zero exit) shows "<name> didn't work: <reason>" where the user
 asked for it, and is skipped silently in a background search.
 
+## Sources: search packages on this Mac
+
+Built (Lasso 0.23.0); the design and its reasons are in [`LOCAL-SOURCES.md`](LOCAL-SOURCES.md).
+
+A `search` command that can't reach the internet (a `script` without `network`, or `http` whose hosts
+are all loopback) is a **source on this Mac**, not part of web search:
+
+- It runs when the user types **@** and its name in chat (a chip that stays for follow-ups), or when
+  Lasso picks it: a message shares words with its **What's in it** line (set on its page, suggested
+  from its folder). At most 2 are picked; the user can set one to "Only when I @ it".
+- It gets the user's own words (never the query rewritten for the web), in `query`.
+- A hit counts only when its title and passage hold at least 2 of those words (the one, for one-word
+  messages); at most 3 passages in all reach the model, fenced as content.
+- It works in local-only mode. With a cloud chat model, its passages wait for the user's Allow (per
+  source and company, revocable on its page).
+
+Every other `search` command is a **web search** package (Tavily, SerpApi): it runs with the globe's web
+search, or alone with `@` and its name, never by itself and never in local-only mode.
+
 ## Patches: changing Lasso's own content
 
 Built (Lasso 0.20.0). A package's `patches` list edits named parts of Lasso, the way Content Patcher

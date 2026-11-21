@@ -87,7 +87,8 @@ struct PackageToolTests {
             #expect(tools.filter(\.offered).count == 7, "7 × 200 characters fit in 1,500")
             #expect(tools.last?.overBudget == true && tools.last?.notOffered?.hasPrefix("Over the 1,500-character limit") == true)
             #expect(PackageRegistry.shared.toolBudgetUsed(localOnly: false) == 1_400)
-            #expect(PackageToolCall.chatTools().count == 7, "the model is offered only those")
+            #expect(PackageToolCall.chatTools().count == PackageToolCall.perMessage,
+                    "the chat model sees the 3 that fit a message best; the budget is the Agent's")
 
             // Turning one off makes room for the next.
             store.setToolOffered("many-tools", "c2", false)

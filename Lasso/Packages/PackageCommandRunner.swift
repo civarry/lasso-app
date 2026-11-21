@@ -42,7 +42,7 @@ enum PackageCommandRunner {
     }
 
     /// Markers around text Lasso hands a model as content (what you lassoed, a reply, highlighted text).
-    static let fence = "<<<LASSO-CONTENT>>>"
+    nonisolated static let fence = "<<<LASSO-CONTENT>>>"
 
     static func run(_ entry: PackageRegistry.Entry, _ command: PackageCommand, input: PackageInput,
                     intelligence: IntelligenceCoordinator = .shared) async throws -> PackageCommandResult {

@@ -58,6 +58,10 @@ struct ChatMessage: Identifiable, @unchecked Sendable {
     var imageBase64s: [String] = []
     /// Web/connector sources used to ground this assistant turn, shown as tappable links.
     var sources: [WebSourcesProvider.Hit] = []
+    /// Passages from the user's own sources ("From My notes"), shown apart from web sources.
+    var sourceHits: [SourceHit] = []
+    /// On a user message: the sources it was sent with (`@My notes`).
+    var mentions: [String] = []
 
     /// Background activity for this assistant turn (looked at image, searched web, read pages…),
     /// shown as an expandable trace like other LLM chats.
@@ -89,4 +93,34 @@ struct ActivityStep: Identifiable, Sendable {
     var text: String
     var links: [WebSourcesProvider.Hit] = []
     var done: Bool = false
+    /// One-click fixes on the step: the first shows as a link, the rest in its menu.
+    var actions: [StepAction] = []
+}
+
+/// What a step's link does (docs/LOCAL-SOURCES.md).
+enum StepAction: Sendable, Equatable {
+    /// Regenerate the reply without this source.
+    case answerWithout(source: String, name: String)
+    /// Look in this source for the message (like `@`).
+    case lookIn(source: String, name: String)
+    /// Stop using this source automatically.
+    case onlyWhenMentioned(source: String, name: String)
+    /// Put it back to automatic (Undo).
+    case automatically(source: String, name: String)
+
+    /// The source it's about, by name.
+    var sourceName: String {
+        switch self {
+        case .answerWithout(_, let name), .lookIn(_, let name), .onlyWhenMentioned(_, let name), .automatically(_, let name): name
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .answerWithout: "Answer without it"
+        case .lookIn(_, let name): "Look in \(name) for this"
+        case .onlyWhenMentioned: "Only when I @ it"
+        case .automatically: "Undo"
+        }
+    }
 }

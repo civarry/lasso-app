@@ -165,7 +165,18 @@ final class ChatController {
     /// Lasso's own instructions, then any a package added (`chat.instructions`): after Lasso's, never
     /// in place of them, so its rules stay first.
     static func systemPrompt(formatting: FormatPolicy) -> String {
-        [ownSystemPrompt(formatting: formatting), PatchState.chatInstructions].compactMap(\.self).joined(separator: "\n\n")
+        [ownSystemPrompt(formatting: formatting), PatchState.chatInstructions, sourcesNote].compactMap(\.self).joined(separator: "\n\n")
+    }
+
+    /// The user's sources, so "can you access my notes?" gets a true answer: Lasso looks in them when a
+    /// message fits, or when the user types @ and the name. The model never claims a menu or an icon.
+    static var sourcesNote: String? {
+        let sources = PackageRegistry.shared.sources()
+        guard !sources.isEmpty else { return nil }
+        let names = sources.prefix(6).map { "\($0.name)" + ($0.isOnThisMac ? " (on this Mac)" : "") }
+        return "The user has these sources: \(names.joined(separator: ", ")). Lasso looks in them before you answer when "
+            + "a message fits one, or when the user types @ and its name (for example @\(sources[0].name)); passages it found "
+            + "come with the message. If none came, say so plainly and suggest @\(sources[0].name); never invent a menu or icon."
     }
 
     private static func ownSystemPrompt(formatting: FormatPolicy) -> String {
@@ -1048,7 +1059,7 @@ final class ChatController {
 
     func send(text: String? = nil, extraContext: String? = nil, webSearch: Bool? = nil) {
         if let text { input = text }
-        let typed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        var typed = input.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Slash commands typed in the composer act on the session, not the model. `/clear` resets to
         // a fresh chat (history, attachment, seeded context) — intercepted before any turn is built.
@@ -1066,6 +1077,13 @@ final class ChatController {
 
         guard !typed.isEmpty || !pendingAttachments.isEmpty || !pendingFiles.isEmpty else { return }
         guard !isStreaming else { return }
+        // `@My notes` typed by hand becomes a chip, as if picked.
+        typed = absorbMentions(typed)
+        // Only `@My notes`: the chip is on, and there's nothing to send yet.
+        if typed.isEmpty, pendingAttachments.isEmpty, pendingFiles.isEmpty { input = ""; return }
+        let mentioned = active.mentions
+        let excluded = active.excludedOnce
+        active.excludedOnce = []
 
         let attachments = pendingAttachments
         let files = pendingFiles
@@ -1077,6 +1095,7 @@ final class ChatController {
         var userMessage = ChatMessage(role: .user, text: typed.isEmpty ? placeholder : typed,
                                       attachments: attachments)
         userMessage.files = files
+        userMessage.mentions = mentioned.compactMap { id in PackageRegistry.shared.sources().first { $0.id == id }?.name }
         messages.append(userMessage)
         let userID = userMessage.id
         let assistant = ChatMessage(role: .assistant, text: "", isStreaming: true)
@@ -1102,17 +1121,20 @@ final class ChatController {
         streamTask = Task { [weak self] in
             if viaHermes {
                 await self?.runHermesTurn(typed: typed, attachments: attachments, files: files, context: context,
-                                          appContext: extraContext, userID: userID, assistantID: assistantID)
+                                          appContext: extraContext, userID: userID, assistantID: assistantID,
+                                          mentioned: mentioned, excluded: excluded)
             } else {
                 await self?.runTurn(typed: typed, attachments: attachments, files: files, context: context, appContext: extraContext,
-                                    allowGround: allowGround, userID: userID, assistantID: assistantID)
+                                    allowGround: allowGround, userID: userID, assistantID: assistantID,
+                                    mentioned: mentioned, excluded: excluded)
             }
         }
     }
 
     private func runTurn(typed: String, attachments: [Attachment], files: [FileAttachment] = [],
                          context: String?, appContext: String?,
-                         allowGround: Bool, userID: UUID, assistantID: UUID) async {
+                         allowGround: Bool, userID: UUID, assistantID: UUID,
+                         mentioned: [String] = [], excluded: Set<String> = []) async {
         let t0 = Date()
         func ms() -> Int { Int(Date().timeIntervalSince(t0) * 1000) }
         Log.chat.notice("runTurn ▶ begin")
@@ -1158,7 +1180,8 @@ final class ChatController {
         // (industry standard); on the heuristic path (MLX/Apple) a single model call both decides and
         // rewrites the query with conversation references resolved ("latest about her?" → the real name).
         // Package tools are offered whenever the model can call tools, with or without web search.
-        let packageTools = PackageToolCall.chatTools()
+        let packageTools = PackageToolCall.chatTools(for: typed, recent: active.recentTools)
+        active.recentTools = []
         let providerTools = allowGround || !packageTools.isEmpty ? await intelligence.activeTextProviderSupportsTools() : false
         let intent = Self.webIntent(typed: typed, hasImage: !attachments.isEmpty)
         let grounding = await decideGrounding(typed: typed, hasImage: !attachments.isEmpty,
@@ -1277,6 +1300,11 @@ final class ChatController {
             completeStep(assistantID, fileStep, text: "Read \(files.count == 1 ? files[0].name : "\(files.count) files")")
         }
 
+        // The user's own sources: the @-mentioned ones and the ones Lasso picks. Their passages travel
+        // with the web evidence, as this turn's own block.
+        let looked = await lookInSources(typed: typed, mentioned: mentioned, excluded: excluded,
+                                         session: active, assistantID: assistantID)
+
         // Fold in the connector evidence started above (waits only if it's still running). Tool-path
         // turns gather via the model's tool call instead, so this whole block is heuristic-only.
         let searchStepID: UUID? = heuristicGround
@@ -1306,6 +1334,10 @@ final class ChatController {
             // "no results right now" must not be replayed as a standing fact on later turns.
             completeStep(assistantID, searchStepID, text: "No web results")
             turnEvidence = Self.emptySearchNote
+        }
+
+        if let sourceEvidence = looked.evidence {
+            turnEvidence = [sourceEvidence, turnEvidence].compactMap { $0 }.joined(separator: "\n\n")
         }
 
         // Persist what was actually sent so the description / image carries into follow-up turns.
@@ -1395,14 +1427,16 @@ final class ChatController {
             self.completeStep(assistantID, step)
         }
 
+        // Passages the user allowed for this provider never fall back to another cloud provider.
+        let fallbackScope: FallbackScope = looked.cloudBound ? .onDeviceOnly : .full
         do {
             let stream = toolPath
                 // An explicit search request depends on the tool, so a fallback model must be able to
                 // call it; otherwise the tool is optional and the fallback only prefers one that can.
                 ? intelligence.respond(messages: turns, tools: exposedTools,
                                        toolNeed: intent == .search ? .required : .preferred,
-                                       onFallback: onFallback, execute: executor)
-                : intelligence.respond(messages: turns, onFallback: onFallback)
+                                       scope: fallbackScope, onFallback: onFallback, execute: executor)
+                : intelligence.respond(messages: turns, scope: fallbackScope, onFallback: onFallback)
             for try await delta in stream {
                 if Task.isCancelled {
                     publish(Date())   // keep what arrived since the last coalesced publish
@@ -2660,7 +2694,8 @@ final class ChatController {
     /// for minutes, and switching chats meanwhile must not write into the other one.
     private func runHermesTurn(typed: String, attachments: [Attachment], files: [FileAttachment] = [],
                                context: String?, appContext: String?,
-                               userID: UUID, assistantID: UUID) async {
+                               userID: UUID, assistantID: UUID,
+                               mentioned: [String] = [], excluded: Set<String> = []) async {
         let session = active
         let token = session.turnToken
         func edit(_ id: UUID, _ mutate: (inout ChatMessage) -> Void) {
@@ -2743,6 +2778,13 @@ final class ChatController {
             userText += hermesIsLocal
                 ? "\n\nAttached files (open them with your tools):\n" + files.map(\.agentReference).joined(separator: "\n")
                 : "\n\n" + files.map { $0.contentForModel() }.joined(separator: "\n\n")
+        }
+        // Sources the user @-mentioned reach the Agent's turn as passages (it has its own file tools for
+        // anything else).
+        if !mentioned.isEmpty {
+            let looked = await lookInSources(typed: typed, mentioned: mentioned, excluded: excluded, session: session,
+                                             assistantID: assistantID, automatic: false)
+            if let evidence = looked.evidence { userText += "\n\n" + evidence }
         }
         let images = attachments.compactMap { ImageEncoder.jpegBase64($0.image) }
         // Same record as a native-vision turn, so a later turn on a regular model keeps the context.
@@ -2897,6 +2939,163 @@ final class ChatController {
         return out.reversed()
     }
 
+    // MARK: - Sources (docs/LOCAL-SOURCES.md)
+
+    /// `@Name` tokens typed by hand: each known source becomes a chip and leaves the text.
+    func absorbMentions(_ text: String) -> String {
+        guard text.contains("@") else { return text }
+        var out = text
+        for source in PackageRegistry.shared.sources().sorted(by: { $0.name.count > $1.name.count }) {
+            let token = "@" + source.name
+            var from = out.startIndex
+            while let range = out.range(of: token, options: .caseInsensitive, range: from..<out.endIndex) {
+                // Only at the start of a word: "bob@my notes.com" is an address, not a mention.
+                if range.lowerBound != out.startIndex, !out[out.index(before: range.lowerBound)].isWhitespace {
+                    from = range.upperBound
+                    continue
+                }
+                out.removeSubrange(range)
+                from = out.startIndex
+                if !active.mentions.contains(source.id) { active.mentions.append(source.id) }
+            }
+        }
+        return out.replacingOccurrences(of: "  ", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Adds a source as a chip (the `@` picker).
+    func mention(_ id: String) {
+        if !active.mentions.contains(id) { active.mentions.append(id) }
+    }
+
+    func removeMention(_ id: String) { active.mentions.removeAll { $0 == id } }
+
+    /// Looks in the user's sources for this message: the @-mentioned ones, then (with `automatic`) the
+    /// ones Lasso picks itself. Each shows as a step; passages for a cloud model wait for the user's
+    /// Allow. Returns the fenced passages for the model, and whether they're going to a cloud model.
+    func lookInSources(typed: String, mentioned: [String], excluded: Set<String>, session: Conversation,
+                               assistantID: UUID, automatic: Bool = true) async -> (evidence: String?, cloudBound: Bool) {
+        func edit(_ mutate: (inout ChatMessage) -> Void) {
+            if let i = session.messages.firstIndex(where: { $0.id == assistantID }) { mutate(&session.messages[i]) }
+        }
+        let available = PackageRegistry.shared.sources()
+        let forced = mentioned.compactMap { id in available.first { $0.id == id } }.filter { !excluded.contains($0.id) }
+        let previous = session.messages.filter { !$0.isStreaming }.suffix(3).map(\.text).joined(separator: " ")
+        let picked = automatic
+            ? SourcePicker.automatic(typed, lastExchange: previous, from: available)
+                .filter { source in !forced.contains(source) && !excluded.contains(source.id) }
+            : []
+        let chosen = forced.map { ($0, automatic: false) } + picked.map { ($0, automatic: true) }
+        guard !chosen.isEmpty else {
+            if let offer = SourcePicker.offered(typed, from: available, searched: excluded) {
+                var step = ActivityStep(icon: "text.magnifyingglass", text: "\(offer.name) is searched when you type @\(offer.name).")
+                step.done = true
+                step.actions = [.lookIn(source: offer.id, name: offer.name)]
+                edit { $0.steps.append(step) }
+            }
+            return (nil, false)
+        }
+        var stepIDs: [String: UUID] = [:]
+        for (source, _) in chosen {
+            let step = ActivityStep(icon: source.entry.package.iconSymbol ?? "text.magnifyingglass", text: "Checking \(source.name)…")
+            stepIDs[source.id] = step.id
+            edit { $0.steps.append(step) }
+        }
+        let (hits, outcomes) = await SourceSearch.look(chosen, message: typed)
+        var kept = hits
+        let recipient = intelligence.textRecipient
+        // Before anything goes to a cloud model: the user's Allow, per source and provider.
+        if let recipient {
+            for outcome in outcomes {
+                let name = outcome.source.name, id = outcome.source.id
+                let own = kept.filter { $0.source == name }
+                guard !own.isEmpty, !SourcePreferences.allowed(id).contains(recipient.key) else { continue }
+                let files = own.map { $0.url?.lastPathComponent ?? $0.title }
+                let request = PackageToolRequest(
+                    packageName: name, title: "Send \(own.count) passage\(own.count == 1 ? "" : "s") from \(name) to \(recipient.name)?",
+                    symbol: outcome.source.entry.package.iconSymbol ?? "text.magnifyingglass",
+                    effect: "They leave this Mac", arguments: [.init(name: "From", value: files.joined(separator: ", "))],
+                    remember: "Allow for \(name)")
+                switch await askSourceConsent(request, in: session, messageID: assistantID) {
+                case .always: SourcePreferences.allow(recipient.key, id)
+                case .once: break
+                case .deny: kept.removeAll { $0.source == name }
+                }
+            }
+        }
+        for outcome in outcomes {
+            guard let stepID = stepIDs[outcome.source.id] else { continue }
+            let name = outcome.source.name, id = outcome.source.id
+            let verb = outcome.automatic ? "Looked in" : "Searched"
+            let own = kept.filter { $0.source == name }
+            var text: String
+            var actions: [StepAction] = []
+            switch outcome.status {
+            case .matched(let n) where own.isEmpty:
+                text = "\(verb) \(name) · \(n) match\(n == 1 ? "" : "es") · didn't send them"
+            case .matched:
+                text = "\(verb) \(name) · \(own.count) match\(own.count == 1 ? "" : "es")"
+                if outcome.automatic {
+                    actions = [.answerWithout(source: id, name: name), .onlyWhenMentioned(source: id, name: name)]
+                }
+            case .nothing: text = "\(verb) \(name) · nothing matched"
+            case .timedOut: text = "\(name) didn't answer in \(Int(SourceSearch.timeout)) seconds"
+            case .failed(let why): text = "Couldn't look in \(name): \(why)"
+            }
+            let links = own.map { WebSourcesProvider.Hit(title: $0.title, url: $0.url, source: name, snippet: $0.snippet) }
+            edit { message in
+                guard let j = message.steps.firstIndex(where: { $0.id == stepID }) else { return }
+                message.steps[j].text = text
+                message.steps[j].links = links
+                message.steps[j].done = true
+                message.steps[j].actions = actions
+            }
+        }
+        edit { $0.sourceHits = kept }
+        Log.chat.notice("sources · looked in \(chosen.count, privacy: .public), \(kept.count, privacy: .public) passage(s) sent, cloud=\(recipient != nil, privacy: .public)")
+        return (SourceSearch.evidence(kept), recipient != nil && !kept.isEmpty)
+    }
+
+    enum SourceConsent { case always, once, deny }
+    private var sourceConsentAnswers: [UUID: SourceConsent] = [:]
+
+    /// The Allow card for a source's passages: Allow for My notes, This time, Don't send.
+    private func askSourceConsent(_ request: PackageToolRequest, in session: Conversation, messageID: UUID) async -> SourceConsent {
+        let allowed = await askToolApproval(request, in: session, messageID: messageID)
+        let answer = sourceConsentAnswers.removeValue(forKey: request.id)
+        return allowed ? (answer ?? .once) : .deny
+    }
+
+    /// The card's third button: allow, and remember it for this source and provider.
+    func answerToolApproval(_ requestID: UUID, allow: Bool, remember: Bool) {
+        if allow { sourceConsentAnswers[requestID] = remember ? .always : .once }
+        answerToolApproval(requestID, allow: allow)
+    }
+
+    /// A step's one-click fix.
+    func perform(_ action: StepAction, on messageID: UUID) {
+        switch action {
+        case .answerWithout(let id, _):
+            active.excludedOnce = [id]
+            regenerate(messageID)
+        case .lookIn(let id, _):
+            mention(id)
+            regenerate(messageID)
+        case .onlyWhenMentioned(let id, let name):
+            SourcePreferences.setUse(.onlyWhenMentioned, id)
+            setStep(on: messageID, matching: action, text: "\(name) now waits for @.", actions: [.automatically(source: id, name: name)])
+        case .automatically(let id, let name):
+            SourcePreferences.setUse(.automatically, id)
+            setStep(on: messageID, matching: action, text: "\(name) is used automatically again.", actions: [])
+        }
+    }
+
+    private func setStep(on messageID: UUID, matching action: StepAction, text: String, actions: [StepAction]) {
+        guard let i = active.messages.firstIndex(where: { $0.id == messageID }),
+              let j = active.messages[i].steps.firstIndex(where: { $0.actions.contains(action) }) else { return }
+        active.messages[i].steps[j].text = text
+        active.messages[i].steps[j].actions = actions
+    }
+
     // MARK: - Package tools
 
     /// Approvals for a model's call to a package command, waiting on the user, by request id.
@@ -2910,6 +3109,7 @@ final class ChatController {
         let arguments = call.argumentsJSON.data(using: .utf8)
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
         let label = PackageToolCall.stepLabel(call.name) ?? "Used \(call.name)"
+        session.recentTools.insert(call.name)
         let step = addStep(assistantID, icon: "shippingbox", text: label)
         let result = await PackageToolCall.call(call.name, arguments: arguments) { [weak self] request in
             await self?.askToolApproval(request, in: session, messageID: assistantID) ?? false

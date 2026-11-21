@@ -95,6 +95,9 @@ struct PackageToolRequest: Identifiable, Equatable, Sendable {
     var effect: String
     /// The arguments, as the model filled them in.
     var arguments: [Argument]
+    /// A third choice that also remembers the answer ("Allow for My notes"); the card then offers
+    /// it, "This time" and "Don't send" (sending a source's passages to a cloud model).
+    var remember: String? = nil
 
     struct Argument: Equatable, Sendable {
         var name: String
@@ -229,11 +232,34 @@ enum PackageToolCall {
     }
 
     /// Chat's tool definitions for the offered tools.
-    nonisolated static func chatTools(registry: PackageRegistry = .shared) -> [ChatTool] {
-        registry.offeredTools().map { tool in
+    /// How many package tools the chat model sees per message (docs/LOCAL-SOURCES.md).
+    nonisolated static let perMessage = 3
+
+    /// The package tools the chat model is offered for `message`: all of them when there are 3 or
+    /// fewer; otherwise the 3 that fit it best (shared words, then meaning), plus any used last turn
+    /// ("and in yen?"). Context stays the same size however many are installed. The 1,500-character
+    /// budget doesn't apply here: it's for the Agent, which reads its tools once when it starts.
+    nonisolated static func chatTools(for message: String = "", recent: Set<String> = [],
+                                      registry: PackageRegistry = .shared) -> [ChatTool] {
+        let eligible = registry.tools().filter { $0.offered || $0.overBudget }
+        return pick(eligible, for: message, recent: recent).map { tool in
             ChatTool(name: tool.name, description: tool.definition.description,
                      parameters: tool.definition.args.map { .init(name: $0.name, type: $0.type.rawValue, description: $0.name, required: true) })
         }
+    }
+
+    nonisolated static func pick(_ tools: [PackageRegistry.Tool], for message: String, recent: Set<String>) -> [PackageRegistry.Tool] {
+        guard tools.count > perMessage else { return tools }
+        let words = SourceWords.content(message)
+        let scored = tools.map { tool -> (PackageRegistry.Tool, Double) in
+            let text = "\(tool.command.title) \(tool.definition.description) \(tool.definition.args.map(\.name).joined(separator: " "))"
+            return (tool, Double(SourceWords.overlap(words, in: text)) + SourcePicker.similarity(message, text))
+        }
+        var chosen = scored.sorted { $0.1 > $1.1 }.prefix(perMessage).map(\.0)
+        for tool in tools where recent.contains(tool.name) && !chosen.contains(where: { $0.name == tool.name }) {
+            chosen.append(tool)
+        }
+        return chosen
     }
 
     /// The Agent's (MCP `tools/list`) definitions for the offered tools.

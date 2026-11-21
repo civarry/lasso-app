@@ -150,6 +150,40 @@ struct ReadmeScreenshotTests {
         catalog.checked = Date().addingTimeInterval(-60)
         try await shoot("browse", CGSize(width: 520, height: 600),
                         PackageBrowseSheet(dismiss: {}, added: { _ in }).background(SettingsPalette.pageFill))
+        // A source with its folder chosen: its page, and a chat that looked in it.
+        let shotNotes = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appending(path: "Lasso README/Notes", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: shotNotes, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: shotNotes.deletingLastPathComponent()) }
+        try "# Pricing\nEnterprise is per seat, $12 a month. Annual plans get 10% off.".write(
+            to: shotNotes.appending(path: "pricing.md"), atomically: true, encoding: .utf8)
+        if let folder = store.installed.first(where: { $0.id == "meeting-notes" })?.package.setting("notes") {
+            store.setValue(shotNotes.path, "meeting-notes", folder)
+        }
+        SourcePreferences.setAbout("pricing, roadmap, standup decisions, launch plan", "meeting-notes")
+        defer { SourcePreferences.forget("meeting-notes") }
+        try await shoot("source-page", CGSize(width: 520, height: 1200),
+                        ScrollView { PackagePage(id: "meeting-notes", localOnly: false, removed: {}) }
+                            .background(SettingsPalette.pageFill))
+
+        let sourcesChat = ChatController.shared
+        sourcesChat.newChat()
+        let sourcesConversation = sourcesChat.active.id
+        defer { sourcesChat.close(sourcesConversation) }
+        var looked = ChatMessage(role: .assistant, text: "You decided on **per-seat pricing at $12 a month** for enterprise, with 10% off annual plans (pricing.md).")
+        looked.steps = [ActivityStep(icon: "note.text", text: "Looked in Meeting Notes · 1 match", done: true,
+                                     actions: [.answerWithout(source: "meeting-notes", name: "Meeting Notes"),
+                                               .onlyWhenMentioned(source: "meeting-notes", name: "Meeting Notes")])]
+        looked.sourceHits = [SourceHit(source: "Meeting Notes", title: "pricing", url: shotNotes.appending(path: "pricing.md"),
+                                       snippet: "Enterprise is per seat, $12 a month.")]
+        var asked = ChatMessage(role: .user, text: "and the launch date?")
+        asked.mentions = ["Meeting Notes"]
+        var nothing = ChatMessage(role: .assistant, text: "Your notes don't mention a launch date yet.")
+        nothing.steps = [ActivityStep(icon: "note.text", text: "Searched Meeting Notes · nothing matched", done: true)]
+        sourcesChat.messages = [ChatMessage(role: .user, text: "what did we decide on pricing?"), looked, asked, nothing]
+        sourcesChat.mention("meeting-notes")
+        try await shoot("sources-chat", CGSize(width: 420, height: 560), ChatView().background(Color(white: 0.12)))
+
         // Settings › Privacy › Permissions.
         try await shoot("permissions", CGSize(width: 520, height: 236),
                         Form { PermissionsSection() }.formStyle(.grouped).background(SettingsPalette.pageFill))

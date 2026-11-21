@@ -746,6 +746,14 @@ flowchart LR
   end
   Browse["Settings ▸ Packages ▸ Browse…<br/>(updates first; lasso://install?id= opens it)"] --> Index --> Dl --> Review
   Dev["Developer mode: New Package (starters) · Load Folder<br/>(polled every 2 s, reloaded without review;<br/>problems shown, last good copy kept)"] --> Pkgs
+  subgraph Src["Sources on this Mac (search package, no network)"]
+    Pick["@ chip (forced, sticks) · or SourcePicker:<br/>shares words with What's in it, ≤ 2, relative margin;<br/>no model call"]
+    Gate["SourceSearch.look: user's own words, 5 s each,<br/>gate ≥ 2 words, 3 passages / 1,200 chars total, fenced"]
+    Consent{"cloud model?<br/>allowed for this source + company?"}
+  end
+  ChatP --> Pick --> Gate --> Consent
+  Consent -->|"local, or allowed"| Answer["passages with the turn's evidence<br/>(fallback scope on-device only if cloud)"]
+  Consent -->|"ask: Allow for · This time · Don't send"| Answer
 ```
 
 Files: `Intelligence/Connectors.swift` (built-in Web search only), `WebSourcesProvider.swift`
@@ -879,6 +887,29 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Sources: `@` and Lasso deciding, apart from web search** (`docs/LOCAL-SOURCES.md`, designed by a
+  four-person panel over five rounds). A search package that can't reach the internet (script without
+  `network`, loopback http) is a source on this Mac: `PackageRegistry.searchCommands` (web search) no
+  longer includes it, so the globe means the web only, and it works in local-only mode. In chat it runs
+  when `@Name` is typed or picked (a chip that sticks per conversation, `Conversation.mentions`; the sent
+  message shows "@Name"), or when `SourcePicker.automatic` finds it: a word of its user-editable "What's
+  in it" (suggested from its folder's file names and headings) in the message, at most 2, within 60% of
+  the best score, Apple's sentence embedding only ordering. No model call. `SourceSearch.look` runs them
+  in parallel (5 s each) with the user's whole words minus the source's name, gates hits (≥ 2 query
+  words, stemmed), keeps 3 passages / 1,200 characters in all (one per matching source first), fences
+  them into the turn's evidence. Steps: "Looked in X · n matches" / "Searched X · nothing matched"; under
+  the reply "From X" with the files (click opens, ⌥-click reveals), **Answer without it** (regenerates
+  with `excludedOnce`) and "Only when I @ it" (with Undo). A message naming a source or "my notes"
+  without one running gets "Look in X for this". With a cloud model (`textRecipient`: company by domain;
+  loopback custom endpoints are local), the Allow card asks first (Allow for X / This time / Don't send),
+  remembered per source and company (`SourcePreferences`), revocable on the package page; such turns
+  fall back on-device only. The system prompt lists sources. Agent turns get @-mentioned sources'
+  passages. Package tools for chat: all when 3 or fewer, else the 3 that fit the message (+ last turn's);
+  the 1,500-character budget stays for the Agent. Settings › Packages: "On this Mac" and "Web search"
+  cards, an "@ / /" line; a source's page: How to use it (every package), Use it, What's in it,
+  allowed companies + Reset, a Test card that takes the user's words and says whether Lasso would look
+  (with words to add). Fixed: the search Test card ran script packages without their folders (always 0
+  results). An 80-message labelled set checks automatic picks (wrong ≤ 5%, missed ≤ 20%).
 - **Packages, build step 6: the catalog and tools for authors.** `civarry/lasso-packages` is public:
   `packages/<id>/`, CI (macOS) that builds `lasso-pkg` from this repo's source, runs `validate
   --catalog`, checks versions went up and runs keyless script tests (`Tools/check.py`), and on main

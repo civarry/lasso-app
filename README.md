@@ -17,25 +17,33 @@
 
 <p align="center"><img src="screenshots/hero.png" alt="Drag a box around anything on screen and translate it in place"></p>
 
-**Jump to:** [What's new](#whats-new-in-022) · [What it does](#what-it-does) · [Chat](#chat) ·
+**Jump to:** [What's new](#whats-new-in-023) · [What it does](#what-it-does) · [Chat](#chat) ·
 [Agent](#agent) · [Packages](#packages) · [Privacy](#privacy) · [Install](#install) ·
 [Updates](#updates) · [AI models](#ai-models) · [Build it](#build-it-yourself)
 
-## What's new in 0.22
+## What's new in 0.23
 
-**A package catalog.** Settings › Packages › **Browse…** lists packages anyone can share, from
-[civarry/lasso-packages](https://github.com/civarry/lasso-packages):
+**Your notes in chat, without the web.** A source on your Mac, like **My notes** (a folder of Markdown
+notes), is no longer part of web search:
 
-- Each one is checked automatically and its scripts are read by a maintainer before it's listed.
-- You see what it can reach before you add it, and Lasso refuses a download that doesn't match the
-  catalog.
-- Updates show at the top of Browse. Nothing updates by itself.
-- A `lasso://install?id=…` link opens Browse at that package. It never installs anything.
+- **Just ask.** Lasso looks in it by itself when a message fits what's in it, and says so: "Looked in My
+  notes · 1 match", with **Answer without it** if it picked wrong.
+- **Or type @** and its name to search it for sure. It stays as a chip for follow-ups.
+- The globe means the web only. Your notes work in local-only mode.
+- With a cloud model, Lasso asks before sending any passage, per source and per company.
+- Every package page starts with **How to use it**.
+
+<p align="center"><img src="screenshots/app/sources-chat.png" width="420" alt="A chat reply that looked in Meeting Notes, with the file it used and Answer without it"></p>
+
+<details>
+<summary>New in 0.22</summary>
+
+- **A package catalog**: Settings › Packages › **Browse…**, checked before anything is listed, with
+  updates at the top. **Developer mode** and `lasso-pkg` to make your own.
 
 <p align="center"><img src="screenshots/app/browse.png" width="460" alt="Browse Packages: an update at the top, then packages with what each one needs"></p>
 
-**Make your own:** turn on **Developer mode** to start a package from a template and run it from your
-own folder (it reloads when you save), or use `lasso-pkg` on the command line.
+</details>
 
 <details>
 <summary>New in 0.21</summary>
@@ -111,7 +119,8 @@ Press **⌃⇧C**, drag a box, and pick what to do:
 A chat panel that stays open (**⌃⇧A**) and remembers the conversation.
 
 - **Attach anything:** images, text, PDFs, code. Drop files in, or send a capture to chat.
-- **Sources:** answers can be grounded in web results, with links.
+- **Sources:** answers can be grounded in web results (the globe), and in your own notes: type **@**
+  and a source's name, or just ask and Lasso looks when a message fits.
 - **Talk instead of type:** click the mic. Lasso stops listening when you finish, tidies the
   "ums" on your Mac, and one Undo restores exactly what you said.
 

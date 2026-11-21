@@ -342,6 +342,7 @@ final class PackageStore {
         records[id] = nil
         self.records = records
         patchOrder.removeAll { $0 == id }
+        SourcePreferences.forget(id)
         reload()
         Log.app.notice("packages · removed \(id, privacy: .public)")
     }
@@ -475,6 +476,9 @@ final class PackageRegistry: @unchecked Sendable {
 
     var all: [Entry] { lock.withLock { entries } }
 
+    /// Puts back a list read earlier (tests that stand in their own packages).
+    func restore(_ saved: [Entry]) { lock.withLock { entries = saved } }
+
     @MainActor
     func update(_ packages: [LassoPackage], settings: (LassoPackage) -> (values: [String: String], secrets: [String]),
                 offTools: (String) -> Set<String> = { _ in [] },
@@ -491,10 +495,12 @@ final class PackageRegistry: @unchecked Sendable {
         lock.withLock { entries = built }
     }
 
-    /// Search commands that can run now: enabled, set up, and not paused by local-only mode.
+    /// Web search packages that can run now (enabled, set up, not paused by local-only mode): what the
+    /// globe's web search adds. Sources on this Mac aren't here: they run when a message mentions them
+    /// or Lasso picks them (`PackageSource`), never as part of web search (docs/LOCAL-SOURCES.md).
     func searchCommands(localOnly: Bool = PrivacyMode.localOnly) -> [(entry: Entry, command: PackageCommand)] {
         all.filter { $0.ready && PackageRequirements.missingNow($0.package) == nil }.flatMap { entry in
-            entry.package.commands.filter { $0.surfaces.contains(.search) }.compactMap { command in
+            entry.package.commands.filter { $0.surfaces.contains(.search) && !PackageSource.isOnThisMac(entry, $0) }.compactMap { command in
                 let reachesOffMac = !PackageHTTP.allowedHosts(entry.package, values: entry.values)
                     .allSatisfy(PackageValidator.isLoopback)
                 return localOnly && reachesOffMac ? nil : (entry, command)
