@@ -86,16 +86,21 @@ enum Keychain {
     }
 
     static func get(_ account: String) -> String? {
-        lock.lock(); defer { lock.unlock() }
-        guard var values = vault() else { return nil }
-        if let value = values[account] { return value }
-        // Saved by an older version as its own item: move it in, once.
-        guard let legacy = readLegacy(account) else { return nil }
-        values[account] = legacy
-        saveVault(values)
-        SecItemDelete(query(account) as CFDictionary)
-        UserDefaults.standard.removeObject(forKey: openKey(account))
-        return legacy
+        let (value, moved): (String?, Bool) = {
+            lock.lock(); defer { lock.unlock() }
+            guard var values = vault() else { return (nil, false) }
+            if let value = values[account] { return (value, false) }
+            // Saved by an older version as its own item: move it in, once.
+            guard let legacy = readLegacy(account) else { return (nil, false) }
+            values[account] = legacy
+            saveVault(values)
+            SecItemDelete(query(account) as CFDictionary)
+            return (legacy, true)
+        }()
+        // Never under the lock: a UserDefaults change posts a notification that can wait on the main
+        // thread, and the main thread reads keys while drawing (a deadlock, seen in the test run).
+        if moved { UserDefaults.standard.removeObject(forKey: openKey(account)) }
+        return value
     }
 
     static func set(_ value: String, for account: String) {
@@ -113,12 +118,14 @@ enum Keychain {
     }
 
     static func delete(_ account: String) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         if var values = vault(), values[account] != nil {
             values[account] = nil
             saveVault(values)
         }
         SecItemDelete(query(account) as CFDictionary)
+        lock.unlock()
+        // Outside the lock, as in `get`.
         UserDefaults.standard.removeObject(forKey: openKey(account))
     }
 

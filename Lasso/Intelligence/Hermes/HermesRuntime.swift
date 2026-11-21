@@ -37,6 +37,15 @@ final class HermesRuntime {
     struct Launch: Equatable {
         var route: HermesRoute?
         var letHermesDecide: Bool
+        /// The package tools offered (`PackageRegistry.toolSignature`): Hermes reads its tool list once,
+        /// when it starts, so a package tool turned on or off means a restart before the next turn.
+        var tools = ""
+    }
+
+    /// Whether the next turn starts (or restarts) the gateway.
+    func needsStart(for route: HermesRoute?) -> Bool {
+        state != .running || process?.isRunning != true
+            || active != Launch(route: route, letHermesDecide: HermesAgent.letHermesDecide, tools: PackageRegistry.shared.toolSignature())
     }
 
     nonisolated static let profileName = "lasso-app"
@@ -178,7 +187,8 @@ final class HermesRuntime {
     /// Concurrent callers share a start, and a caller that wanted another route starts again after it.
     func ready(route: HermesRoute?) async throws -> HermesClient {
         await cleanupTask?.value
-        let wanted = Launch(route: route, letHermesDecide: HermesAgent.letHermesDecide)
+        let wanted = Launch(route: route, letHermesDecide: HermesAgent.letHermesDecide,
+                            tools: PackageRegistry.shared.toolSignature())
         while true {
             if let startTask {
                 let client = try await startTask.value

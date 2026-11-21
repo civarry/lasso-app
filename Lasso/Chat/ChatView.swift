@@ -1131,6 +1131,11 @@ struct MessageBubble: View {
                             chat.respondToApproval(message.id, choice: $0)
                         }
                     }
+                    if let request = message.toolApproval {
+                        ToolApprovalCard(request: request, asker: message.viaAgent ? "The Agent" : "The model") {
+                            chat.answerToolApproval(request.id, allow: $0)
+                        }
+                    }
                     if message.isError, !message.isStreaming, !isUser {
                         Button("Try Again") { chat.regenerate(message.id) }
                             .controlSize(.small)
@@ -1208,6 +1213,51 @@ private struct ApprovalCard: View {
                     .buttonStyle(.bordered)
             }
         }
+    }
+}
+
+/// A model's call to a package command that acts (copies, notifies, opens, sends), held until the
+/// user answers. Same look as Hermes's card: both are "something wants to act, you decide".
+private struct ToolApprovalCard: View {
+    let request: PackageToolRequest
+    let asker: String
+    let answer: (Bool) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("\(asker) wants to use \(request.title)", systemImage: "hand.raised.fill")
+                .font(.caption).fontWeight(.semibold)
+                .foregroundStyle(.orange)
+            Text("\(request.effect) · \(request.packageName)")
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if !request.arguments.isEmpty {
+                // All of it, scrolling when long: it's what the user is agreeing to send.
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(request.arguments, id: \.name) { arg in
+                            (Text("\(arg.name): ").foregroundStyle(.secondary) + Text(arg.value.isEmpty ? "(empty)" : arg.value))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 120)
+                .fixedSize(horizontal: false, vertical: true)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .padding(8)
+                .background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+            }
+            HStack(spacing: 8) {
+                Button("Allow") { answer(true) }.buttonStyle(.borderedProminent)
+                Button("Deny", role: .destructive) { answer(false) }.buttonStyle(.bordered)
+            }
+            .controlSize(.small)
+        }
+        .padding(10)
+        .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.orange.opacity(0.35)))
     }
 }
 

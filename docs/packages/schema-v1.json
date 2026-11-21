@@ -433,7 +433,7 @@
             "properties": {
               "name": {
                 "type": "string",
-                "pattern": "^[a-z0-9_]{1,40}$"
+                "pattern": "^[a-z][a-z0-9_]{0,39}$"
               },
               "description": {
                 "type": "string",
@@ -442,6 +442,9 @@
               "args": {
                 "type": "object",
                 "maxProperties": 6,
+                "propertyNames": {
+                  "pattern": "^[a-z][a-z0-9_]{0,39}$"
+                },
                 "additionalProperties": {
                   "enum": [
                     "string",

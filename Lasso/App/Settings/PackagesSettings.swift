@@ -67,6 +67,7 @@ struct PackageStatus: Equatable {
                 case .send: add("Send to")
                 case .slash: add("/\(command.id)")
                 case .hotkey: add("Hotkey")
+                case .tool: add("Tool")
                 default: break
                 }
             }
@@ -156,9 +157,34 @@ struct PackagesHub: View {
                     addStrip
                 }
             }
+            if !tools.isEmpty { toolsCard }
         }
         .sheet(isPresented: $adding) {
             AddPackageSheet(dismiss: { adding = false }, added: { id in adding = false; openPackage(id) })
+        }
+    }
+
+    /// Every enabled package's tools, whether turned off here or not.
+    private var tools: [PackageRegistry.Tool] {
+        let _ = store.installed   // re-read when packages change
+        return PackageRegistry.shared.tools(localOnly: localOnly)
+    }
+
+    /// Which tools models are offered, against the budget: every description is read with every request.
+    private var toolsCard: some View {
+        let used = PackageRegistry.shared.toolBudgetUsed(localOnly: localOnly)
+        return SettingsCard(title: "Tools for models",
+                            footnote: "Offered to the chat model (if it supports tools) and the Agent. Descriptions use "
+                                + "\(used.formatted()) of \(PackageRegistry.toolBudget.formatted()) characters.") {
+            ForEach(tools, id: \.name) { tool in
+                SettingsRow(tool.command.title,
+                            caption: tool.notOffered ?? "\(tool.entry.package.name) · \(tool.name)"
+                                + (PackageToolCall.needsApproval(tool.command) ? " · asks first" : "")) {
+                    SettingsSwitch(title: "", isOn: Binding(
+                        get: { store.isToolOffered(tool.entry.package.id, tool.command.id) },
+                        set: { store.setToolOffered(tool.entry.package.id, tool.command.id, $0) }))
+                }
+            }
         }
     }
 
@@ -323,6 +349,13 @@ struct PackagePermissionsList: View {
             if package.commands.contains(where: { $0.input.contains(.source) }) {
                 line("app.badge", "Sees which app the text came from", tag: nil)
             }
+            if package.commands.contains(where: { $0.surfaces.contains(.tool) }) {
+                line("wrench.and.screwdriver", Self.toolLine(package),
+                     tag: tag(changed: false, new: compareTo.map { !$0.commands.contains { $0.surfaces.contains(.tool) } } ?? false))
+            }
+            if let overflow = Self.toolOverflow(package) {
+                line("exclamationmark.triangle", overflow, tag: nil)
+            }
             if package.commands.contains(where: { $0.output == .replace }) {
                 line("text.cursor", "Pastes over your highlighted text", tag: nil)
             }
@@ -350,6 +383,27 @@ struct PackagePermissionsList: View {
             + "\(label), \(local ? "on this Mac." : "in the cloud. Your text leaves your Mac.")"
     }
 
+    /// What a model can do with the package's tools, and when Lasso asks.
+    static func toolLine(_ package: LassoPackage) -> String {
+        let tools = package.commands.filter { $0.surfaces.contains(.tool) }
+        let asking = tools.filter(PackageToolCall.needsApproval)
+        let base = "The chat model and the Agent can run \(tools.count == 1 ? "it" : "its tools")."
+        if asking.isEmpty { return base + " \(tools.count == 1 ? "It only returns" : "They only return") text, so Lasso doesn't ask." }
+        if asking.count == tools.count { return base + " Lasso asks you every time." }
+        return base + " Lasso asks you before \(ListFormatter.localizedString(byJoining: asking.map(\.title)))."
+    }
+
+    /// Said in the review when adding the package would put the offered tools past the budget.
+    @MainActor static func toolOverflow(_ package: LassoPackage, registry: PackageRegistry = .shared) -> String? {
+        guard !PackageStore.shared.isInstalled(package.id) else { return nil }
+        let adding = package.commands.compactMap(\.tool).reduce(0) { $0 + $1.description.count }
+        guard adding > 0 else { return nil }
+        let total = registry.toolBudgetUsed() + adding
+        guard total > PackageRegistry.toolBudget else { return nil }
+        return "Adds \(adding.formatted()) characters to your tools, past the \(PackageRegistry.toolBudget.formatted()) limit. "
+            + "Some tools won't be offered until you turn others off in Settings › Packages."
+    }
+
     /// One sentence for where a command appears.
     static func doesLine(_ command: PackageCommand) -> String {
         if command.surfaces.contains(.search) { return PackageStatus.roleLine(command) }
@@ -362,6 +416,9 @@ struct PackagePermissionsList: View {
             case .send: places.append("in Send to, on captures and chat replies")
             case .slash: places.append("as /\(command.id) in chat")
             case .hotkey: places.append("on text you highlight, with a hotkey you set")
+            case .tool:
+                places.append("as a tool the chat model and the Agent can use"
+                    + (PackageToolCall.needsApproval(command) ? ", asking you first" : ""))
             default: break
             }
         }
@@ -864,6 +921,10 @@ struct PackagePage: View {
             let key = KeyboardShortcuts.getShortcut(for: PackageHotkeys.name(package.id, command.id))?.description
             parts.append("Hotkey: \(key ?? "not set, in Settings › Keyboard Shortcuts")")
         }
+        if command.surfaces.contains(.tool) {
+            let tool = PackageRegistry.shared.tools(localOnly: false).first { $0.entry.package.id == package.id && $0.command.id == command.id }
+            parts.append("Tool \(tool?.name ?? command.tool?.name ?? "")" + (PackageToolCall.needsApproval(command) ? ", asks first" : ""))
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -907,7 +968,10 @@ struct PackagePage: View {
         let started = Date()
         Task {
             do {
-                let result = try await PackageCommandRunner.run(entry, command, input: PackageInput(text: sample))
+                let input = command.input.contains(.args)
+                    ? PackageInput(text: command.testArgs["text"], args: command.testArgs)
+                    : PackageInput(text: command.testArgs["text"] ?? sample, args: command.testArgs)
+                let result = try await PackageCommandRunner.run(entry, command, input: input)
                 let text: String = if case .url(let url) = result { "Would open \(url.absoluteString)" }
                                    else { try await PackageOutput.text(result) }
                 usageTick += 1

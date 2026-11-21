@@ -716,13 +716,21 @@ flowchart LR
   ChatP[Chat] --> WebSearch
   WebSearch --> Pkgs
   Pkgs -->|"PackageHTTP: declared hosts only,<br/>no undeclared redirects, local-only gate,<br/>2 MB, limits, secrets redacted"| Hits[results labelled by package]
+  subgraph Tools["Package tools (surface: tool)"]
+    List["PackageRegistry.tools: offered = enabled, set up,<br/>not paused, not switched off, inside 1,500 chars"]
+  end
+  List -->|"chat model that calls tools<br/>(Toolbelt, after web_search)"| ChatP
+  List -->|"LassoToolServer tools/list<br/>(Agent restarts when the list changes)"| Agent[Agent]
+  ChatP & Agent -->|"PackageToolCall"| Ask{"acts? (not markdown,<br/>or http not GET)"}
+  Ask -->|no| Run[run, answer fenced, 4,000 chars]
+  Ask -->|yes| Card["Lasso's card in the reply:<br/>Allow / Deny (Stop, 280 s = Deny)"] -->|Allow| Run
 ```
 
 Files: `Intelligence/Connectors.swift` (built-in Web search only), `WebSourcesProvider.swift`
 (`WebSearchSource`, `IdentifySources`), `Packages/` (`PackageManifest` validator, `PackageTemplate`,
 `PackageHTTP`, `PackageStore` + `PackageRegistry`, `PackageSearch`, `PackageMigration`, `Bundled/`),
 `App/Settings/PackagesSettings.swift`, `SearchCache`, `SearchQuota`, `DomainNoise`, `Keychain`. The
-format is `docs/PACKAGES.md` (build step 1 of 6 is built); authors use `docs/CONTRIBUTING-PACKAGES.md`
+format is `docs/PACKAGES.md` (build steps 1 to 3 of 6 are built; tools in `PackageTools.swift`); authors use `docs/CONTRIBUTING-PACKAGES.md`
 and `docs/packages/schema-v1.json`.
 
 **Privacy invariant:** `privacy.localOnly` (PrivacyMode) gates **every** off-device path at the source
@@ -845,6 +853,27 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Packages, build step 3: tools for the chat model and the Agent.** A command with the `tool` surface
+  (`tool`: name, description up to 200, up to 6 typed args, all required; the `args` input only on
+  tool-only commands; a `text` input needs a `text` arg) is offered to the chat model when it calls tools
+  (now with or without web search on: `Toolbelt` adds package tools after `web_search`; before, the
+  tool path only existed for web search) and to the Agent through `LassoToolServer`'s `tools/list`.
+  `PackageRegistry.tools` is the one list: names that clash or are Lasso's or Hermes's get the package
+  prefix; tools missing a key or paused in local-only aren't offered; descriptions count against
+  1,500 characters in Settings order, and Settings › Packages › Tools for models shows each with a
+  switch (separate from the command's own) and what's over; the review says when a package won't fit.
+  `PackageToolCall` checks the arguments' types, then asks first for anything that acts (output other
+  than `markdown`, or http other than `GET`) on a card in the reply, the same for the chat model and the
+  Agent (whose call is held by the plugin's 320 s wait; Lasso answers no at 280 s, on Stop, or with no
+  Agent reply being written). Deny returns "The user didn't allow this" and runs nothing; local-only
+  is checked again after Allow. Answers go back fenced, at most 4,000 characters. Hermes reads its
+  tools at start, so `HermesRuntime.Launch` now includes the offered tools' signature: a change
+  restarts the Agent before its next turn. Arguments in a `prompt` are fenced like `{{text}}`.
+- **Keychain deadlock fixed.** The full test run hung for hours. A sample showed `Keychain.delete`, on a
+  background thread, holding the Keychain lock while removing a UserDefaults value: the change
+  notification waited on the main thread, which was drawing the chat header and waiting in
+  `Keychain.get` for the same lock. The app could freeze the same way. UserDefaults writes now happen
+  after the lock is released; `KeychainTests` reproduces the shape and times out without the fix.
 - **One Keychain prompt per update, not one per key; Settings opens on the first click.** Inspected the
   real login Keychain: all 13 Lasso items had their access list open to any app (the 0.16 fix), yet
   each carried a partition list of `cdhash:` values, one per build the user had approved. Lasso's

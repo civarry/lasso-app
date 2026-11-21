@@ -86,8 +86,8 @@ struct PackageValidatorTests {
     @Test func partsNotBuiltYetAreRefusedClearly() {
         let prompt = messages(Self.search.replacingOccurrences(of: "\"run\": {\"http\"", with: "\"run\": {\"prompt\": \"x\", \"http\""))
         #expect(prompt.contains("commands[0].run: Use one runner, not http and prompt."))
-        let tool = messages(Self.search.replacingOccurrences(of: "\"surfaces\": [\"search\"]", with: "\"surfaces\": [\"tool\"]"))
-        #expect(tool.contains { $0.contains("can't show commands on \"tool\" yet") })
+        let image = messages(Self.search.replacingOccurrences(of: "\"input\": [\"query\"]", with: "\"input\": [\"query\", \"image\"]"))
+        #expect(image.contains { $0.contains("can't give commands images yet") }, "\(image)")
         let script = messages(Self.search.replacingOccurrences(of: "\"run\": {\"http\"", with: "\"run\": {\"script\": {}, \"http\""))
         #expect(script.contains("commands[0].run.script: This version of Lasso can't run \"script\" commands yet."))
         let patches = messages(Self.search.replacingOccurrences(of: "\"hosts\":", with: "\"patches\": [], \"hosts\":"))

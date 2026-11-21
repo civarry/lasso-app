@@ -487,18 +487,35 @@ Agent (through Lasso's tool server).
           "args": { "amount": "number", "from": "string", "to": "string" } }
 ```
 
-- `name`: `a-z`, `0-9`, `_`, at most 40 characters; prefixed with the package id if two clash.
+- `name`: starts with `a-z`, then `a-z`, `0-9`, `_`, at most 40 characters. When two packages use the
+  same name, or a name Lasso or the Agent already has (`web_search`, `look_at_screen`, `terminal`,
+  `read_file`…), it's offered as `<package_id>_<name>` (`-` becomes `_`).
 - `description`: at most 200 characters.
-- `args`: up to 6, each `string`, `number` or `boolean`, all required.
-- **Budget:** the descriptions of all enabled tools together are capped at 1,500 characters (about
-  400 tokens). Past that, Settings asks which to offer. `search` commands aren't tools: they feed
-  Lasso's one web search, so ten search packages cost the model nothing extra.
-- **Asking first:** when a model runs a command whose output is `notify`, `open` or `file`, or any
+- `args`: up to 6, each `string`, `number` or `boolean`, all required. The model's values fill
+  `{{args.<name>}}`. A command with the `args` input has `tool` as its only surface (nowhere else
+  fills them in). A command with the `text` input needs a `text` argument, which fills `{{text}}`, so
+  one command can be Send to and a tool (the Reminders example). In a `prompt`, arguments are fenced
+  like `{{text}}`: a model may put what it read on a page into them.
+- `output`: `markdown`, `copy`, `notify` or `open`. What a tool returns to the model is the answer, or
+  for `copy`, `notify` and `open` what was done ("Opened https://…"), trimmed to 4,000 characters and
+  fenced as content.
+- **Who's offered them:** the chat model when it can call tools (Ollama models that support tools,
+  cloud models), with or without web search on; and Lasso's Agent. Apple Intelligence and MLX don't
+  call tools in chat, so there they're offered only to the Agent. A tool whose package is missing a key
+  or paused in local-only mode isn't offered at all.
+- **Budget:** the descriptions of all offered tools together are capped at 1,500 characters (about
+  400 tokens). Tools are counted in Settings order; one that doesn't fit isn't offered, and Settings ›
+  Packages › Tools for models shows it as over the limit, with a switch per tool to choose which are
+  offered. Turning a tool off there leaves the command's other surfaces alone. `search` commands aren't
+  tools: they feed Lasso's one web search, so ten search packages cost the model nothing extra.
+- **Asking first:** when a model runs a command whose output isn't `markdown` (it copies, notifies or
+  opens), an `http` command whose method isn't `GET` (it can create or send something), or any
   `shortcut` or `script` command, Lasso MUST show what will run with what input and wait for Allow.
-  Read-only `http` and `prompt` commands run without asking. A model can never run a `replace`
-  command. For the Agent this is Lasso's own approval card in the reply, with the Agent's tool call
-  held open until the user answers (Hermes's approvals only cover its own commands); Deny returns
-  "The user didn't allow this" to the Agent.
+  `GET` and `prompt` commands with `markdown` output run without asking. A model can never run a
+  `replace` command. The card is Lasso's own, in the reply: for the chat model and for the Agent,
+  whose tool call is held open until the user answers (Hermes's approvals only cover its own
+  commands). Deny, stopping the reply, or no answer within 280 seconds returns "The user didn't allow
+  this" to the model, and nothing runs. Lasso checks local-only mode again after the answer.
 - **The Agent's list stays current:** Lasso's Hermes reads the tool list when it starts, so turning a
   `tool` command on or off, or installing or removing a package with one, MUST restart Lasso's Agent
   before its next turn.
@@ -771,7 +788,8 @@ Each step ships on its own, with its checks from [Verification](#verification), 
    the packages bundled with Lasso (Tavily, SerpApi).
 2. **Buttons and commands** (built: Lasso 0.18.0). The `prompt` runner; `toolbar`, `slash`, `send` and `hotkey` surfaces;
    `when`; the `markdown`, `copy`, `replace`, `open` and `notify` outputs.
-3. **Tools.** The `tool` surface for the chat model and the Agent, the tool budget, and asking first.
+3. **Tools** (built: Lasso 0.19.0). The `tool` surface for the chat model and the Agent, the `args`
+   input, the tool budget, and asking first.
 4. **Shortcuts and scripts.** Both runners, the sandbox, `requires`, folders, full access, `file` and
    `image` outputs.
 5. **Patches.** Built-in content moved to data files, `docs/patch-targets.md`, patch order and undo.
@@ -827,9 +845,9 @@ Each MUST, with the check that fails when it's broken. App tests live in `LassoT
 | Secrets never logged | Engine: after a request with a secret in the query, a header and the body, and a script run with a secret, the captured log and the Run panel show `•••`, not the secret. |
 | Response limits | Engine: a 3 MB response is refused; long titles, snippets and answers are trimmed. |
 | `when` regex limits | Engine: a catastrophic pattern on long text gives up within 50 ms and the command isn't offered. |
-| `replace` never from a model | Chat: a model can't call a command whose output is `replace`. |
-| Model runs of acting commands need the user | Chat: a model's call to a `notify`, `open` or `file` command, a Shortcut or a script shows the approval and runs nothing until Allow; Deny runs nothing. |
-| Tool budget | Settings: enabling tools past 1,500 characters of descriptions asks which to offer, and the model is offered only those. |
+| `replace` never from a model | Validator: a `tool` command with `replace` output is refused, so no model is ever offered one; the runner refuses it too. |
+| Model runs of acting commands need the user | Chat: a model's call to a `notify` command over `POST` shows the card and the local server records nothing until Allow; Deny, and stopping the reply, record nothing and return "The user didn't allow this". A `GET` with `markdown` output runs without the card. (Shortcuts and scripts: step 4.) |
+| Tool budget | Registry: with nine 200-character tools, seven are offered and the model gets only those; the eighth is shown as over the limit; turning one off in Tools for models offers the next and keeps the command's other surfaces. The review says when a package's tools won't all fit. |
 | Limits honoured | Engine: after `daily` calls, the next search skips the package. |
 | Review on wider access | Install: an update adding a host, network, a runner or an input shows the review with it highlighted; one changing only a prompt doesn't; one changing a script always does. |
 | Remove deletes everything | Install: the package folder, preferences, Keychain items, bookmarks and data folder are gone; `~/LassoWorkspace/<id>/` and the usage counts are kept. |
@@ -842,6 +860,6 @@ Each MUST, with the check that fails when it's broken. App tests live in `LassoT
 | Catalog hash checked | Install: a download whose SHA-256 differs from `index.json` is refused. |
 | Tavily and SerpApi migration | Migration: a saved Tavily key with Tavily on → package installed, key moved, the same request as before (the local server compares); no key → nothing installed; a second launch repeats nothing. |
 | Usage carries over | Migration: with 950 of Tavily's 960 monthly searches used, the package makes at most 10 more this month. |
-| The Agent's list stays current | Agent: after installing a package with a `tool` command, the next Agent turn's tool list includes it; after removing it, it's gone. |
+| The Agent's list stays current | Agent: the tool server's `tools/list` includes an installed package's tools; the launch Lasso compares before each Agent turn includes the offered tools, so installing, removing or switching one makes it differ and the Agent restarts. |
 | The Agent asks first | Agent: an Agent call to a `notify` command shows Lasso's approval card and runs nothing until Allow; Deny gives the Agent "The user didn't allow this". |
 | Same search after removing the Swift code | Search: with both packages installed, `WebSourcesProvider` sends the same requests as the old code and returns the same titles and URLs in the same order for recorded responses. Accepted differences: SerpApi results are labelled "SerpApi" instead of "Google" and carry its snippets. |

@@ -55,6 +55,29 @@ struct KeychainTests {
         #expect(Keychain.get(account) == "sk-old")
     }
 
+    /// The full test run hung for hours: `delete` on a background thread held the Keychain lock while
+    /// removing a UserDefaults value, whose change notification waited on the main thread, and the main
+    /// thread was drawing the chat header, waiting in `get` for that lock. Same shape here: an observer
+    /// that hops to the main thread and reads a key. Before the fix this deadlocks and times out.
+    @Test func deletingOffTheMainThreadDoesNotDeadlockAReader() async {
+        let key = "\(account).deadlock"
+        Keychain.set("x", for: key)
+        final class Armed: @unchecked Sendable { var on = true }
+        let armed = Armed()
+        let observer = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification,
+                                                              object: nil, queue: nil) { _ in
+            guard armed.on, !Thread.isMainThread else { return }
+            DispatchQueue.main.sync { _ = Keychain.get("\(key).other") }
+        }
+        defer { armed.on = false; NotificationCenter.default.removeObserver(observer) }
+        let finished: Bool = await withCheckedContinuation { done in
+            let gate = DispatchSemaphore(value: 0)
+            Thread.detachNewThread { Keychain.delete(key); gate.signal() }
+            DispatchQueue.global().async { done.resume(returning: gate.wait(timeout: .now() + 5) == .success) }
+        }
+        #expect(finished, "delete deadlocked with a reader on the main thread")
+    }
+
     @Test func emptyMeansDeleted() {
         Keychain.set("x", for: account)
         Keychain.set("", for: account)

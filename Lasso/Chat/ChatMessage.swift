@@ -71,6 +71,8 @@ struct ChatMessage: Identifiable, @unchecked Sendable {
     var approval: HermesApproval?
     /// Approval requests waiting in this turn, `approval` first ("1 of N" on the card).
     var approvalsWaiting = 0
+    /// A model's call to a package command that acts, waiting for Allow or Deny (Lasso's own card).
+    var toolApproval: PackageToolRequest?
     /// A standing warning shown in the bubble (Hermes approving risky commands itself).
     var notice: String?
     /// Written by the Agent (Hermes, with tools). The regular chat model sees these marked as such, so it
