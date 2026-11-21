@@ -82,6 +82,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.cjcarito.Lasso
         PRODUCT_NAME: Lasso
+        LASSO_DISPLAY_NAME: Lasso
         INFOPLIST_FILE: Lasso/App/Info.plist
         CODE_SIGN_ENTITLEMENTS: Lasso/App/Lasso.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: lasso
@@ -90,6 +91,13 @@ targets:
         LD_RUNPATH_SEARCH_PATHS:
           - "$(inherited)"
           - "@executable_path/../Frameworks"
+      # Xcode and test builds are a different app to macOS: they keep their own Screen Recording and
+      # Accessibility permissions, so running one no longer takes the permission from the installed
+      # Lasso (macOS keeps one per app ID, tied to its signature). Release builds keep the real ID.
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.cjcarito.Lasso.dev
+          LASSO_DISPLAY_NAME: Lasso Dev
 
   LassoTests:
     type: bundle.unit-test

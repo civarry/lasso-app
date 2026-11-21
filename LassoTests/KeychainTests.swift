@@ -11,7 +11,7 @@ import Security
 @Suite(.serialized)
 struct KeychainTests {
     private let account = "tests.keychain.\(UUID().uuidString.prefix(8))"
-    private var service: String { Bundle.main.bundleIdentifier ?? "com.cjcarito.Lasso" }
+    private var service: String { Keychain.service }
 
     /// Every Lasso item in the login Keychain whose account is in `accounts`, plus the vault.
     private func items(_ accounts: [String]) -> [String] {

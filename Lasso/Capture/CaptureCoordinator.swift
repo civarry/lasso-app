@@ -465,13 +465,27 @@ final class CaptureCoordinator {
         let alert = NSAlert()
         alert.messageText = "Screen Recording permission needed"
         alert.informativeText = """
-        Lasso needs Screen Recording access to capture your screen. \
-        Enable it in System Settings ▸ Privacy & Security ▸ Screen Recording, then try again.
+        Switch Lasso on in System Settings › Privacy & Security › Screen Recording, then quit and \
+        reopen Lasso.
+
+        If it was already on, macOS is holding a permission from another copy of Lasso. \
+        Reset clears it and asks again.
         """
         alert.addButton(withTitle: "Open Settings")
+        alert.addButton(withTitle: "Reset")
         alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn {
-            permissions.openScreenRecordingSettings()
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: permissions.openScreenRecordingSettings()
+        case .alertSecondButtonReturn:
+            Task {
+                do { try await permissions.reset(.screenRecording) } catch {
+                    let failed = NSAlert()
+                    failed.messageText = "Couldn't reset Screen Recording"
+                    failed.informativeText = error.localizedDescription
+                    failed.runModal()
+                }
+            }
+        default: break
         }
     }
 }

@@ -41,7 +41,9 @@ flowchart TD
 ## 2. Capture pipeline (`Capture/CaptureCoordinator.swift`)
 
 1. **Trigger** — global hotkey (`Trigger/TriggerService`, KeyboardShortcuts) or menu bar
-   (`MenuBarController`) starts a session. Screen-recording permission is gated by `PermissionsService`.
+   (`MenuBarController`) starts a session. Screen-recording permission is gated by `PermissionsService`;
+   when it's missing after the first ask, the alert offers Open Settings or Reset (`tccutil reset` of
+   Lasso's own entry, then ask again), as does Settings › Privacy › Permissions.
 2. **Freeze** — `ScreenCaptureService` grabs the display; `OverlayWindow` shows it frozen so the user
    can drag a selection (`SelectionView`); `SubjectLift` supports object/subject lift.
    The overlay's content view accepts the first click (`FirstClickHostingView`): a hotkey only asks
@@ -853,6 +855,18 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Stuck permissions: Reset, and Xcode builds as their own app.** macOS keeps one Screen Recording
+  and one Accessibility permission per app ID, tied to the signature of the copy that was allowed. A
+  copy signed differently with the same ID (an Xcode build, an older version) no longer matches: the
+  switch stays on in System Settings, Lasso isn't allowed, and asking again does nothing (tccd logs
+  "Failed to match existing code requirement"). Two fixes. `PermissionsService.reset` runs
+  `tccutil reset <service> <own bundle ID>` (no admin password; Launch Services must know the app, so
+  it registers itself first, and it ignores apps in /tmp), asks again and opens the pane; offered in
+  the capture alert and in Settings › Privacy › Permissions, which shows each permission's state. And
+  the Debug configuration is now `com.cjcarito.Lasso.dev`, shown as "Lasso Dev", so Xcode runs and
+  tests stop taking the installed app's permissions. `DevSettingsImport` copies the installed app's
+  settings into it once; `Keychain.service` stays `com.cjcarito.Lasso`, so keys are shared; chats and
+  packages already share a folder. Logs from a Debug build are under subsystem `com.cjcarito.Lasso.dev`.
 - **Packages, build step 3: tools for the chat model and the Agent.** A command with the `tool` surface
   (`tool`: name, description up to 200, up to 6 typed args, all required; the `args` input only on
   tool-only commands; a `text` input needs a `text` arg) is offered to the chat model when it calls tools
