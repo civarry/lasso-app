@@ -855,6 +855,11 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **README screenshots for every release.** `ReadmeScreenshotTests` (opt-in, `LASSO_README_SHOTS`) renders
+  the real chat, Agent, Packages, package review and Permissions views in staged states into
+  `screenshots/app/`, with no data from the Mac running it. The README leads with a "What's new in X.Y"
+  section using them, and `Tools/release.sh` refuses a release whose minor version has no such section
+  with a screenshot. README restructured for scanning: bullets, tables, details folded away.
 - **Stuck permissions: Reset, and Xcode builds as their own app.** macOS keeps one Screen Recording
   and one Accessibility permission per app ID, tied to the signature of the copy that was allowed. A
   copy signed differently with the same ID (an Xcode build, an older version) no longer matches: the

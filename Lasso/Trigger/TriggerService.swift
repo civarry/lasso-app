@@ -20,7 +20,7 @@ final class TriggerService {
         }
         KeyboardShortcuts.disable(.cancelCapture)
 
-        // Chat panel: separate global shortcut (default ⌥⌘A). Press again to dismiss.
+        // Chat panel: separate global shortcut (default ⌃⇧A). Press again to dismiss.
         KeyboardShortcuts.onKeyUp(for: .chat) {
             ChatPanelController.shared.toggle()
         }
