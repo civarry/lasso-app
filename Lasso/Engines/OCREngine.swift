@@ -7,6 +7,14 @@ struct OCRLine: Sendable, Identifiable {
     let id = UUID()
     let string: String
     let boundingBox: CGRect
+    /// Each word and its box, when Vision gives them (approximate): lets a table cell that OCR joined
+    /// with its neighbour ("ID Name") be split at the column gap.
+    var words: [OCRWord] = []
+}
+
+struct OCRWord: Sendable {
+    let string: String
+    let boundingBox: CGRect
 }
 
 struct OCRResult: Sendable {
@@ -36,8 +44,26 @@ actor OCREngine {
         lines.reserveCapacity(observations.count)
         for observation in observations {
             guard let candidate = observation.topCandidates(1).first else { continue }
+            var words: [OCRWord] = []
+            let text = candidate.string
+            text.enumerateSubstrings(in: text.startIndex..., options: .byWords) { word, range, _, _ in
+                if let word, let box = candidate.boundingBox(for: range) {
+                    words.append(OCRWord(string: word, boundingBox: box.boundingBox.cgRect))
+                }
+            }
+            // `.byWords` drops punctuation ("(USD)", "75,000"): split by spaces instead when it did.
+            if words.map(\.string).joined(separator: " ") != text.split(separator: " ").joined(separator: " ") {
+                words = []
+                var start = text.startIndex
+                for piece in text.split(separator: " ", omittingEmptySubsequences: true) {
+                    let range = piece.startIndex..<piece.endIndex
+                    if let box = candidate.boundingBox(for: range) { words.append(OCRWord(string: String(piece), boundingBox: box.boundingBox.cgRect)) }
+                    start = piece.endIndex
+                }
+                _ = start
+            }
             lines.append(OCRLine(string: candidate.string,
-                                 boundingBox: observation.boundingBox.cgRect))
+                                 boundingBox: observation.boundingBox.cgRect, words: words))
         }
 
         let ordered = Self.readingOrdered(lines)

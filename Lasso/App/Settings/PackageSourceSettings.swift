@@ -203,6 +203,12 @@ enum PackageHowTo {
         let values = store.settingValues(for: package).values
         let entry = PackageRegistry.Entry(package: package, values: values, secrets: [], ready: true)
         for command in package.commands {
+            // The author's own line says it best when there is one.
+            if let howTo = command.howTo {
+                let symbol = command.surfaces.contains(.toolbar) ? "cursorarrow.click" : "info.circle"
+                add(symbol, howTo)
+                continue
+            }
             for surface in command.surfaces {
                 switch surface {
                 case .search:
@@ -213,9 +219,11 @@ enum PackageHowTo {
                     }
                 case .slash: add("slash.circle", "Type **/\(command.id)** in chat.")
                 case .toolbar:
-                    add("cursorarrow.click", command.when == nil
-                        ? "Lasso something, then click **\(command.title)** in the toolbar."
-                        : "Lasso something it fits, then click **\(command.title)** in the toolbar.")
+                    let when = ActionBarCatalog.whenPhrase(command.when).replacingOccurrences(of: " · ", with: "")
+                    add("cursorarrow.click", command.input.contains(.table)
+                        ? "Lasso a table on screen, then click **\(command.title)** in the toolbar."
+                        : when.isEmpty ? "Lasso something, then click **\(command.title)** in the toolbar."
+                        : "Lasso something, then click **\(command.title)** in the toolbar. It shows \(when).")
                 case .send: add("square.and.arrow.up", "After a capture or a chat reply, choose **Send to › \(command.title)**.")
                 case .hotkey:
                     if let key = KeyboardShortcuts.getShortcut(for: PackageHotkeys.name(package.id, command.id)) {

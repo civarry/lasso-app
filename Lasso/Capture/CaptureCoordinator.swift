@@ -321,6 +321,11 @@ final class CaptureCoordinator {
         if let text = ctx.ocrText, packageWhens.contains(where: \.needsDetection) {
             ctx.packageKinds = await PackageDetection.kinds(in: text)
         }
+        // A table: rows and columns from where the text sits (OCR alone has neither).
+        if let table = TableText.tsv(from: ocrResult.lines, image: crop) {
+            ctx.tableText = table
+            ctx.packageKinds.insert("table")
+        }
         context = ctx
 
         // Direct shortcut: the context is now complete — run the pre-bound action and skip the bar.

@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Agent app: no Dock icon, no app menu (also set via LSUIElement in Info.plist).
         NSApp.setActivationPolicy(.accessory)
+        // One Lasso: the copy in Applications owns updates and the login item.
+        AppLocation.check()
 
         // Drop a pre-IPv4 cached "localhost" Ollama URL so we don't re-hit the refused ::1 socket.
         OllamaEndpoint.migrateDetectedLocalhostToIPv4()

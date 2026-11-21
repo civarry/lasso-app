@@ -196,11 +196,13 @@ struct PackageCommandAction: CaptureAction {
         if let reason = PackageRegistry.shared.unavailableReason(entry, command) { return reason }
         let text = ctx.ocrText ?? ""
         if command.input.contains(.text), text.isEmpty { return "No text in this selection." }
+        if command.input.contains(.table), ctx.tableText == nil { return "Lasso a table: rows and columns." }
         return command.when?.lengthProblem(text)
     }
 
     func perform(_ ctx: CaptureContext) async throws -> ActionResult {
-        let input = PackageInput(text: ctx.ocrText, sourceApp: ctx.sourceApp, sourceBundleID: ctx.sourceBundleID)
+        let input = PackageInput(text: ctx.ocrText, sourceApp: ctx.sourceApp, sourceBundleID: ctx.sourceBundleID,
+                                 table: ctx.tableText)
         if command.output != .markdown {
             StatusHUD.shared.show(icon: "", text: "\(command.title)…", spinner: true)
         }

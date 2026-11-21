@@ -259,6 +259,9 @@ my-package/
   scripts/to-csv.py
 ```
 
+- **A table someone lassoes:** take the `table` input (rows on lines, cells split by tabs) with
+  `"when": {"detects": ["table"]}`; Lasso rebuilds the rows and columns from the capture. Add a `howTo`
+  line so people know what to lasso.
 - **A search script on this Mac** (no `network`) becomes a source: people type **@** and its name in chat,
   or Lasso picks it when a message fits the "What's in it" line they set. It gets their own words in
   `query`; return the files that hold at least two of them, with the lines that hold the most as the

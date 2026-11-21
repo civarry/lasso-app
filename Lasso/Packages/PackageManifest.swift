@@ -51,7 +51,7 @@ struct PackageSetting: Sendable, Equatable {
 
 struct PackageCommand: Sendable, Equatable {
     enum Surface: String, Sendable, CaseIterable { case toolbar, send, slash, tool, search, hotkey }
-    enum Input: String, Sendable, CaseIterable { case text, image, source, query, args }
+    enum Input: String, Sendable, CaseIterable { case text, image, source, query, args, table }
     enum Output: String, Sendable, CaseIterable { case markdown, copy, replace, open, image, file, notify, results }
 
     enum Runner: Sendable, Equatable {
@@ -73,6 +73,8 @@ struct PackageCommand: Sendable, Equatable {
     var testText: String?
     /// The `tool` surface's definition for models.
     var tool: PackageTool? = nil
+    /// The author's one line on how to use it, for "How to use it" (when Lasso's own wording can't say).
+    var howTo: String? = nil
     /// Sample tool arguments for the Test button.
     var testArgs: [String: String] = [:]
 
@@ -141,7 +143,7 @@ struct PackageWhen: Sendable, Equatable {
     var maxLength: Int?
     var hasImage: Bool?
 
-    static let detectable: Set<String> = ["link", "email", "phone", "address", "date", "flight", "tracking", "money"]
+    static let detectable: Set<String> = ["link", "email", "phone", "address", "date", "flight", "tracking", "money", "table"]
 }
 
 /// The `http` runner, as declared. Values are templates (`{{query}}`, `{{settings.key}}`).
@@ -472,7 +474,8 @@ private struct Reader {
     // MARK: Commands
 
     mutating func command(_ o: [String: Any], at path: String, hosts: [String], settings: [PackageSetting]) -> PackageCommand? {
-        onlyKnown(o, ["id", "title", "symbol", "surfaces", "input", "when", "run", "output", "tool", "test"], at: path)
+        onlyKnown(o, ["id", "title", "symbol", "surfaces", "input", "when", "run", "output", "tool", "test", "howTo"], at: path)
+        let howTo = string(o, "howTo", at: path, required: false, length: 1...140)
         let id = string(o, "id", at: path) ?? ""
         if !id.isEmpty, !PackageValidator.matches(id, PackageValidator.commandIDPattern) {
             problem(join(path, "id"), "Lowercase letters, digits and \"-\".")
@@ -503,6 +506,9 @@ private struct Reader {
                     problem("\(path).input[\(i)]", "\"args\" is only for commands whose one surface is \"tool\": elsewhere no model fills them in.")
                 }
                 if input == .query, !isSearch { problem("\(path).input[\(i)]", "\"query\" is only for search commands.") }
+                if input == .table, surfaces != [.toolbar] {
+                    problem("\(path).input[\(i)]", "\"table\" is only for toolbar commands: it comes from a capture.")
+                }
                 inputs.append(input)
             }
         } else if o["input"] != nil { problem(join(path, "input"), "Must be a list.") }
@@ -599,7 +605,7 @@ private struct Reader {
         guard let output else { return nil }
         return PackageCommand(id: id, title: title, symbol: symbol, surfaces: surfaces, input: inputs, output: output,
                               runner: runner, when: when, testQuery: testQuery, testText: testText,
-                              tool: tool, testArgs: testArgs)
+                              tool: tool, howTo: howTo, testArgs: testArgs)
     }
 
     mutating func tool(_ raw: Any, at path: String) -> PackageTool? {

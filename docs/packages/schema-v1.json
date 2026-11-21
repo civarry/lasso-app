@@ -232,7 +232,8 @@
                 "image",
                 "source",
                 "query",
-                "args"
+                "args",
+                "table"
               ]
             }
           },
@@ -255,7 +256,8 @@
                     "date",
                     "flight",
                     "tracking",
-                    "money"
+                    "money",
+                    "table"
                   ]
                 }
               },
@@ -502,6 +504,11 @@
                 "type": "string"
               }
             }
+          },
+          "howTo": {
+            "type": "string",
+            "maxLength": 140,
+            "description": "One line on how to use it, shown in How to use it (Markdown bold allowed)"
           }
         }
       }

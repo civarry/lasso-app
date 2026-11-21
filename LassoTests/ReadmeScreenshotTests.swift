@@ -184,6 +184,17 @@ struct ReadmeScreenshotTests {
         sourcesChat.mention("meeting-notes")
         try await shoot("sources-chat", CGSize(width: 420, height: 560), ChatView().background(Color(white: 0.12)))
 
+        // Table to CSV: how to use it, said plainly.
+        try store.install(Data("""
+            {"lasso": 1, "id": "table-to-csv", "version": "1.1.0", "name": "Table to CSV", "summary": "Turns a table you lasso into a CSV file.",
+             "author": "Lasso", "icon": {"symbol": "tablecells"}, "commands": [{"id": "to-csv", "title": "Table to CSV", "symbol": "tablecells",
+               "surfaces": ["toolbar"], "input": ["table"], "when": {"detects": ["table"]}, "output": "file",
+               "howTo": "Lasso a table on screen (a spreadsheet, a web page, a screenshot), then click **Table to CSV**. The file shows in Finder.",
+               "run": {"script": {"path": "scripts/to-csv.py"}}}]}
+            """.utf8), files: ["scripts/to-csv.py": Data("#!/usr/bin/env python3\n".utf8)], origin: .catalog)
+        try await shoot("table-to-csv", CGSize(width: 520, height: 470),
+                        ScrollView { PackagePage(id: "table-to-csv", localOnly: false, removed: {}) }
+                            .background(SettingsPalette.pageFill))
         // Settings › Privacy › Permissions.
         try await shoot("permissions", CGSize(width: 520, height: 236),
                         Form { PermissionsSection() }.formStyle(.grouped).background(SettingsPalette.pageFill))

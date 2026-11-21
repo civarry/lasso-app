@@ -48,6 +48,8 @@ struct CaptureContext: @unchecked Sendable {
     /// What `when.detects` can match in the text (links, flights, tracking numbers…), filled in by the
     /// pre-pass only when an enabled package asks.
     var packageKinds: Set<String> = []
+    /// The selection as a table (tab-separated rows) when Lasso sees rows and columns, for packages.
+    var tableText: String?
 
     init(
         image: CGImage,

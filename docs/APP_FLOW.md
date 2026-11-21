@@ -887,6 +887,23 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **One Lasso, and tables for packages.** Updates replace the copy that's running, and launch at login
+  opens whichever copy registered it, so a copy run from elsewhere (an Xcode build folder that once had
+  the release app ID, Downloads, the disk image) took the update and the login item, and the next login
+  or Xcode build brought back an older Lasso. `AppLocation.check` at launch (the release ID only): from
+  Applications, it re-registers the login item for itself once per version; from elsewhere, it says so
+  once per copy and version and offers Use the One in Applications / Replace the One in Applications
+  (when this copy is newer) / Move to Applications, then opens that copy and quits. Settings, keys, chats
+  and packages are outside the app, so nothing else changes. Tables: OCR reads every cell as its own
+  line, so a package couldn't see a table (Table to CSV's `\t|\S\s{2,}\S` pattern never matched a
+  capture, so its button never showed). `TableText.tsv` rebuilds rows (cells at the same height) and
+  columns (left edges that line up across rows) from the OCR boxes; a capture with one gets
+  `tableText` and the `table` detection kind. Vision often joins neighbouring cells into one line
+  ("28 Engineering", "ID Name"), and its word boxes are too loose to show the gap, so lines are split
+  where the captured image has a blank strip wider than a space (over 0.55 of the line's height), each
+  word going to the side under its middle; columns are where most rows have text. Checked on a real
+  screenshot of a 7-column table (`LassoTests/Fixtures/dataset-table.png`). New `table` input (toolbar only) and an optional `howTo`
+  line per command, shown first in How to use it. Checked with a rendered table through Lasso's own OCR.
 - **Sources: "list all my notes", and the Agent knowing what a source is.** A message with no words left
   once the source's own name is out ("can you list all my notes?") gets the source's files instead of a
   search: Lasso reads the chosen folder itself (`SourceSearch.inventory`, newest first, up to 60 names),

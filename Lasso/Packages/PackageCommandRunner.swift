@@ -8,6 +8,8 @@ struct PackageInput: Sendable, Equatable {
     var sourceURL: String?
     /// A model's tool arguments, as text (`{{args.<name>}}`).
     var args: [String: String] = [:]
+    /// The capture as a table: tab-separated rows (`table` input).
+    var table: String? = nil
 }
 
 /// What a command produced, before its surface decides what to do with it (show, copy, paste, open).
@@ -49,6 +51,7 @@ enum PackageCommandRunner {
         if command.input.contains(.text), (input.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw RunError.nothingToWorkOn
         }
+        if command.input.contains(.table), (input.table ?? "").isEmpty { throw RunError.unavailable("Lasso a table: rows and columns.") }
         if let why = await PackageRequirements.missing(entry.package) { throw RunError.unavailable(why) }
         switch command.runner {
         case .shortcut(let run):
@@ -109,6 +112,7 @@ enum PackageCommandRunner {
     static func values(_ entry: PackageRegistry.Entry, _ input: PackageInput) -> [String: String] {
         var values = entry.values
         values["source.app"] = input.sourceApp ?? ""
+        values["table"] = input.table ?? ""
         values["source.url"] = input.sourceURL ?? ""
         for (name, value) in input.args { values["args.\(name)"] = value }
         values["language"] = Locale.current.localizedString(forLanguageCode: Locale.current.language.languageCode?.identifier ?? "en") ?? "English"
@@ -204,6 +208,7 @@ extension PackageScript {
                       query: String? = nil) -> Data {
         var out: [String: Any] = ["command": command.id]
         if command.input.contains(.text) { out["text"] = input.text ?? "" }
+        if command.input.contains(.table) { out["table"] = input.table ?? "" }
         if command.input.contains(.source) { out["source"] = ["app": input.sourceApp ?? "", "url": input.sourceURL ?? ""] }
         if command.input.contains(.query) { out["query"] = query ?? "" }
         if command.input.contains(.args) { out["args"] = input.args }

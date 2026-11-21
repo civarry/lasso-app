@@ -197,7 +197,7 @@ enum ActionBarCatalog {
         guard let when else { return "" }
         let names = ["tracking": "a tracking number", "flight": "a flight number", "money": "an amount of money",
                      "link": "a link", "email": "an email address", "phone": "a phone number",
-                     "address": "an address", "date": "a date"]
+                     "address": "an address", "date": "a date", "table": "a table"]
         if let kind = when.detects.first, let name = names[kind] { return " · when there's \(name)" }
         if let min = when.minLength { return " · for text of \(min) characters or more" }
         if when.match != nil { return " · when the text matches a pattern" }
