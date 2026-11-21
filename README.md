@@ -17,23 +17,33 @@
 
 <p align="center"><img src="screenshots/hero.png" alt="Drag a box around anything on screen and translate it in place"></p>
 
-**Jump to:** [What's new](#whats-new-in-023) · [What it does](#what-it-does) · [Chat](#chat) ·
+**Jump to:** [What's new](#whats-new-in-024) · [What it does](#what-it-does) · [Chat](#chat) ·
 [Agent](#agent) · [Packages](#packages) · [Privacy](#privacy) · [Install](#install) ·
 [Updates](#updates) · [AI models](#ai-models) · [Build it](#build-it-yourself)
 
-## What's new in 0.23
+## What's new in 0.24
 
-**Your notes in chat, without the web.** A source on your Mac, like **My notes** (a folder of Markdown
-notes), is no longer part of web search:
+- **Updates stay installed.** If Lasso was started from somewhere other than Applications (an Xcode
+  build folder, Downloads, the disk image), an update could land in that copy and an older Lasso came
+  back at the next login. Lasso now keeps one copy: the one in Applications owns updates and starting at
+  login, and a copy elsewhere offers to replace it or use it instead. Your settings, keys, chats and
+  packages stay as they are.
+- **Packages can read tables.** Lasso sees the rows and columns of a table you lasso, so **Table to CSV**
+  (1.1.0 in Browse) now shows on tables and saves them as a CSV file. Packages can also say in their
+  own words how to use them.
 
-- **Just ask.** Lasso looks in it by itself when a message fits what's in it, and says so: "Looked in My
-  notes · 1 match", with **Answer without it** if it picked wrong.
-- **Or type @** and its name to search it for sure. It stays as a chip for follow-ups.
-- The globe means the web only. Your notes work in local-only mode.
-- With a cloud model, Lasso asks before sending any passage, per source and per company.
-- Every package page starts with **How to use it**.
+<p align="center"><img src="screenshots/app/table-to-csv.png" width="460" alt="Table to CSV's page: how to use it, and that it shows when there's a table"></p>
+
+<details>
+<summary>New in 0.23</summary>
+
+- **Your notes in chat, apart from web search.** Lasso looks in a source on your Mac (like My notes) by
+  itself when a message fits, or when you type **@** and its name. With a cloud model it asks before
+  sending any passage.
 
 <p align="center"><img src="screenshots/app/sources-chat.png" width="420" alt="A chat reply that looked in Meeting Notes, with the file it used and Answer without it"></p>
+
+</details>
 
 <details>
 <summary>New in 0.22</summary>

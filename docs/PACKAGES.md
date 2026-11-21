@@ -193,6 +193,11 @@ package that silently does nothing.
 | `source` | Where it came from, when Lasso knows: the app's name and bundle id, and the page URL in a browser. |
 | `query` | A search query (the `search` surface). |
 | `args` | The model's tool arguments (the `tool` surface). |
+| `table` | A capture's table, when Lasso sees rows and columns (from where each piece of text sits; OCR alone reads every cell as its own line): one row per line, cells separated by tabs. Only for the `toolbar` surface; pair it with `"when": {"detects": ["table"]}` so the button shows only on tables. Lasso 0.24.0 and later. |
+
+A command can also have **`howTo`**: one line (up to 140 characters, `**bold**` allowed) on how to use it,
+shown first on its page and in the review, when Lasso's own wording ("Lasso something, then click…")
+can't say it.
 
 ### Output
 
