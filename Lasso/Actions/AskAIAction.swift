@@ -9,7 +9,8 @@ struct AskAIAction: CaptureAction {
     let intelligence: IntelligenceCoordinator
 
     let id = "ai.ask"
-    let title = "Ask AI"
+    nonisolated static let defaultTitle = "Ask AI"
+    var title: String { PatchState.title(id, default: Self.defaultTitle) }
     let systemImage = "bubble.left.and.bubble.right"
     let relevancePriority = 40
 

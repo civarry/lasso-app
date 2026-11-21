@@ -57,6 +57,17 @@ struct ReadmeScreenshotTests {
         "tool": {"name": "add_task", "description": "Add a task to the user's list.", "args": {"text": "string"}}}]}
     """
 
+    /// A package that only changes Lasso (patches), for the review screenshot.
+    static let writingKit = """
+    {"lasso": 1, "id": "writing-kit", "version": "1.0.0", "name": "Writing Kit", "summary": "Shorter summaries, British spelling, a calmer toolbar.",
+     "author": "Lasso", "icon": {"symbol": "pencil.and.scribble"}, "patches": [
+       {"target": "action.ai.summarize.prompt", "set": "Summarize the text as at most 5 short bullet points. Keep names and numbers exactly as written."},
+       {"target": "action.ai.summarize.title", "set": "Bullets"},
+       {"target": "toolbar.hidden", "add": ["lens.search", "color.pick"]},
+       {"target": "chat.suggestions", "add": {"title": "Make this email shorter"}},
+       {"target": "chat.instructions", "add": "Use British spelling. Keep answers under 150 words unless asked for more."}]}
+    """
+
     @Test func renderTheReadmeScreenshots() async throws {
         // A throwaway package store with a few packages, so nothing of this Mac's shows.
         let name = "lasso-readme-\(UUID().uuidString.prefix(6))"
@@ -79,6 +90,16 @@ struct ReadmeScreenshotTests {
         try await shoot("package-review", CGSize(width: 480, height: 600),
                         AddPackageSheet(dismiss: {}, added: { _ in }, reviewing: nil,
                                         preload: (Data(Self.tasks.replacingOccurrences(of: "\"id\": \"tasks\"", with: "\"id\": \"tasks-2\"").utf8), .file)))
+        // A package that changes Lasso itself, on its page, where another package also changes the
+        // Summarize prompt.
+        try store.install(Data(Self.writingKit.utf8), origin: .file)
+        try store.install(Data("""
+            {"lasso": 1, "id": "plain-english", "version": "1.0.0", "name": "Plain English", "summary": "Simpler words.",
+             "author": "Lasso", "patches": [{"target": "action.ai.summarize.prompt", "set": "Summarize in plain English."}]}
+            """.utf8), origin: .file)
+        try await shoot("package-patches", CGSize(width: 520, height: 840),
+                        ScrollView { PackagePage(id: "writing-kit", localOnly: false, removed: {}) }
+                            .background(SettingsPalette.pageFill))
         // Settings › Privacy › Permissions.
         try await shoot("permissions", CGSize(width: 520, height: 236),
                         Form { PermissionsSection() }.formStyle(.grouped).background(SettingsPalette.pageFill))

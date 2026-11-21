@@ -7,7 +7,8 @@ struct GrammarFixAction: CaptureAction {
     let intelligence: IntelligenceCoordinator
 
     let id = "ai.grammar"
-    let title = "Proofread"
+    nonisolated static let defaultTitle = "Proofread"
+    var title: String { PatchState.title(id, default: Self.defaultTitle) }
     let systemImage = "text.badge.checkmark"
     let relevancePriority = 25
 
@@ -30,7 +31,7 @@ struct GrammarFixAction: CaptureAction {
     /// small/on-device models actually fix them — a bare "fix only, don't restructure" makes them too
     /// timid. Voice/tone/slang are still preserved; only genuine errors change. Shared with the
     /// in-place selected-text flow (`GrammarFixService`).
-    static let prompt = """
+    nonisolated static let prompt = """
     You are an expert grammar correction engine.
 
     Correct every grammar, spelling, punctuation, capitalization, verb-tense, subject-verb agreement, \
@@ -86,7 +87,7 @@ struct GrammarFixAction: CaptureAction {
     /// Append the user's text as the next Input/Output turn so the model *completes the few-shot
     /// pattern* — far more reliable on small models than tacking the text on under a different header.
     static func framedPrompt(for text: String) -> String {
-        "\(prompt)\n\nInput:\n\(text)\nOutput:\n"
+        "\(PatchState.prompt("ai.grammar", default: prompt))\n\nInput:\n\(text)\nOutput:\n"
     }
 
     /// Clean a model's raw correction: drop <think> reasoning, cut any hallucinated continuation of

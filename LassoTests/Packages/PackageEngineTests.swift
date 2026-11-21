@@ -90,8 +90,6 @@ struct PackageValidatorTests {
         #expect(image.contains { $0.contains("can't give commands images yet") }, "\(image)")
         let script = messages(Self.search.replacingOccurrences(of: "\"run\": {\"http\"", with: "\"run\": {\"script\": {}, \"http\""))
         #expect(script.contains("commands[0].run.script: This version of Lasso can't run \"script\" commands yet."))
-        let patches = messages(Self.search.replacingOccurrences(of: "\"hosts\":", with: "\"patches\": [], \"hosts\":"))
-        #expect(patches.contains("patches: This version of Lasso can't apply patches yet."))
     }
 
     @Test func minLasso() {

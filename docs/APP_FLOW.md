@@ -726,14 +726,22 @@ flowchart LR
   ChatP & Agent -->|"PackageToolCall"| Ask{"acts? (not markdown,<br/>or http not GET)"}
   Ask -->|no| Run[run, answer fenced, 4,000 chars]
   Ask -->|yes| Card["Lasso's card in the reply:<br/>Allow / Deny (Stop, 280 s = Deny)"] -->|Allow| Run
+  subgraph Patches["Package patches (Lasso's own content)"]
+    Apply["AppliedPatches.apply: enabled packages in patch order<br/>(newest last, Use This One moves one last);<br/>later set wins, adds accumulate; nothing saved"]
+  end
+  Review --> Apply
+  Apply -->|"PatchState: prompts, titles"| Actions["Summarize / Proofread prompts,<br/>action names everywhere"]
+  Apply -->|"defaults only: the user's<br/>Settings › Toolbar choices win"| Bar[capture toolbar order and … menu]
+  Apply -->|"suggestions; instructions after Lasso's own"| ChatP
 ```
 
 Files: `Intelligence/Connectors.swift` (built-in Web search only), `WebSourcesProvider.swift`
 (`WebSearchSource`, `IdentifySources`), `Packages/` (`PackageManifest` validator, `PackageTemplate`,
 `PackageHTTP`, `PackageStore` + `PackageRegistry`, `PackageSearch`, `PackageMigration`, `Bundled/`),
 `App/Settings/PackagesSettings.swift`, `SearchCache`, `SearchQuota`, `DomainNoise`, `Keychain`. The
-format is `docs/PACKAGES.md` (build steps 1 to 3 of 6 are built; tools in `PackageTools.swift`); authors use `docs/CONTRIBUTING-PACKAGES.md`
-and `docs/packages/schema-v1.json`.
+format is `docs/PACKAGES.md` (build steps 1 to 3 and 5 of 6 are built; tools in `PackageTools.swift`,
+patches in `PackagePatches.swift` with `App/Settings/PackageChangesCard.swift`); authors use
+`docs/CONTRIBUTING-PACKAGES.md`, `docs/packages/schema-v1.json` and `docs/patch-targets.md` (generated).
 
 **Privacy invariant:** `privacy.localOnly` (PrivacyMode) gates **every** off-device path at the source
 — web connectors pause, the Lens button/action hides, favicons don't load. Local-only = zero
@@ -855,6 +863,24 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Packages, build step 5: patches** (ahead of step 4, which it doesn't need). A package's `patches`
+  (up to 50; a package can be only patches) change Lasso's own content: the Summarize and Proofread
+  prompts (instructions only: the selected text still follows, so no `{{…}}`), the nine built-in action
+  names (`title` is now computed from `PatchState`, so the bar, menus, Settings and hotkey lists all
+  follow), `toolbar.order` and `toolbar.hidden`, `chat.suggestions` (at most 6 show; built-in ones keep
+  their actions by title) and `chat.instructions` (≤ 500 characters, appended after the chat system
+  prompt under "Added by packages the user installed"). `PackageStore.reload` applies every enabled
+  package's patches in the patch order (preferences `packages.patchOrder`, newest install last;
+  **Use This One** on a package's page moves it last) into `AppliedPatches`, mirrored into the
+  thread-safe `PatchState`. Nothing is written into the user's settings, so off or remove is an exact
+  undo. Toolbar patches are defaults only: `ActionBarPreferences.effectiveOrder` uses a package's order
+  only while the user has none, and `hidden` uses a package's set until the user saves one (saving
+  Settings › Toolbar with the hidden set untouched doesn't save it). The review and the package page
+  show "What it changes in Lasso" (prompts with Before and After on request, chat instructions in full,
+  New/Changed/No longer on updates, who's used where two packages set the same thing); a package row
+  says "Partly replaced by …". Not patchable, and why, in `docs/PACKAGES.md` (sounds, theme colours,
+  wording, the Translate, Identify and Ask AI prompts). `docs/patch-targets.md` is generated from
+  `PatchTargets` and a test fails when it's stale; another validates every package in the authors' guide.
 - **README screenshots for every release.** `ReadmeScreenshotTests` (opt-in, `LASSO_README_SHOTS`) renders
   the real chat, Agent, Packages, package review and Permissions views in staged states into
   `screenshots/app/`, with no data from the Mac running it. The README leads with a "What's new in X.Y"

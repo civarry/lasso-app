@@ -486,14 +486,49 @@
         ],
         "properties": {
           "target": {
-            "type": "string"
+            "enum": [
+              "action.ai.summarize.prompt",
+              "action.ai.grammar.prompt",
+              "action.ocr.copy.title",
+              "action.translate.title",
+              "action.ai.grammar.title",
+              "action.ai.summarize.title",
+              "action.ai.ask.title",
+              "action.qr.open.title",
+              "action.color.pick.title",
+              "action.identify.title",
+              "action.lens.search.title",
+              "toolbar.order",
+              "toolbar.hidden",
+              "chat.suggestions",
+              "chat.instructions"
+            ],
+            "description": "What to change. The list with Lasso's own values is in docs/patch-targets.md."
           },
           "set": {},
           "add": {},
           "remove": {}
         },
-        "additionalProperties": false
-      }
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "set"
+            ]
+          },
+          {
+            "required": [
+              "add"
+            ]
+          },
+          {
+            "required": [
+              "remove"
+            ]
+          }
+        ]
+      },
+      "minItems": 1
     }
   },
   "anyOf": [

@@ -51,7 +51,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .toolbar: "Choose which actions appear and in what order."
         case .models: "The AI models Lasso uses for text, images and memory."
         case .agent: "Lets chat search the web, read files and run commands."
-        case .packages: "Add search services, buttons and commands to Lasso from a file or pasted code."
+        case .packages: "Add search services, buttons and commands, or change Lasso's own prompts and toolbar, from a file or pasted code."
         case .privacy: "Control what leaves your Mac."
         }
     }
@@ -169,7 +169,7 @@ struct SettingsSearchEntry: Identifiable, Hashable {
         .init(label: "Use my own Hermes", pane: .agent, route: .ownHermes, keywords: ["gateway", "api key", "address"]),
         .init(label: "Local-only mode", pane: .privacy, route: nil, keywords: ["offline", "network", "privacy"]),
         .init(label: "Web search", pane: .packages, route: nil, keywords: ["internet", "grounding", "connector", "wikipedia", "duckduckgo"]),
-        .init(label: "Add a package", pane: .packages, route: nil, keywords: ["plugin", "install", "extension", "connector", "tavily", "serpapi", "brave"]),
+        .init(label: "Add a package", pane: .packages, route: nil, keywords: ["plugin", "install", "extension", "connector", "tavily", "serpapi", "brave", "patch", "mod", "prompt", "customize"]),
         .init(label: "Search with Lens", pane: .privacy, route: nil, keywords: ["google", "reverse image"]),
         .init(label: "Search API keys", pane: .packages, route: nil, keywords: ["tavily", "serpapi", "api key"]),
         .init(label: "Clear chat history", pane: .privacy, route: nil, keywords: ["delete", "conversations"]),

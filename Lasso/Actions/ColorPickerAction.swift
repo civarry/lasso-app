@@ -4,7 +4,8 @@ import SwiftUI
 /// (Spec §11.1). Trivial given we already hold the frozen `CGImage`.
 struct ColorPickerAction: CaptureAction {
     let id = "color.pick"
-    let title = "Pick color"
+    nonisolated static let defaultTitle = "Pick color"
+    var title: String { PatchState.title(id, default: Self.defaultTitle) }
     let systemImage = "eyedropper"
     let relevancePriority = 50
 

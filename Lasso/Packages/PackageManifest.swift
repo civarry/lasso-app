@@ -17,6 +17,8 @@ struct LassoPackage: Sendable, Equatable {
     var limits: PackageLimits?
     var minLasso: String?
     var commands: [PackageCommand]
+    /// Edits to Lasso's own content (spec, "Patches").
+    var patches: [PackagePatch] = []
 
     func setting(_ id: String) -> PackageSetting? { settings.first { $0.id == id } }
     func command(_ id: String) -> PackageCommand? { commands.first { $0.id == id } }
@@ -351,7 +353,7 @@ private struct Reader {
             }
         }
         if root["requires"] != nil { problem("requires", "This version of Lasso can't run scripts yet.") }
-        if root["patches"] != nil { problem("patches", "This version of Lasso can't apply patches yet.") }
+        let patches = root["patches"].map { PackagePatch.read($0, problem: { self.problem($0, $1) }) } ?? []
 
         var commands: [PackageCommand] = []
         if let raw = root["commands"] {
@@ -372,7 +374,8 @@ private struct Reader {
 
         return LassoPackage(id: id, version: version, name: name, summary: summary, author: author,
                             homepage: homepage, iconSymbol: iconSymbol, iconDomain: iconDomain, category: category,
-                            hosts: hosts, settings: settings, limits: limits, minLasso: minLasso, commands: commands)
+                            hosts: hosts, settings: settings, limits: limits, minLasso: minLasso, commands: commands,
+                            patches: patches)
     }
 
     // MARK: Settings
