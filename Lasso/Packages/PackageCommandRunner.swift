@@ -195,3 +195,32 @@ extension PackageWhen {
         return found
     }
 }
+
+/// A script's input from an installed package (`PackageScript` itself doesn't know the registry, so
+/// `lasso-pkg` can run scripts too).
+extension PackageScript {
+    /// The standard-input JSON: only the inputs the command declares, and non-secret settings.
+    static func stdin(_ entry: PackageRegistry.Entry, _ command: PackageCommand, input: PackageInput,
+                      query: String? = nil) -> Data {
+        var out: [String: Any] = ["command": command.id]
+        if command.input.contains(.text) { out["text"] = input.text ?? "" }
+        if command.input.contains(.source) { out["source"] = ["app": input.sourceApp ?? "", "url": input.sourceURL ?? ""] }
+        if command.input.contains(.query) { out["query"] = query ?? "" }
+        if command.input.contains(.args) { out["args"] = input.args }
+        var settings: [String: String] = [:]
+        for setting in entry.package.settings where setting.kind != .secret {
+            settings[setting.id] = entry.values["settings.\(setting.id)"] ?? ""
+        }
+        out["settings"] = settings
+        return (try? JSONSerialization.data(withJSONObject: out, options: [.sortedKeys])) ?? Data("{}".utf8)
+    }
+
+    static func secrets(_ entry: PackageRegistry.Entry) -> [String: String] {
+        var out: [String: String] = [:]
+        for setting in entry.package.settings where setting.kind == .secret {
+            out["LASSO_SECRET_\(setting.id.uppercased())"] = entry.values["settings.\(setting.id)"] ?? ""
+        }
+        return out
+    }
+
+}

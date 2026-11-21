@@ -3,7 +3,7 @@ import SwiftUI
 /// Copy recognized text from the selection to the pasteboard.
 struct OCRCopyAction: CaptureAction {
     let id = "ocr.copy"
-    nonisolated static let defaultTitle = "Copy text"
+    nonisolated static let defaultTitle = BuiltInContent.Title.copyText
     var title: String { PatchState.title(id, default: Self.defaultTitle) }
     let systemImage = "text.viewfinder"
     let relevancePriority = 10

@@ -51,7 +51,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .toolbar: "Choose which actions appear and in what order."
         case .models: "The AI models Lasso uses for text, images and memory."
         case .agent: "Lets chat search the web, read files and run commands."
-        case .packages: "Add search services, buttons and commands, or change Lasso's own prompts and toolbar, from a file or pasted code."
+        case .packages: "Add search sources, buttons, commands and scripts, or change Lasso's own prompts and toolbar, from the catalog or a file."
         case .privacy: "Control what leaves your Mac."
         }
     }
@@ -284,6 +284,15 @@ enum SettingsWindow {
     /// The Settings window, once SwiftUI has made it.
     @MainActor static var window: NSWindow? {
         NSApp.windows.first { ($0.identifier?.rawValue ?? "").hasPrefix(id) && $0.isVisible }
+    }
+
+    /// The window opener, kept from the menu bar's view: a `lasso://` link arrives in the app delegate,
+    /// which has no SwiftUI environment to open a window with.
+    @MainActor static var opener: OpenWindowAction?
+
+    /// Opens Settings from outside SwiftUI (a link).
+    @MainActor static func openFromAnywhere() {
+        if let opener { open(with: opener) } else { bringForward() }
     }
 
     @MainActor static func bringForward() {

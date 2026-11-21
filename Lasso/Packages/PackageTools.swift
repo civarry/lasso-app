@@ -6,13 +6,6 @@ import Foundation
 /// wherever a model calls them.
 
 extension PackageTool {
-    /// A JSON number or boolean as template text: `3`, `2.5`, `true`.
-    static func text(_ number: NSNumber) -> String {
-        if CFGetTypeID(number) == CFBooleanGetTypeID() { return number.boolValue ? "true" : "false" }
-        let double = number.doubleValue
-        return double == double.rounded() && abs(double) < 1e15 ? String(Int(double)) : String(double)
-    }
-
     /// JSON Schema for the arguments (all required), for OpenAI, Anthropic, Ollama and MCP alike.
     var inputSchema: [String: Any] {
         var properties: [String: Any] = [:]

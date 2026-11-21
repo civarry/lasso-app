@@ -115,6 +115,13 @@ struct PackageTool: Sendable, Equatable {
     var args: [Arg]
 
     static let namePattern = "[a-z][a-z0-9_]{0,39}"
+
+    /// A JSON number or boolean as template text: `3`, `2.5`, `true`.
+    static func text(_ number: NSNumber) -> String {
+        if CFGetTypeID(number) == CFBooleanGetTypeID() { return number.boolValue ? "true" : "false" }
+        let double = number.doubleValue
+        return double == double.rounded() && abs(double) < 1e15 ? String(Int(double)) : String(double)
+    }
     static let maxArgs = 6
     static let maxDescription = 200
 }
