@@ -9,211 +9,224 @@
   <a href="../../actions/workflows/ci.yml"><img src="https://github.com/civarry/lasso-app/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 </p>
 
-> [!NOTE]
-> **Lasso is now open source.** The full source code lives right here under the [Apache 2.0 license](LICENSE). Download the app from [Releases](../../releases) as before, or [build it yourself](BUILDING.md) on your own Mac, no Apple developer account needed.
+**Draw a box around anything on your screen, then copy it, translate it, or ask AI about it.**
 
-Lasso is a little menu-bar app for Apple Silicon Macs. Hit a hotkey, the screen
-freezes, you drag a box around anything on it, and a small toolbar pops up with
-things you can do — copy the text, translate it, ask an AI about it, figure out
-what an object is, scan a QR code, grab a color.
-
-Native to the Mac and **local by default**:
-nothing leaves your machine unless you decide it should.
+- A menu-bar app for Apple Silicon Macs.
+- **Local by default:** nothing leaves your Mac unless you turn it on.
+- Open source ([Apache 2.0](LICENSE)). [Download it](../../releases/latest) or [build it yourself](BUILDING.md).
 
 <p align="center"><img src="screenshots/hero.png" alt="Drag a box around anything on screen and translate it in place"></p>
 
-## What you can do with a selection
+**Jump to:** [What's new](#whats-new-in-019) · [What it does](#what-it-does) · [Chat](#chat) ·
+[Agent](#agent) · [Packages](#packages) · [Privacy](#privacy) · [Install](#install) ·
+[Updates](#updates) · [AI models](#ai-models) · [Build it](#build-it-yourself)
 
-- **Copy text** — OCR pulls the words straight out of the image.
-- **Translate in place** — each paragraph, label and list item gets its
-  translation drawn right over it, coloured to match the page. A view mixing
-  languages (English and Japanese, say) translates both. Apple's on-device
-  translation appears first; an optional AI pass then retranslates the whole
-  selection with context, Filipino included.
-- **Summarize / Ask AI** — summarize the selection or ask anything about it; if
-  it's a textless image, the AI actually looks at the picture.
-- **Identify** — point it at an object, product, place, or screenshot and it
-  tells you what it is, with sources and a confidence rating.
-- **Scan QR / barcodes**, and **pick a color** from any pixel.
-- **Search with Lens** — send the selection to Google Lens for a reverse image
-  search. Opt-in, and hidden entirely in Local-only mode.
+## What's new in 0.19
+
+**Packages can give the chat model and the Agent new tools.** A model can now look things up
+or do things through a package, like converting money or adding a task.
+
+- Tools that only look something up run straight away.
+- Tools that **do** something (send data, copy, open a page) ask you first. Deny, and nothing runs.
+
+<p align="center"><img src="screenshots/app/chat-tools.png" width="420" alt="The chat model used a currency tool, then asks before adding a task"></p>
+
+**Choose which tools models get** in Settings › Packages › Tools for models.
+
+<p align="center"><img src="screenshots/app/packages.png" width="460" alt="Settings › Packages with search, commands and the Tools for models list"></p>
+
+**Stuck permission? One click.** If Lasso is switched on in Screen Recording but still can't
+capture, Settings › Privacy › Permissions › **Reset** fixes it (0.19.1).
+
+<p align="center"><img src="screenshots/app/permissions.png" width="460" alt="Settings › Privacy › Permissions with a Reset button"></p>
+
+## What it does
+
+Press **⌃⇧C**, drag a box, and pick what to do:
+
+| Action | What happens |
+|---|---|
+| **Copy text** | Pulls the words out of the picture. |
+| **Translate** | Draws the translation right over the original, in place. Mixed languages work. |
+| **Summarize / Ask AI** | Summarizes it, or answers your question about it. Works on pictures too. |
+| **Identify** | Tells you what an object, product or place is, with sources. |
+| **Scan code** | Reads QR codes and barcodes. |
+| **Pick color** | Grabs the color of any pixel. |
+| **Search with Lens** | Sends it to Google Lens. Off until you turn it on. |
 
 <p align="center"><img src="screenshots/actions.png" alt="The full set of things Lasso can do with a selection"></p>
 
-## Your toolbar, your keys
+**Make it yours:**
 
-The toolbar follows the order you set, not what Lasso guesses is relevant, so the
-two things you actually use stay where you expect them even when the selection
-happens to contain a QR code or a color. Switch an action off and it moves into
-the toolbar's "…" menu rather than disappearing.
+- The toolbar keeps **your** order. Turned-off actions move to the "…" menu.
+- Give any action its own hotkey to skip the toolbar. Nothing is bound until you choose.
+- Identify and Lens can also grab the whole screen.
 
-Every action can also have its own hotkey that starts a capture and runs just
-that action, skipping the toolbar entirely. Identify and Google Lens additionally
-have a full-screen variant that grabs the whole display. Nothing is bound by
-default; you pick the keys in Settings.
+<details>
+<summary>More about Translate and Identify</summary>
 
-## Identify
+- **Translate:** Apple's on-device translation shows first. An optional AI pass then retranslates the
+  whole selection with context (Filipino included).
+- **Identify:** a local vision model names the thing, then writes a short answer with sources and a
+  confidence rating. Repeat lookups are instant.
 
 <p align="center"><img src="screenshots/identify.png" alt="Identify names what you point at and writes a short, sourced answer"></p>
 
-A local vision model names it, then writes a short, sourced answer with a
-confidence rating. Repeat lookups are instant.
+</details>
 
 ## Chat
 
-<p align="center"><img src="screenshots/chat.png" alt="A persistent chat panel that remembers the thread and grounds answers with sources"></p>
+A chat panel that stays open (**⌃⇧A**) and remembers the conversation.
 
-A persistent chat panel that remembers the thread, takes any file you attach or
-drop (images, text, PDFs, code; the model gets what it can use), and
-grounds its answers with real sources when you want. Click the mic to talk
-instead of typing: English speech recognition on your Mac, with words appearing
-at the cursor as you speak. It stops by itself when you've finished: soon
-after a complete sentence, and it waits longer if you trail off on "and",
-"so", "um" or a comma. When you stop, Lasso tidies what you said on your
-Mac (ums, filler words, repeats, small grammar fixes) without changing your
-words, and one Undo brings back exactly what you said. You can turn the
-cleanup off in Settings.
+- **Attach anything:** images, text, PDFs, code. Drop files in, or send a capture to chat.
+- **Sources:** answers can be grounded in web results, with links.
+- **Talk instead of type:** click the mic. Lasso stops listening when you finish, tidies the
+  "ums" on your Mac, and one Undo restores exactly what you said.
 
-**Agent (optional, experimental).** Turn on **Agent** in the chat's message
-box and the chat can take actions: search the web, read files, run commands,
-showing each step as it goes. It's powered by
-[Hermes Agent](https://github.com/NousResearch/hermes-agent), which you install
-once (`brew install hermes-agent`); you don't need to set Hermes up. Lasso
-gives it a fresh profile of its own (your own Hermes settings, keys and any
-running gateway stay untouched and aren't used), starts it when you use Agent,
-and stops it when Lasso quits. It works in `~/LassoWorkspace`: its commands
-start there and the files it makes go there (Settings ▸ Agent ▸ Show in
-Finder). It can also see: it can look at your whole screen, ask you to drag
-around the part you mean, or read an image file, getting back the text in it
-and a description from your image model, so even a text-only model can work
-with what's on screen. To keep each request small, Lasso gives it only the
-Hermes tools that are useful here (commands, files, the web and its memory),
-which roughly halves what a local model reads before the first reply. The
-agent thinks with the model you picked in
-Lasso and nothing else, side tasks included. An MLX model is served to it by
-Lasso on your Mac (the first reply takes a while as the model reads the agent's
-setup, later ones are quick). Apple Intelligence can't drive the agent, so with
-it selected Agent says so instead of using another model. When
-Hermes flags a risky command, Lasso shows it and waits for you to allow or deny
-it. Settings ▸ Agent has a switch to let Hermes decide those
-itself instead (every reply then says it's on), and an advanced option to use
-a Hermes you run yourself, which Lasso only accepts with `approvals.mode:
-manual`. The agent uses cloud models and the web, so it's unavailable in
-Local-only mode.
+<p align="center"><img src="screenshots/chat.png" alt="A chat panel that remembers the thread and grounds answers with sources"></p>
+
+## Agent
+
+*Optional and experimental.* Turn on **Agent** in the chat box and the chat can **do things**:
+search the web, read and write files, run commands. You see every step.
+
+<p align="center"><img src="screenshots/app/agent.png" width="420" alt="The Agent shows its steps and waits before a risky command"></p>
+
+- **Asks before risky commands.** You allow once, allow for this chat, or deny.
+- **Can see your screen:** it can look at the screen, ask you to drag around a part, or read an image.
+- **Works in `~/LassoWorkspace`.** Its files go there (Settings › Agent › Show in Finder).
+- **Uses only the model you picked in Lasso.** Not available in local-only mode.
+- Needs [Hermes Agent](https://github.com/NousResearch/hermes-agent): `brew install hermes-agent`.
+  Lasso sets it up for you.
+
+<details>
+<summary>How the Agent is set up</summary>
+
+- Lasso gives Hermes a fresh profile of its own. Your own Hermes settings, keys and gateway aren't
+  touched or used.
+- Lasso starts it when you use Agent and stops it when Lasso quits.
+- It gets only the Hermes tools useful here (commands, files, the web, memory), which roughly halves
+  what a local model reads before its first reply.
+- An MLX model is served to it by Lasso on your Mac. The first reply is slow while the model reads the
+  setup; later ones are quick.
+- Apple Intelligence can't drive the Agent. With it selected, Agent says so instead of switching models.
+- Settings › Agent can let Hermes approve risky commands itself (every reply then says it's on), or use
+  a Hermes you run yourself, which must have `approvals.mode: manual`.
+
+</details>
 
 ## Packages
 
-Add search services to Lasso without changing its code. A package is a small JSON file that describes
-a web service: what to send, where, and where the results are in the answer. In **Settings ›
-Packages**, click **+** and drop the file in, choose it, or paste its text. Tavily and SerpApi are
-built in under **+**, and a key you'd already saved for them moves over by itself. Before anything is
-added, Lasso shows what it reaches ("Sends your searches to api.tavily.com"), what key it needs and its
-limits; keys stay in your Keychain and go only to that package's hosts. Each package has its own page
-with its key, how much of its free tier you've used, and a Test button. Local-only mode pauses packages
-that reach off your Mac.
+**Add features to Lasso with a small file, no coding in Lasso needed.** In Settings › Packages,
+click **+** and drop the file in, choose it, or paste it.
 
-Packages can also add commands: a button in the capture toolbar, a `/command` in chat, a "Send to"
-target on captures and chat replies, a hotkey that runs on text highlighted in any app (and can
-paste the result back over it), or a tool the chat model and the Agent can use. A command runs a
-prompt on the model you chose in Lasso, never another one, or calls a web service. Tools are offered
-to the chat model when it can call tools (Ollama and cloud models; with Apple Intelligence or MLX,
-only the Agent gets them), and their descriptions share a 1,500-character budget so a local model
-isn't slowed down; Settings › Packages › Tools for models chooses which are offered. When a model
-wants to run one that does something (copies, notifies, opens a page, or sends data), Lasso shows
-what it will run with what and waits for you to allow it. Shortcuts and scripts are planned in
-the same format: [`docs/PACKAGES.md`](docs/PACKAGES.md) is the
-full design, and [`docs/CONTRIBUTING-PACKAGES.md`](docs/CONTRIBUTING-PACKAGES.md) shows how to make
-one, with a working example, the rules Lasso checks, and a JSON Schema for your editor.
+<p align="center"><img src="screenshots/app/package-review.png" width="440" alt="The review Lasso shows before adding a package"></p>
+
+A package can add:
+
+- **Web search sources** (Tavily and SerpApi are built in).
+- **Toolbar buttons** on captures, shown only when they fit (a tracking number, a flight, long text…).
+- **`/commands`** in chat.
+- **"Send to" targets** on captures and chat replies.
+- **Hotkeys** for text you highlight in any app, with the result pasted back.
+- **Tools** for the chat model and the Agent (new in 0.19).
+
+**You stay in control:**
+
+- Before adding, Lasso shows what it does and where it sends data.
+- Keys stay in your Keychain and only go to that package's servers.
+- A command uses **your** chosen model, never another one.
+- Local-only mode pauses packages that reach off your Mac.
+
+Make your own: [`docs/CONTRIBUTING-PACKAGES.md`](docs/CONTRIBUTING-PACKAGES.md) has an example and the
+rules. The full design is in [`docs/PACKAGES.md`](docs/PACKAGES.md).
 
 ## Privacy
 
-Out of the box everything runs on your Mac — text via **Apple Intelligence**,
-vision and ranking via a local **Ollama** model. The only things that leave your
-Mac are the optional web lookup in Identify, the optional Google Lens search
-(both off until you turn them on), and the update check, which asks GitHub for
-the latest version a few times a day and sends nothing but Lasso's version.
-There's a **Local-only mode** that forces a local model and blocks every
-incidental network call. Cloud models (OpenAI, Groq, Anthropic, custom) are
-supported too, but strictly opt-in. API keys live in your macOS Keychain, encrypted,
-all in one item. Lasso isn't signed with an Apple developer ID, so macOS ties that
-item to each version: after an update it asks for your password once (choose
-Always Allow), not once per key.
+<p align="center"><img src="screenshots/privacy.png" alt="Runs on your Mac. Nothing leaves unless you say so"></p>
 
-<p align="center"><img src="screenshots/privacy.png" alt="Runs on your Mac — nothing leaves unless you say so"></p>
+- **Runs on your Mac** out of the box: Apple Intelligence for text, a local Ollama model for images.
+- **Leaves your Mac only if you turn it on:** Identify's web lookup, Google Lens, cloud models.
+- **Update check:** asks GitHub for the latest version a few times a day. Sends only Lasso's version.
+- **Local-only mode** blocks every network call except your local model.
+- **Keys** are encrypted in your Keychain, all in one item. After an update, macOS asks for your
+  password once (choose **Always Allow**).
 
 ## Install
 
-1. Download the **`.dmg`** from the [Releases](../../releases) page.
-2. Open it and drag **Lasso** to Applications.
-3. First launch: open Lasso. macOS says it can't verify the developer, which is
-   expected because the build isn't notarized. Click **Done**, then go to System
-   Settings → Privacy & Security, click **Open Anyway** next to Lasso, and confirm.
-   You only do this once.
-4. Grant **Screen Recording** in System Settings → Privacy & Security, then
-   relaunch. The capture shortcut defaults to **⌃⇧C** (changeable in Settings).
+1. Download the **`.dmg`** from [Releases](../../releases/latest).
+2. Drag **Lasso** to Applications.
+3. Open Lasso. macOS says it can't verify the developer (expected: it isn't notarized).
+   Click **Done**, then System Settings › Privacy & Security › **Open Anyway**. Only once.
+4. Turn on **Screen Recording** for Lasso in System Settings › Privacy & Security, then reopen Lasso.
+
+Capture with **⌃⇧C** (change it in Settings).
+
+**Needs:** an Apple Silicon Mac on **macOS 26+**. For local AI, install [Ollama](https://ollama.com)
+and pull a model or two (`ollama pull qwen3:4b`, `ollama pull qwen3-vl:2b`). Apple Intelligence needs
+no setup.
 
 ## Updates
 
-From 0.16.0, Lasso updates itself. It checks for a new version every few hours,
-downloads it in the background, and installs it the next moment it's idle (no
-capture on screen, no chat reply coming in), then relaunches. No more
-downloading the DMG for each release. Settings → About → Updates turns either
-step off, and the menu bar has **Check for Updates…**. Local-only mode stops the
-checks.
+Lasso **updates itself**: it downloads in the background and installs when you're not using it.
+Change this in Settings › General › Software Update, or use **Check for Updates…** in the menu bar.
 
-An update installs only if it's signed with Lasso's update key, so a tampered
-download is rejected. Releases from 0.16.0 on are also signed with one
-long-lived certificate, so macOS keeps your Screen Recording and microphone
-permissions across updates. Coming from 0.15.x or earlier, install 0.16.0 from
-the DMG once and grant those permissions again; after that it's automatic. If
-Lasso is on in Screen Recording but still asks, another copy of Lasso holds the
-permission: Settings → Privacy → Permissions → **Reset** clears it.
+<details>
+<summary>Updates and permissions, in detail</summary>
 
-## Requirements
+- An update installs only if it's signed with Lasso's update key, so a tampered download is rejected.
+- Since 0.16.0 every release uses the same certificate, so macOS keeps your Screen Recording and
+  microphone permissions across updates. Coming from 0.15.x or earlier? Install 0.16.0 or later from
+  the DMG once and allow them again.
+- On in Screen Recording but Lasso still asks? Another copy of Lasso holds the permission.
+  Settings › Privacy › Permissions › **Reset** clears it.
+- Local-only mode stops update checks.
 
-Apple Silicon Mac on **macOS 26+**. For the local AI paths, install
-[Ollama](https://ollama.com) and pull a model or two
-(`ollama pull qwen3:4b`, `ollama pull qwen3-vl:2b`). Apple Intelligence works
-with no setup.
+</details>
 
-## AI providers
+## AI models
 
-Pick where the thinking happens in **Settings → Models**:
+Pick in **Settings › Models**:
 
-- **Apple Intelligence**: on your Mac, no setup. The default.
-- **Ollama** or **MLX**: local models, still entirely on your Mac. MLX models can be downloaded in
-  Settings, or used straight from a folder you already have (`~/models`, LM Studio).
-- **Cloud**: any OpenAI-compatible service (OpenAI, Groq, OpenRouter, a custom URL), Google Gemini, or
-  Anthropic. Add as many connections as you like; their models all appear in one picker.
+- **Apple Intelligence:** on your Mac, no setup. The default.
+- **Ollama or MLX:** local models, still on your Mac. MLX models download in Settings or load from a
+  folder you have (`~/models`, LM Studio).
+- **Cloud:** OpenAI-compatible services (OpenAI, Groq, OpenRouter, your own URL), Google Gemini,
+  Anthropic. Opt-in.
 
-**Free-model fallback** (off by default): if your cloud model is rate limited or down, Lasso retries on
-a free model from the connections you allow, then on Apple's on-device model. It never runs in
-local-only mode. The full rules are in [docs/APP_FLOW.md](docs/APP_FLOW.md).
+**Free-model fallback** (off by default): if your cloud model is rate limited or down, Lasso retries
+on a free model you allowed, then on Apple's on-device model. Never in local-only mode.
+Details: [docs/APP_FLOW.md](docs/APP_FLOW.md).
+
+<details>
+<summary>Good to know</summary>
+
+- If Apple Intelligence is off on your Mac, AI actions use a local model if you set one up. Copy,
+  translate and the rest keep working.
+- Protected windows (Netflix, some banking apps) capture as blank on purpose. Lasso doesn't get around
+  that.
+- Google Lens picks its results' language from your region.
+- Reverse-image search in Identify is opt-in and uses your own Google Cloud Vision key.
+
+</details>
 
 ## Build it yourself
 
-Lasso is open source. Building your own copy needs an Apple Silicon Mac on macOS
-26+, Xcode 26+ and XcodeGen, but no Apple developer account, and a copy you build
-yourself skips the "can't verify the developer" step entirely. See
-[BUILDING.md](BUILDING.md) for the steps.
+You need an Apple Silicon Mac on macOS 26+, Xcode 26+ and XcodeGen. No Apple developer account.
+Steps: [BUILDING.md](BUILDING.md).
 
-## How it's put together
+<details>
+<summary>How it's put together</summary>
 
-Each feature is a `CaptureAction` (see `Lasso/Actions/`) — adding one is a single file plus a line in
-`ActionRegistry`. OCR, barcode, and data detection run as `actor`s; capture and UI stay on the main
-actor. The AI side sits behind an `IntelligenceProvider` protocol so providers (Apple, Ollama, MLX,
-OpenAI-compatible, Anthropic) are interchangeable. Extra search sources are **packages** (below), not
-code. There's a fuller writeup in [`Lasso-macOS-Spec.md`](Lasso-macOS-Spec.md).
+- Each feature is a `CaptureAction` (`Lasso/Actions/`): one file plus a line in `ActionRegistry`.
+- OCR, barcodes and data detection run as `actor`s; capture and UI stay on the main actor.
+- AI providers sit behind one `IntelligenceProvider` protocol, so Apple, Ollama, MLX,
+  OpenAI-compatible and Anthropic are interchangeable.
+- Search sources and commands are packages, not code.
+- The README's app screenshots are rendered from the real views by `ReadmeScreenshotTests`.
+- Fuller writeups: [`Lasso-macOS-Spec.md`](Lasso-macOS-Spec.md) and [docs/APP_FLOW.md](docs/APP_FLOW.md).
 
-## Good to know
-
-- **Reverse-image search** in Identify is opt-in and brings your own key (Google Cloud Vision). The
-  **Google Lens** action is a separate, keyless way to get real visual matches — also opt-in, since it
-  uploads to Google. (Google Lens shows results in whatever language it infers from your region.)
-- **Apple Intelligence** has to be enabled on your Mac for the on-device path; if it's off, AI actions
-  fall back to a local model (if one's set up) while OCR, translate, and the rest keep working.
-- DRM/protected windows (Netflix, some banking apps) capture as blank by design — Lasso doesn't try
-  to get around that.
+</details>
 
 ## License
 

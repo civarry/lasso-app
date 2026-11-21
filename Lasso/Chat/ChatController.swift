@@ -7,7 +7,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// Drives the Chat panel: a persistent, multi-turn conversation against the active Text engine.
-/// Independent of the capture session — opened with its own shortcut (⌥⌘A) — but can be *seeded* from
+/// Independent of the capture session — opened with its own shortcut (⌃⇧A) — but can be *seeded* from
 /// a capture via "Continue in chat".
 ///
 /// Image input is smart-routed: if the active text model is itself multimodal the image is sent

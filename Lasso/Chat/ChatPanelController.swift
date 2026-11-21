@@ -3,7 +3,7 @@ import CoreGraphics
 import SwiftUI
 
 /// Hosts the Chat panel: a persistent, top-right floating window, independent of the capture overlay.
-/// Toggled by the chat shortcut (⌥⌘A) and from the menu bar; can be opened pre-seeded from a capture
+/// Toggled by the chat shortcut (⌃⇧A) and from the menu bar; can be opened pre-seeded from a capture
 /// ("Continue in chat"). Reuses `FloatingPanel` (becomes key for typing, Esc closes).
 @MainActor
 final class ChatPanelController: NSObject, NSWindowDelegate {

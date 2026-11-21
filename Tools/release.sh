@@ -34,6 +34,16 @@ if gh release view "v$version" -R "$repo" >/dev/null 2>&1; then
   echo "v$version is already released." >&2; exit 1
 fi
 
+# Every release shows what's new, with screenshots (rendered by ReadmeScreenshotTests into
+# screenshots/app/). A patch release adds to its minor version's section.
+minor=${version%.*}
+git fetch -q origin main
+readme=$(git show origin/main:README.md)
+grep -q "^## What's new in $minor\$" <<<"$readme" \
+  || { echo "README on origin/main has no \"## What's new in $minor\" section." >&2; exit 1; }
+sed -n "/^## What's new in $minor\$/,/^## /p" <<<"$readme" | grep -q "screenshots/" \
+  || { echo "README's \"What's new in $minor\" section has no screenshot." >&2; exit 1; }
+
 # Sparkle's command-line tools, from the same pinned release as the vendored framework.
 tools=~/Library/Caches/lasso-release/Sparkle-$sparkle_version
 if [[ ! -x $tools/bin/generate_appcast ]]; then
