@@ -130,8 +130,38 @@
     },
     "requires": {
       "type": "array",
+      "maxItems": 8,
+      "description": "What must be installed. Lasso checks it and never installs it.",
       "items": {
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "A program on Lasso's PATH, like pandoc"
+          },
+          "install": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "The line that installs it, shown to the user"
+          },
+          "app": {
+            "type": "string",
+            "description": "An app's bundle id, like com.apple.Notes"
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "command"
+            ]
+          },
+          {
+            "required": [
+              "app"
+            ]
+          }
+        ]
       }
     },
     "limits": {

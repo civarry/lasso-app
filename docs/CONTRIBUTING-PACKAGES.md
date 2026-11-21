@@ -222,7 +222,57 @@ with `"hosts": ["parcelsapp.com"]` at the top.
 
 What your tool returns goes to the model as content, fenced, at most 4,000 characters.
 
-**Not yet:** images as input, Shortcuts, scripts, and files as output. A package using one is refused with "This version of Lasso can't … yet".
+**Not yet:** images as input. A package using it is refused with "This version of Lasso can't … yet".
+
+## Shortcuts and scripts: run something on the Mac
+
+**A Shortcut** reaches Reminders, Notes, Calendar, HomeKit and most apps without an API. The package
+names one of the user's own Shortcuts; Lasso runs it with Apple's `shortcuts` tool, passing the text in
+and reading the Shortcut's output back:
+
+```json
+{
+  "lasso": 1, "id": "reminders", "version": "1.0.0", "name": "Reminders",
+  "summary": "Add what you lasso to Reminders.", "author": "Your name",
+  "commands": [ {
+    "id": "add", "title": "Add to Reminders", "symbol": "checklist", "surfaces": ["send"],
+    "input": ["text"], "output": "notify",
+    "run": { "shortcut": { "name": "Add to Reminders from Lasso",
+                           "get": "https://www.icloud.com/shortcuts/0123456789abcdef", "offline": true } }
+  } ]
+}
+```
+
+- `get` is an iCloud link to your Shortcut: the package's page offers it while the user doesn't have one
+  by that name.
+- Mark `offline` only if the Shortcut never uses the internet: it then runs in local-only mode, on your
+  word.
+
+**A script** is a program in the package folder's `scripts/` (any language with a `#!` line). Share the
+whole folder, not only `lasso.json`. Lasso writes one JSON object to its standard input (the inputs you
+declared and the non-secret settings) and reads its answer from standard output: plain text, or
+`{"text": …}`, `{"path": …}` for a file, or `{"results": [{"title", "url", "snippet"}]}` for search.
+
+```text
+my-package/
+  lasso.json
+  scripts/to-csv.py
+```
+
+- It runs **in a sandbox**: it can write only its own folder (also its `HOME`) and `TMPDIR`, read only
+  the system, its package and any `folder` setting the user picked, and has no internet unless the
+  command says `"network": true`. Files it returns are copied to `~/LassoWorkspace/<package>/`.
+- Secrets arrive only as `LASSO_SECRET_<SETTING>` environment variables, never on standard input.
+- Lines on standard error starting `progress:` show while it runs; on failure, the last line of
+  standard error is shown, so make it a sentence.
+- It's stopped, with anything it started, at its `timeout` (30 seconds unless you say, at most 300).
+- List what it needs in `requires` (`{"command": "pandoc", "install": "brew install pandoc"}`): Lasso
+  checks, and tells the user the install line. It never installs anything.
+- Models always ask the user before running a script or a Shortcut.
+- The user can give a package **Full access** (no sandbox). A package can't ask for it, and an update
+  that changes a script turns it off.
+
+## Editor help
 
 ## Patches: change Lasso itself
 

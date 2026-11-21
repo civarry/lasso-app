@@ -17,11 +17,21 @@ struct LassoPackage: Sendable, Equatable {
     var limits: PackageLimits?
     var minLasso: String?
     var commands: [PackageCommand]
+    /// Apps and command-line tools it needs (spec, "Requirements").
+    var requires: [PackageRequirement] = []
     /// Edits to Lasso's own content (spec, "Patches").
     var patches: [PackagePatch] = []
 
     func setting(_ id: String) -> PackageSetting? { settings.first { $0.id == id } }
     func command(_ id: String) -> PackageCommand? { commands.first { $0.id == id } }
+}
+
+/// Something a package needs on the Mac. Lasso checks it and never installs it.
+enum PackageRequirement: Sendable, Equatable {
+    /// A command-line tool on Lasso's `PATH`, with the line that installs it.
+    case command(String, install: String?)
+    /// An app, by bundle id.
+    case app(String)
 }
 
 struct PackageLimits: Sendable, Equatable {
@@ -47,6 +57,8 @@ struct PackageCommand: Sendable, Equatable {
     enum Runner: Sendable, Equatable {
         case http(PackageHTTPRun)
         case prompt(PackagePromptRun)
+        case shortcut(PackageShortcutRun)
+        case script(PackageScriptRun)
     }
 
     var id: String
@@ -66,6 +78,28 @@ struct PackageCommand: Sendable, Equatable {
 
     var http: PackageHTTPRun? { if case .http(let h) = runner { h } else { nil } }
     var prompt: PackagePromptRun? { if case .prompt(let p) = runner { p } else { nil } }
+    var shortcut: PackageShortcutRun? { if case .shortcut(let s) = runner { s } else { nil } }
+    /// A search command's role: an http one says; a script (on this Mac, no quota) runs on every search.
+    var searchRole: PackageHTTPRun.Role { http?.role ?? .primary }
+    var script: PackageScriptRun? { if case .script(let s) = runner { s } else { nil } }
+}
+
+/// The `shortcut` runner: one of the user's Shortcuts, run by `/usr/bin/shortcuts`.
+struct PackageShortcutRun: Sendable, Equatable {
+    var name: String
+    /// An iCloud link to get the Shortcut, while the user doesn't have it.
+    var get: URL?
+    /// The author says it works without the internet (Lasso can't check).
+    var offline: Bool
+    var timeout: Double
+}
+
+/// The `script` runner: a program in the package's `scripts/` folder, run in a sandbox.
+struct PackageScriptRun: Sendable, Equatable {
+    /// Relative to the package folder, inside `scripts/`.
+    var path: String
+    var network: Bool
+    var timeout: Double
 }
 
 /// A command as a tool for the chat model and the Agent (spec, "Model and Agent tools").
@@ -352,7 +386,7 @@ private struct Reader {
                 problem("minLasso", "Needs Lasso \(minLasso) or newer (this is \(lassoVersion)).")
             }
         }
-        if root["requires"] != nil { problem("requires", "This version of Lasso can't run scripts yet.") }
+        let requires = self.requires(root["requires"])
         let patches = root["patches"].map { PackagePatch.read($0, problem: { self.problem($0, $1) }) } ?? []
 
         var commands: [PackageCommand] = []
@@ -375,7 +409,7 @@ private struct Reader {
         return LassoPackage(id: id, version: version, name: name, summary: summary, author: author,
                             homepage: homepage, iconSymbol: iconSymbol, iconDomain: iconDomain, category: category,
                             hosts: hosts, settings: settings, limits: limits, minLasso: minLasso, commands: commands,
-                            patches: patches)
+                            requires: requires, patches: patches)
     }
 
     // MARK: Settings
@@ -400,7 +434,7 @@ private struct Reader {
             if !kindName.isEmpty, kind == nil {
                 problem(join(path, "kind"), "Must be one of: secret, text, choice, toggle, server, folder.")
             }
-            if kind == .folder { problem(join(path, "kind"), "This version of Lasso can't use folder settings yet.") }
+            if kind == .folder, o["default"] != nil { problem(join(path, "default"), "The user picks the folder: it can't have a default.") }
             var help: URL?
             if let h = string(o, "help", at: path, required: false) {
                 help = URL(string: h)
@@ -469,8 +503,12 @@ private struct Reader {
         let outputName = string(o, "output", at: path) ?? ""
         let output = PackageCommand.Output(rawValue: outputName)
         if !outputName.isEmpty, output == nil { problem(join(path, "output"), "Unknown output \"\(outputName)\".") }
+        let runsCode = (o["run"] as? [String: Any]).map { $0["script"] != nil || $0["shortcut"] != nil } ?? false
         if output == .image || output == .file {
-            problem(join(path, "output"), "This version of Lasso can't give \"\(outputName)\" output yet.")
+            if !runsCode { problem(join(path, "output"), "\"\(outputName)\" output comes from a script or a Shortcut.") }
+            if let bad = surfaces.first(where: { ![.toolbar, .slash, .hotkey].contains($0) }) {
+                problem(join(path, "output"), "\"\(outputName)\" output is for the toolbar, chat commands and hotkeys, not \(bad.rawValue).")
+            }
         }
         if isSearch {
             if inputs != [.query] { problem(join(path, "input"), "A search command takes [\"query\"].") }
@@ -614,13 +652,51 @@ private struct Reader {
     mutating func runner(_ o: [String: Any], at path: String, hosts: [String], settings: [PackageSetting],
                          values: Set<String>, output: PackageCommand.Output?, isSearch: Bool) -> PackageCommand.Runner? {
         onlyKnown(o, ["http", "prompt", "system", "shortcut", "script", "results", "answer", "role"], at: path)
-        for runner in ["shortcut", "script"] where o[runner] != nil {
-            problem(join(path, runner), "This version of Lasso can't run \"\(runner)\" commands yet.")
-        }
         let present = ["http", "prompt", "shortcut", "script"].filter { o[$0] != nil }
         if present.isEmpty { problem(path, "Needs exactly one runner: http, prompt, shortcut or script."); return nil }
         if present.count > 1 { problem(path, "Use one runner, not \(present.joined(separator: " and ")).") ; return nil }
         let allowed = values.union(settings.map { "settings.\($0.id)" })
+
+        if o["shortcut"] != nil || o["script"] != nil {
+            for key in ["results", "answer", "role", "system"] where o[key] != nil {
+                problem(join(path, key), key == "system" ? "Only for prompt commands." : "Only for http commands.")
+            }
+            if output == .open {
+                problem(join(path, "output"), "\"open\" needs an http command: Lasso builds the address itself.")
+            }
+        }
+        if let raw = o["shortcut"] {
+            let sp = join(path, "shortcut")
+            guard let s = raw as? [String: Any] else { problem(sp, "Must be an object."); return nil }
+            onlyKnown(s, ["name", "get", "offline", "timeout"], at: sp)
+            if isSearch { problem(sp, "A search command runs over http or as a script.") }
+            let name = string(s, "name", at: sp, length: 1...100) ?? ""
+            var get: URL?
+            if let link = string(s, "get", at: sp, required: false) {
+                get = URL(string: link)
+                if get?.scheme != "https" || get?.host != "www.icloud.com" || !(get?.path.hasPrefix("/shortcuts/") ?? false) {
+                    problem(join(sp, "get"), "Must be an https://www.icloud.com/shortcuts/ link.")
+                }
+            }
+            var offline = false
+            if let raw = s["offline"] { if let b = raw as? Bool { offline = b } else { problem(join(sp, "offline"), "Must be true or false.") } }
+            let timeout = seconds(s, at: sp, max: 120)
+            return .shortcut(PackageShortcutRun(name: name, get: get, offline: offline, timeout: timeout))
+        }
+        if let raw = o["script"] {
+            let sp = join(path, "script")
+            guard let s = raw as? [String: Any] else { problem(sp, "Must be an object."); return nil }
+            onlyKnown(s, ["path", "network", "timeout"], at: sp)
+            let file = string(s, "path", at: sp) ?? ""
+            let parts = file.split(separator: "/", omittingEmptySubsequences: false)
+            if !file.isEmpty, parts.count < 2 || parts[0] != "scripts" || parts.contains("..") || parts.contains("") || parts.contains(".") {
+                problem(join(sp, "path"), "Must be a file in the package's scripts/ folder, like scripts/run.sh.")
+            }
+            var network = false
+            if let raw = s["network"] { if let b = raw as? Bool { network = b } else { problem(join(sp, "network"), "Must be true or false.") } }
+            let timeout = seconds(s, at: sp, max: 300)
+            return .script(PackageScriptRun(path: file, network: network, timeout: timeout))
+        }
 
         if o["prompt"] != nil {
             for key in ["results", "answer", "role"] where o[key] != nil {
@@ -706,6 +782,38 @@ private struct Reader {
         }
         return .http(PackageHTTPRun(method: method, url: url, query: query, headers: headers, json: json, form: form,
                                     timeout: timeout, results: results, answer: answer, role: role))
+    }
+
+    /// `timeout`: 1 to `max` seconds, 30 by default.
+    mutating func seconds(_ o: [String: Any], at path: String, max: Double) -> Double {
+        guard let t = o["timeout"] else { return 30 }
+        if let n = (t as? NSNumber)?.doubleValue, (1...max).contains(n), CFGetTypeID(t as CFTypeRef) != CFBooleanGetTypeID() { return n }
+        problem(join(path, "timeout"), "Must be 1 to \(Int(max)) seconds.")
+        return 30
+    }
+
+    mutating func requires(_ raw: Any?) -> [PackageRequirement] {
+        guard let raw else { return [] }
+        guard let list = raw as? [Any], list.count <= 8 else { problem("requires", "Must be a list of at most 8 requirements."); return [] }
+        var out: [PackageRequirement] = []
+        for (i, item) in list.enumerated() {
+            let path = "requires[\(i)]"
+            guard let o = item as? [String: Any] else { problem(path, "Must be an object."); continue }
+            onlyKnown(o, ["command", "install", "app"], at: path)
+            if let app = o["app"] {
+                if o["command"] != nil || o["install"] != nil { problem(path, "Use app, or command with install, not both.") }
+                guard let id = app as? String, PackageValidator.matches(id, "[A-Za-z0-9][A-Za-z0-9.-]{2,154}") else {
+                    problem(join(path, "app"), "Must be an app's bundle id, like com.apple.Notes."); continue
+                }
+                out.append(.app(id))
+            } else if let command = string(o, "command", at: path, length: 1...60) {
+                if !PackageValidator.matches(command, "[A-Za-z0-9][A-Za-z0-9._+-]*") {
+                    problem(join(path, "command"), "Must be a program's name, like pandoc."); continue
+                }
+                out.append(.command(command, install: string(o, "install", at: path, required: false, length: 1...200)))
+            }
+        }
+        return out
     }
 
     /// `https` to a declared host; plain `http` only to a server setting on this Mac. Templates only

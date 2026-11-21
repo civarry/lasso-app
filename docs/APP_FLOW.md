@@ -733,13 +733,21 @@ flowchart LR
   Apply -->|"PatchState: prompts, titles"| Actions["Summarize / Proofread prompts,<br/>action names everywhere"]
   Apply -->|"defaults only: the user's<br/>Settings › Toolbar choices win"| Bar[capture toolbar order and … menu]
   Apply -->|"suggestions; instructions after Lasso's own"| ChatP
+  subgraph Code["Code runners (step 4)"]
+    Short["shortcut: /usr/bin/shortcuts run <name><br/>(exists? shortcuts list, 10 s cache)<br/>local-only: only if offline"]
+    Script["script: posix_spawn, own process group,<br/>sandbox-exec profile (read system + package + picked folders;<br/>write data/TMPDIR/workspace; network only if declared<br/>and not local-only), env = PATH HOME TMPDIR LANG LASSO_SECRET_*,<br/>stdin JSON, killpg at timeout"]
+  end
+  Req["requires: checked, never installed"] --> Short & Script
+  Script -->|"text · file (→ ~/LassoWorkspace/id) · results"| Hits
+  Script -.->|"Full access (user's switch,<br/>off when a script changes)"| NoSandbox[no sandbox]
 ```
 
 Files: `Intelligence/Connectors.swift` (built-in Web search only), `WebSourcesProvider.swift`
 (`WebSearchSource`, `IdentifySources`), `Packages/` (`PackageManifest` validator, `PackageTemplate`,
 `PackageHTTP`, `PackageStore` + `PackageRegistry`, `PackageSearch`, `PackageMigration`, `Bundled/`),
 `App/Settings/PackagesSettings.swift`, `SearchCache`, `SearchQuota`, `DomainNoise`, `Keychain`. The
-format is `docs/PACKAGES.md` (build steps 1 to 3 and 5 of 6 are built; tools in `PackageTools.swift`,
+format is `docs/PACKAGES.md` (build steps 1 to 5 of 6 are built; scripts in `PackageScript.swift`,
+Shortcuts in `PackageShortcut.swift`, requirements in `PackageRequirements.swift`; tools in `PackageTools.swift`,
 patches in `PackagePatches.swift` with `App/Settings/PackageChangesCard.swift`); authors use
 `docs/CONTRIBUTING-PACKAGES.md`, `docs/packages/schema-v1.json` and `docs/patch-targets.md` (generated).
 
@@ -863,6 +871,26 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Packages, build step 4: Shortcuts and scripts.** Two new runners. `shortcut` runs one of the user's
+  Shortcuts by name through `/usr/bin/shortcuts run` (text in with `--input-path`, plain text out; it
+  must be in `shortcuts list`, cached 10 s; the page offers the package's `get` link while it's missing;
+  paused in local-only mode unless the author marked it `offline`). `script` runs a `#!` file from the
+  package's `scripts/` (`PackageScript`): `posix_spawn` in its own process group, under a `sandbox-exec`
+  profile that reads the system, its package folder and the folders picked in `folder` settings,
+  writes only its data folder (`…/PackageData/<id>/`, also `HOME`), a fresh `TMPDIR` and
+  `~/LassoWorkspace/<id>/`, and has the network only with `network: true` and local-only off; the
+  environment is only `PATH`, `HOME`, `TMPDIR`, `LANG` and `LASSO_SECRET_<ID>` per secret; standard input
+  is one JSON object of the declared inputs and non-secret settings; the answer is text or JSON (`text`,
+  `path`, `results`), `progress:` lines on standard error show in the HUD; at its timeout the whole group
+  is killed (and anything left running after a normal exit). Paths go through `realpath`, since
+  Foundation drops `/private` and the sandbox wouldn't match. A package can now be a folder: **+** reads
+  every file (no links, 5 MB), the record hashes each, so a script edited on disk turns the package off
+  like a manifest edit, and an update replaces the folder whole. `file`/`image` output (toolbar, chat
+  commands, hotkeys) lands in the workspace and is shown in Finder or Lasso's image viewer; a script can
+  be a search source (on every search, its `url` may be a file). `requires` is checked, never installed
+  ("Needs pandoc. Install it with: …"). **Full access** is a per-package switch on its page behind a
+  warning, never set by a manifest, kept through an update only when no script changed. Models always
+  ask first for a script or Shortcut tool. Reviewed with a separate UI/UX pass.
 - **Packages, build step 5: patches** (ahead of step 4, which it doesn't need). A package's `patches`
   (up to 50; a package can be only patches) change Lasso's own content: the Summarize and Proofread
   prompts (instructions only: the selected text still follows, so no `{{…}}`), the nine built-in action

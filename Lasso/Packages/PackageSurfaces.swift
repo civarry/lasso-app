@@ -15,10 +15,26 @@ extension PackageRegistry {
     /// Why a command can't run right now (nil when it can): a missing key or setting, or local-only
     /// mode pausing a request that leaves the Mac.
     func unavailableReason(_ entry: Entry, _ command: PackageCommand, localOnly: Bool = PrivacyMode.localOnly) -> String? {
-        if !entry.ready { return "Add its API key in Settings › Packages." }
+        if !entry.ready {
+            let missing = entry.package.settings.first { setting in
+                setting.kind != .toggle && setting.kind != .choice && (entry.values["settings.\(setting.id)"] ?? "").isEmpty
+            }
+            switch missing?.kind {
+            case .folder?: return "Choose its \(missing!.label.lowercased()) in Settings › Packages."
+            case .secret?: return "Add its API key in Settings › Packages."
+            default: return "Finish setting it up in Settings › Packages."
+            }
+        }
+        if let why = PackageRequirements.missingNow(entry.package) { return why }
         if localOnly, command.http != nil,
            !PackageHTTP.allowedHosts(entry.package, values: entry.values).allSatisfy(PackageValidator.isLoopback) {
             return "Paused in local-only mode."
+        }
+        if let shortcut = command.shortcut {
+            if localOnly, !shortcut.offline { return "Paused in local-only mode." }
+            if PackageShortcut.isInstalledNow(shortcut.name) == false {
+                return "Get the Shortcut “\(shortcut.name)” from \(entry.package.name)'s page in Settings › Packages."
+            }
         }
         return nil
     }
@@ -81,9 +97,32 @@ enum PackageOutput {
             let text = (try? await text(result)) ?? ""
             StatusHUD.shared.show(icon: "checkmark.circle.fill", text: notifyText(text), persist: 1.5)
             return true
+        case .file, .image:
+            guard case .file(let url) = result else {
+                StatusHUD.shared.show(icon: "exclamationmark.triangle", text: "No file came back.", persist: 2); return false
+            }
+            showFile(url, asImage: output == .image)
+            return true
         default:
             return false
         }
+    }
+
+    /// A saved image opens in Lasso's viewer; any other file is shown in Finder.
+    static func showFile(_ url: URL, asImage: Bool) {
+        if asImage, let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+           let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+            StatusHUD.shared.hide()
+            ImageViewer.shared.show(image, title: url.lastPathComponent, file: url)
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        StatusHUD.shared.show(icon: "checkmark.circle.fill", text: "Saved \(url.lastPathComponent)", persist: 1.5)
+    }
+
+    /// Where a saved file is, as people say it: "~/LassoWorkspace/table-to-csv/table.csv".
+    static func shortPath(_ url: URL) -> String {
+        url.path.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")
     }
 
     /// The `answer` when it's short enough to read at a glance, otherwise "Done".
@@ -96,12 +135,15 @@ enum PackageOutput {
         switch result {
         case .text(let t): return t
         case .url(let u): return u.absoluteString
+        case .file(let u): return shortPath(u)
         case .stream(let s): return try await PackageCommandRunner.collect(s)
         }
     }
 
     /// "Study tools · api.example.com" for http, "Study tools" for prompt (the result card adds the model).
     static func attribution(_ entry: PackageRegistry.Entry, _ command: PackageCommand) -> String {
+        if let shortcut = command.shortcut { return "\(entry.package.name) · Shortcut “\(shortcut.name)”" }
+        if command.script != nil { return "\(entry.package.name) · script on this Mac" + (entry.fullAccess ? " (full access)" : "") }
         if command.http != nil, let host = PackageHTTP.allowedHosts(entry.package, values: entry.values).sorted().first {
             return "\(entry.package.name) · \(host)"
         }
@@ -170,6 +212,7 @@ struct PackageCommandAction: CaptureAction {
                 case .stream(let s): return .stream(s)
                 case .text(let t): return .text(t)
                 case .url(let u): return .text(u.absoluteString)
+                case .file(let u): return .text(PackageOutput.shortPath(u))
                 }
             case .open:
                 await PackageOutput.deliver(result, output: .open, title: command.title)

@@ -504,8 +504,11 @@ final class ChatController {
                     update { $0.text = answer }
                 case .url(let url):
                     update { $0.text = url.absoluteString }
+                case .file(let url):
+                    update { $0.text = "Saved **\(url.lastPathComponent)** in `\(PackageOutput.shortPath(url.deletingLastPathComponent()))`." }
+                    PackageOutput.showFile(url, asImage: command.output == .image)
                 }
-                if command.output != .markdown {
+                if command.output != .markdown, command.output != .file, command.output != .image {
                     let shown = session.messages.first { $0.id == replyID }?.text ?? ""
                     let delivered: PackageCommandResult = command.output == .open ? (URL(string: shown).map { .url($0) } ?? .text(shown)) : .text(shown)
                     await PackageOutput.deliver(delivered, output: command.output, title: command.title)
