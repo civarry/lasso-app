@@ -887,6 +887,12 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Sources: "list all my notes", and the Agent knowing what a source is.** A message with no words left
+  once the source's own name is out ("can you list all my notes?") gets the source's files instead of a
+  search: Lasso reads the chosen folder itself (`SourceSearch.inventory`, newest first, up to 60 names),
+  step "Listed the files in My notes". An Agent turn with an @-mentioned source is told what it is ("My
+  notes is the folder ~/Development/_docs on this Mac, not Apple Notes or another app") along with the
+  passages, so it no longer reaches for Apple Notes; and the source's step stays above the Agent's own.
 - **Sources: `@` and Lasso deciding, apart from web search** (`docs/LOCAL-SOURCES.md`, designed by a
   four-person panel over five rounds). A search package that can't reach the internet (script without
   `network`, loopback http) is a source on this Mac: `PackageRegistry.searchCommands` (web search) no

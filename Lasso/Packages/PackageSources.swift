@@ -225,8 +225,36 @@ enum SourceSearch {
         // The user's own words, whole (a source gets "pricing", not the stem "pric").
         var words: [String] = []
         for word in SourceWords.whole(message) where !words.contains(word) { words.append(word) }
-        let filtered = words.filter { !nameWords.contains(SourceWords.stem($0)) }
-        return filtered.isEmpty ? words : filtered
+        // Nothing left once the source's own name is out ("list all my notes"): a question about the
+        // source itself, answered with what's in it (`inventory`), not a search.
+        return words.filter { !nameWords.contains(SourceWords.stem($0)) }
+    }
+
+    /// The folder a source reads, when it has one (My notes' notes folder).
+    static func folder(of source: PackageSource) -> URL? {
+        guard let setting = source.entry.package.settings.first(where: { $0.kind == .folder }),
+              let path = source.entry.values["settings.\(setting.id)"], !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
+
+    /// What's in a folder source, newest first, for "list all my notes": Lasso reads the folder the user
+    /// chose itself, no script and no search.
+    static func inventory(_ source: PackageSource, limit: Int = 60) -> SourceHit? {
+        guard let folder = folder(of: source),
+              let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.contentModificationDateKey],
+                                                          options: [.skipsHiddenFiles]) else { return nil }
+        var files: [(name: String, date: Date)] = []
+        for case let url as URL in walker where ["md", "markdown", "txt"].contains(url.pathExtension.lowercased()) {
+            let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            files.append((String(url.path.dropFirst(folder.path.count + 1)), date))
+            if files.count >= 2_000 { break }
+        }
+        let shown = files.sorted { $0.date > $1.date }.prefix(limit).map(\.name)
+        let more = files.count > shown.count ? ", and \(files.count - shown.count) more" : ""
+        let place = (folder.path as NSString).abbreviatingWithTildeInPath
+        return SourceHit(source: source.name, title: "Files in \(source.name)", url: folder,
+                         snippet: "\(files.count) file\(files.count == 1 ? "" : "s") in \(place), newest first: "
+                            + shown.joined(separator: ", ") + more + ".")
     }
 
     /// The query's words as the gate compares them (stemmed).
@@ -252,6 +280,10 @@ enum SourceSearch {
                 group.addTask {
                     await withTaskGroup(of: Result<[SourceHit], Error>?.self) { race in
                         race.addTask {
+                            // A question about the source itself: its list of files, not a search.
+                            if words.isEmpty {
+                                return .success(inventory(item.0).map { [$0] } ?? [])
+                            }
                             do { return .success(try await run(item.0, words.joined(separator: " "))) } catch { return .failure(error) }
                         }
                         race.addTask {
@@ -281,7 +313,7 @@ enum SourceSearch {
                 perSource.append([])
                 outcomes.append(SourceOutcome(source: source, status: .failed(error.localizedDescription), automatic: automatic))
             case .success(let hits)?:
-                let passed = hits.filter { passes($0, words: words) }
+                let passed = words.isEmpty ? hits : hits.filter { passes($0, words: words) }
                 perSource.append(passed)
                 outcomes.append(SourceOutcome(source: source, status: passed.isEmpty ? .nothing : .matched(passed.count), automatic: automatic))
             }
@@ -292,7 +324,7 @@ enum SourceSearch {
         while kept.count < maxPassages, !rest.isEmpty { kept.append(rest.removeFirst()) }
         kept = Array(kept.prefix(maxPassages))
         let share = maxCharacters / max(1, kept.count)
-        kept = kept.map { var h = $0; h.snippet = String(h.snippet.prefix(share)); return h }
+        kept = kept.map { var h = $0; h.snippet = String(h.snippet.prefix(h.title.hasPrefix("Files in ") ? 1_500 : share)); return h }
         for (i, outcome) in outcomes.enumerated() {
             let count = kept.filter { $0.source == outcome.source.name }.count
             if case .matched = outcome.status { outcomes[i].status = count > 0 ? .matched(count) : .nothing }
