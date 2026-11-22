@@ -161,6 +161,21 @@ struct MLXProvider: IntelligenceProvider {
         return n.map { max(16, min($0, 8192)) } ?? 512
     }
 
+    /// A chat model's context window (tokens), from its config.json in the Hugging Face cache or a plain
+    /// folder (~/models, LM Studio). Unlike `maxSequenceLength` (for embedding inputs) this isn't capped
+    /// at 8192, and an unknown model counts as 8192, not 512.
+    static func chatContextTokens(_ id: String) -> Int {
+        var cfg = downloadedConfig(id)
+        if cfg == nil, let folder = MLXLocalModels.folder(for: id),
+           let data = try? Data(contentsOf: folder.appendingPathComponent("config.json")) {
+            cfg = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        }
+        let text = cfg?["text_config"] as? [String: Any]
+        let n = (cfg?["max_position_embeddings"] as? Int) ?? (text?["max_position_embeddings"] as? Int)
+            ?? (cfg?["n_positions"] as? Int) ?? (cfg?["max_seq_length"] as? Int)
+        return n.map { max(2_048, $0) } ?? 8_192
+    }
+
     private static func downloadedConfig(_ id: String) -> [String: Any]? {
         let snapshots = MLXCache.directory(for: id).appendingPathComponent("snapshots", isDirectory: true)
         guard let dirs = try? FileManager.default.contentsOfDirectory(
@@ -241,6 +256,10 @@ struct MLXProvider: IntelligenceProvider {
                 "Local-only mode is on, so the MLX model can't be downloaded (the fetch leaves your "
                 + "Mac). Turn Local-only off to download it once; inference stays on-device after that.")
         }
+        // A download in progress keeps an update from relaunching Lasso under it.
+        let busy = !isDownloaded(modelID)
+        if busy { await Busy.begin() }
+        defer { if busy { Task { @MainActor in Busy.end() } } }
         _ = try await MLXModelCache.shared.container(for: modelID) { p in
             progress(p.fractionCompleted)
         }

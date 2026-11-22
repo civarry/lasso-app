@@ -102,6 +102,8 @@ struct FloatingResultView: View {
         // Read in a task the card owns: closing the card ends it (`CardLifetime`), and so does SwiftUI
         // cancelling this view's task.
         let reader = Task { @MainActor in
+            Busy.begin()
+            defer { Busy.end() }
             do {
                 for try await delta in stream {
                     if Task.isCancelled { break }

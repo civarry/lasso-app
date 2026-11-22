@@ -170,13 +170,19 @@ final class IntelligenceCoordinator {
 
     /// User preference (mirrored from `@AppStorage("provider")` by the app).
     var preferred: ProviderKind {
-        didSet { UserDefaults.standard.set(preferred.rawValue, forKey: Self.defaultsKey) }
+        didSet {
+            UserDefaults.standard.set(preferred.rawValue, forKey: Self.defaultsKey)
+            if preferred != oldValue { cloudContextTokens = nil; ollamaContextTokens = nil }
+        }
     }
 
     /// Ollama text model. Empty string means "Auto" — resolve to the best installed model at use
     /// time, so we never depend on a specific model being pulled.
     var ollamaModel: String {
-        didSet { UserDefaults.standard.set(ollamaModel, forKey: Self.modelKey) }
+        didSet {
+            UserDefaults.standard.set(ollamaModel, forKey: Self.modelKey)
+            if ollamaModel != oldValue { ollamaContextTokens = nil }
+        }
     }
 
     /// Ollama vision model for Identify. Empty string means "Auto" (best installed vision model).
@@ -362,6 +368,7 @@ final class IntelligenceCoordinator {
     func selectRegistryModel(keyID: String, model: String) {
         // A new choice is a fresh start: whatever the old one kept doing is no longer this model's story.
         primaryCircuit.reset()
+        cloudContextTokens = nil
         routedAround = nil
         let registry = KeysRegistry.load()
         let entry = keyID.isEmpty ? registry.enabledKey(exposingModel: model)
@@ -580,7 +587,7 @@ final class IntelligenceCoordinator {
     /// value when available, else a conservative per-family default.
     var effectiveContextTokens: Int {
         switch effectivePreferred {
-        case .mlx:      return MLXProvider.maxSequenceLength(mlxModel)
+        case .mlx:      return MLXProvider.chatContextTokens(mlxModel.isEmpty ? MLXProvider.defaultModelID : mlxModel)
         case .onDevice: return 4_096                               // Apple on-device FM — small window
         case .ollama:   return ollamaContextTokens ?? 8_192
         case .openAICompatible:
@@ -588,7 +595,8 @@ final class IntelligenceCoordinator {
             if openAIContextOverride > 0 { return openAIContextOverride }
             return cloudContextTokens ?? Self.inferContextFromModelName(openAIModel) ?? 32_000
         case .anthropic:
-            return cloudContextTokens ?? Self.inferContextFromModelName(anthropicModel) ?? 200_000
+            // Never the detected value: that's read for the OpenAI-compatible connection only.
+            return Self.inferContextFromModelName(anthropicModel) ?? 200_000
         }
     }
 
@@ -661,7 +669,8 @@ final class IntelligenceCoordinator {
             if let p = info.paramsBillions { ollamaParamsBillions = p }
         case .openAICompatible:
             guard !PrivacyMode.localOnly else { return }
-            if let c = await fetchOpenAIContextLength() { cloudContextTokens = c }
+            // Fresh per model: a value detected for another model must not carry over.
+            cloudContextTokens = await fetchOpenAIContextLength()
         default:
             break
         }
@@ -684,7 +693,8 @@ final class IntelligenceCoordinator {
     static func parseOpenAIContextLength(_ data: Data, model: String) -> Int? {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let list = json["data"] as? [[String: Any]] else { return nil }
-        guard let entry = list.first(where: { ($0["id"] as? String) == model }) ?? list.first else { return nil }
+        // Only this model's own entry: another model's window would set the budget far off.
+        guard let entry = list.first(where: { ($0["id"] as? String) == model }) else { return nil }
         for key in ["context_window", "context_length", "max_context_length", "max_input_tokens"] {
             if let n = entry[key] as? Int, n > 0 { return n }
         }

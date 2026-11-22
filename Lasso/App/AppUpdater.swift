@@ -63,6 +63,7 @@ final class AppUpdater: NSObject {
     /// Replaceable so tests can make Lasso look busy.
     @ObservationIgnored var isIdle: () -> Bool = {
         !CaptureCoordinator.shared.isActive && !ChatController.shared.sessions.contains { $0.isStreaming }
+            && Busy.count == 0
     }
 
     /// Whether a downloaded update is waiting for Lasso to be idle.
@@ -114,4 +115,18 @@ extension AppUpdater: SPUUpdaterDelegate {
 /// Sparkle's install block crosses to the main actor once; it's only ever called there.
 private struct UncheckedInstall: @unchecked Sendable {
     let run: () -> Void
+}
+
+/// Work outside chat and capture that an update must not cut off: a result card's answer still
+/// coming in, a model download. Hold it for the duration (`Busy.during { … }`).
+@MainActor
+enum Busy {
+    private(set) static var count = 0
+    static func begin() { count += 1 }
+    static func end() { count = max(0, count - 1) }
+    static func during<T>(_ work: () async throws -> T) async rethrows -> T {
+        begin()
+        defer { end() }
+        return try await work()
+    }
 }

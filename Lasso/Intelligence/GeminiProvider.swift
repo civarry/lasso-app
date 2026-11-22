@@ -96,7 +96,9 @@ enum GeminiAPI {
     /// Split `ChatTurn`s into Gemini's shape: a top-level system instruction plus `contents` whose
     /// roles are `user` / `model`.
     static func wire(_ messages: [ChatTurn], fallbackSystem: String) -> (system: String, contents: [[String: Any]]) {
-        var system = messages.first { $0.role == .system }?.text ?? fallbackSystem
+        // Every system turn: the context builder adds memory and retrieval as later ones.
+        var system = messages.filter { $0.role == .system }.map(\.text)
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.joined(separator: "\n\n")
         if system.isEmpty { system = fallbackSystem }
         var contents: [[String: Any]] = []
         for turn in messages where turn.role != .system {

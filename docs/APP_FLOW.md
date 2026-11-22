@@ -963,6 +963,16 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
     showed (`approveChange(reviewed:)`). Remove forgets every setting, secret and hotkey of every
     version (current, approved, previous), so a later package with the id starts empty. Go back clears
     an old error. `PanelActivationTests` skip, saying why, while the screen is locked.
+  - **QA round 6, models and providers, 8 fixed** (`Regression/IntelligenceRegressionTests`): an Ollama
+    "-cloud" model (relayed to ollama.com) or a remote Ollama server isn't "on this Mac": `isLocal` is
+    false, Auto never picks one, and local-only refuses it in the provider. Anthropic: an `error`
+    event mid-stream throws (so the fallback tries another model) instead of ending empty; the last
+    tool round still sends `tools` with `tool_choice: none`, and a model that keeps calling tools
+    fails clearly. Gemini gets every system turn (memory, retrieval). Context windows: only the
+    selected model's own `/models` entry counts; the detected value resets when the provider or model
+    changes and is never used for Anthropic; MLX chat models read their real window
+    (`MLXProvider.chatContextTokens`, local folders too, 8,192 if unknown, not the embedding helper's
+    512). The updater waits for a result card's answer, Ask AI and an MLX download (`Busy`).
 - **The chat's MLX menu lists the models you have (0.29.1).** It read only the Hugging Face cache, so a
   model in `~/models` or LM Studio's folder (the one chosen in Settings) was missing, and an embedding
   model downloaded for memory (bge) was offered as a chat model. `ChatController.mlxModels` now joins the

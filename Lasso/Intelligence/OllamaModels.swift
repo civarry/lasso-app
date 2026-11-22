@@ -23,6 +23,13 @@ enum OllamaModels {
         return n.contains("embed") || n.contains("nomic") || n.contains("bge")
     }
 
+    /// Ollama's cloud models ("gpt-oss:120b-cloud", "qwen3-coder:480b-cloud") are pulled like local ones
+    /// but run on ollama.com.
+    static func isCloud(_ name: String) -> Bool {
+        let n = name.lowercased()
+        return n.hasSuffix("-cloud") || n.hasSuffix(":cloud")
+    }
+
     static func isVision(_ name: String) -> Bool {
         let n = name.lowercased()
         return n.contains("-vl") || n.contains("vl:") || n.contains("vision")
@@ -31,7 +38,8 @@ enum OllamaModels {
 
     /// Best installed chat/text model (excludes embedding + vision), preferring known families.
     static func bestTextModel(_ models: [String]) -> String? {
-        let chat = models.filter { !isEmbedding($0) && !isVision($0) }
+        // Never a cloud model: Auto means one that runs on this Mac.
+        let chat = models.filter { !isEmbedding($0) && !isVision($0) && !isCloud($0) }
         let prefs = ["qwen3", "qwen2.5", "llama3", "llama", "gemma", "mistral", "phi"]
         for pref in prefs { if let m = chat.first(where: { $0.lowercased().contains(pref) }) { return m } }
         return chat.first

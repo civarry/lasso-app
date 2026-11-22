@@ -113,11 +113,16 @@ struct AnthropicProvider: IntelligenceProvider {
                         ["name": $0.name, "description": $0.description, "input_schema": $0.jsonSchema]
                     }
                     for round in 0..<maxToolRounds {
-                        let offerTools = round < maxToolRounds - 1
+                        // The last round still defines the tools (its history holds tool_use blocks,
+                        // which the API rejects without them) but tells the model not to call one.
+                        let last = round == maxToolRounds - 1
                         let result = try await self.streamMessage(
-                            system: system, messages: wire, tools: offerTools ? toolsWire : [],
+                            system: system, messages: wire, tools: toolsWire, noMoreTools: last,
                             continuation: continuation)
                         guard !result.calls.isEmpty else { continuation.finish(); return }
+                        if last {
+                            throw IntelligenceError.server("The model kept calling tools without answering.")
+                        }
 
                         // Assistant turn must echo its text + tool_use blocks; then user turn returns
                         // a tool_result block per call.
@@ -157,12 +162,16 @@ struct AnthropicProvider: IntelligenceProvider {
     /// Stream one Messages call: yield text deltas live, assemble `tool_use` blocks (id/name from
     /// `content_block_start`, arguments from `input_json_delta`). Returns the text + assembled calls.
     private func streamMessage(system: String, messages: [[String: Any]], tools: [[String: Any]],
+                               noMoreTools: Bool = false,
                                continuation: AsyncThrowingStream<String, Error>.Continuation)
         async throws -> (text: String, calls: [AssembledToolUse]) {
         var bodyDict: [String: Any] = [
             "model": model, "max_tokens": 1024, "stream": true, "system": system, "messages": messages,
         ]
-        if !tools.isEmpty { bodyDict["tools"] = tools }
+        if !tools.isEmpty {
+            bodyDict["tools"] = tools
+            if noMoreTools { bodyDict["tool_choice"] = ["type": "none"] }
+        }
         guard let body = try? JSONSerialization.data(withJSONObject: bodyDict) else {
             throw IntelligenceError.server("Couldn't encode the request.")
         }
@@ -203,6 +212,8 @@ struct AnthropicProvider: IntelligenceProvider {
                 } else if let partial = delta["partial_json"] as? String {
                     blocks[index]?.argumentsJSON += partial
                 }
+            case "error":
+                throw Self.streamError(json)
             case "message_stop":
                 break
             default:
@@ -299,6 +310,10 @@ struct AnthropicProvider: IntelligenceProvider {
                         guard let data = payload.data(using: .utf8),
                               let event = try? decoder.decode(StreamEvent.self, from: data) else { continue }
                         if event.type == "message_stop" { break }
+                        if event.type == "error",
+                           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                            throw Self.streamError(json)
+                        }
                         if let text = event.delta?.text, !text.isEmpty { continuation.yield(text) }
                     }
                     continuation.finish()
@@ -355,6 +370,18 @@ struct AnthropicVisionProvider: VisionProvider {
 }
 
 // MARK: - Wire types
+
+extension AnthropicProvider {
+    /// An `error` event mid-stream (overloaded, rate limited): a failure, not an empty answer, so the
+    /// fallback can try another model.
+    static func streamError(_ json: [String: Any]) -> IntelligenceError {
+        let error = json["error"] as? [String: Any]
+        let kind = error?["type"] as? String ?? "error"
+        let message = error?["message"] as? String ?? ""
+        let code = kind == "overloaded_error" ? "529" : kind == "rate_limit_error" ? "429" : "500"
+        return .server("Anthropic HTTP \(code) in stream: \(kind). \(message)")
+    }
+}
 
 private struct StreamEvent: Decodable {
     struct Delta: Decodable { let text: String? }
