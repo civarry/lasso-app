@@ -350,6 +350,31 @@ struct SourceChatTests {
         }
     }
 
+    @Test func aSourceThatFindsNothingSaysSoToTheModel() async throws {
+        try await withNotes { chat, _ in
+            IntelligenceCoordinator.shared.preferred = .mlx
+            let id = reply(chat)
+            let looked = await chat.lookInSources(typed: "what's my wifi password?", mentioned: ["my-notes"], excluded: [],
+                                                  session: chat.active, assistantID: id)
+            #expect(looked.evidence?.contains("found nothing that matches") == true, "\(looked.evidence ?? "nil")")
+            #expect(looked.evidence?.contains("don't describe buttons, menus or features") == true)
+            #expect(chat.active.messages.first { $0.id == id }?.steps.first?.text == "Searched My notes · nothing matched")
+        }
+    }
+
+    @Test func anEmptyWhatsInItIsFilledInOnceTheFolderHasNotes() async throws {
+        try await withNotes { chat, _ in
+            SourcePreferences.setAbout("", "my-notes")
+            IntelligenceCoordinator.shared.preferred = .mlx
+            let id = reply(chat)
+            _ = await chat.lookInSources(typed: "what did we decide on pricing", mentioned: [], excluded: [],
+                                         session: chat.active, assistantID: id)
+            let about = SourcePreferences.about("my-notes")
+            #expect(about.hasPrefix("groceries, pricing"), "\(about)")
+            #expect(chat.active.messages.first { $0.id == id }?.steps.first?.text == "Looked in My notes · 1 match")
+        }
+    }
+
     @Test func aCloudModelAsksFirstPerCompany() async throws {
         try await withNotes { chat, _ in
             let intelligence = IntelligenceCoordinator.shared
@@ -424,5 +449,33 @@ struct SourceChatTests {
         // Three or fewer: all of them, as before (so "$5 in euros" still reaches a currency tool).
         registry.update((1...2).map(tool), settings: { _ in ([:], []) })
         #expect(PackageToolCall.chatTools(for: "how much is $5 in euros", registry: registry).count == 2)
+    }
+
+    @Test func stemsMatchWhicheverFormIsUsed() {
+        #expect(SourceWords.stem("meetings") == SourceWords.stem("meeting"))
+        #expect(SourceWords.stem("decided") == SourceWords.stem("decide"))
+        #expect(SourceWords.stem("prices") == SourceWords.stem("pricing"))
+        #expect(SourceWords.overlap(["meet"], in: "meetings/2026-11-14 weekly sync") == 1)
+    }
+
+    @Test func theFileListSummarizesFoldersSoDocsDontHideNotes() throws {
+        let base = FileManager.default.temporaryDirectory.appending(path: "lasso-inventory-\(UUID().uuidString.prefix(6))", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: base) }
+        for i in 0..<120 {
+            let sub = i < 80 ? "library" : "howto"
+            let dir = base.appending(path: "python-docs/\(sub)", directoryHint: .isDirectory)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try "# Page \(i)".write(to: dir.appending(path: "page\(i).md"), atomically: true, encoding: .utf8)
+        }
+        try FileManager.default.createDirectory(at: base.appending(path: "meetings"), withIntermediateDirectories: true)
+        try "# Sync".write(to: base.appending(path: "meetings/sync.md"), atomically: true, encoding: .utf8)
+        try "# Adobo".write(to: base.appending(path: "adobo.md"), atomically: true, encoding: .utf8)
+        let source = PackageSourceTests.source(PackageSourceTests.notes, values: ["settings.notes": base.path])
+        let list = try #require(SourceSearch.inventory(source)).snippet
+        #expect(list.hasPrefix("122 files in "), "\(list)")
+        #expect(list.contains("python-docs/ (120 files: library/ 80, howto/ 40)"), "\(list)")
+        #expect(list.contains("meetings/ (1 file: sync.md)"), "\(list)")
+        #expect(list.contains("Not in a folder: adobo.md."), "\(list)")
+        #expect(list.count < 1_500)
     }
 }

@@ -184,6 +184,28 @@ struct ReadmeScreenshotTests {
         sourcesChat.mention("meeting-notes")
         try await shoot("sources-chat", CGSize(width: 420, height: 560), ChatView().background(Color(white: 0.12)))
 
+        // 0.26: a folder of docs next to your own notes. The file list by folder, and a question that
+        // needs both a note and a doc page.
+        let kestrel = shotNotes.appending(path: "projects/kestrel.md"), whatsNew = shotNotes.appending(path: "python-3.15/whatsnew/3.15.md")
+        for file in [kestrel, whatsNew] {
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try "# x".write(to: file, atomically: true, encoding: .utf8)
+        }
+        var listed = ChatMessage(role: .assistant, text: "557 notes. **python-3.15/** is the Python 3.15 documentation (552 pages). Your own: **projects/** (kestrel.md), **meetings/** (1), **inbox/** (1), and adobo.md and todo.md at the top.")
+        listed.steps = [ActivityStep(icon: "note.text", text: "Listed the files in Meeting Notes", done: true)]
+        var mixed = ChatMessage(role: .assistant, text: "Kestrel runs **Python 3.12** (kestrel.md). Lazy imports (`lazy import`, PEP 810) are new in **3.15**, so it can't use them until it upgrades.")
+        mixed.steps = [ActivityStep(icon: "note.text", text: "Looked in Meeting Notes · 2 matches", done: true,
+                                    actions: [.answerWithout(source: "meeting-notes", name: "Meeting Notes"),
+                                              .onlyWhenMentioned(source: "meeting-notes", name: "Meeting Notes")])]
+        mixed.sourceHits = [SourceHit(source: "Meeting Notes", title: "Project Kestrel (projects/kestrel)", url: kestrel,
+                                      snippet: "Stack: Python 3.12 on the servers, FastAPI, Postgres 16."),
+                            SourceHit(source: "Meeting Notes", title: "What's new in Python 3.15", url: whatsNew,
+                                      snippet: "PEP 810: Explicit lazy imports")]
+        sourcesChat.messages = [ChatMessage(role: .user, text: "what's in my notes?"), listed,
+                                ChatMessage(role: .user, text: "which python version does project Kestrel use, and can it use lazy imports?"), mixed]
+        sourcesChat.active.mentions = []
+        try await shoot("notes-and-docs", CGSize(width: 420, height: 640), ChatView().background(Color(white: 0.12)))
+
         // Table to CSV: how to use it, said plainly.
         try store.install(Data("""
             {"lasso": 1, "id": "table-to-csv", "version": "1.1.0", "name": "Table to CSV", "summary": "Turns a table you lasso into a CSV file.",

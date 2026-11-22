@@ -95,8 +95,9 @@ question off the Mac. Automatic use never skips the cloud Allow card.
 - A source that can't answer what was asked says so: "My notes can't search by date yet."
 
 **What's in it.** On each source's page, one editable line (up to 120 characters), generated when the
-folder is chosen from its headings and most frequent words, e.g. "Flet animations, architecture blueprint,
-prompt guides". Footer: "Lasso reads this to decide when to look. Use the words you'd ask with." Empty:
+folder is chosen from its folder and file names, then its headings and most frequent words, e.g. "Flet animations, architecture blueprint,
+prompt guides". If it's still empty when the folder has notes (it was empty when chosen), Lasso fills it in
+then. Footer: "Lasso reads this to decide when to look. Use the words you'd ask with." Empty:
 automatic is off, with "Add a line to What's in it first." Next to it, **Use it: Automatically / Only
 when I @ it**.
 
@@ -170,6 +171,8 @@ would go to a cloud model, the reply shows Lasso's inline Allow card **before th
 ### In the reply
 
 - One step per source: "Searched My notes · 3 matches", "Searched My notes · nothing matched".
+- When nothing matched, the model is told so for that turn: say it plainly, present nothing as coming
+  from the source, describe no buttons or menus, and call an unfamiliar word unknown instead of guessing.
 - Sources in separate groups: **From My notes** (`doc.text`, file name, its folder; click opens, ⌥-click
   shows it in Finder) and **From the web** (`link`, title, host).
 
