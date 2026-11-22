@@ -207,6 +207,9 @@ struct SettingsView: View {
         }
         .frame(width: 740)
         .frame(minHeight: 560, idealHeight: 640)
+        // On the window, not a page: "Manage connections" is on the Language model page, which is
+        // pushed over the Models page; a sheet on a page that isn't showing never opens.
+        .sheet(isPresented: $showConnections) { connectionsSheet }
         .task { await load(); loaded = true; consumeRequestedRoute() }
         .onChange(of: paneRaw) { _, _ in path = []; forwardPath = []; consumeRequestedRoute() }
         .onChange(of: path) { old, new in
@@ -788,7 +791,6 @@ struct SettingsView: View {
         .task {
             scheduleOllamaStatus(); await loadVisionModels(); refreshEmbeddingStatus()
         }
-        .sheet(isPresented: $showConnections) { connectionsSheet }
         .alert("Re-add your language model", isPresented: $showMigrationNotice) {
             Button("OK", role: .cancel) {}
         } message: {
