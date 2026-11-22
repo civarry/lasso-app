@@ -1001,7 +1001,7 @@ struct PackagePage: View {
     private var catalog: PackageCatalog { .shared }
     @State private var goBackError: String?
     @State private var confirmRemove = false
-    /// Removed, but macOS kept the saved keys closed, so its key goes the next time they open.
+    /// Removed, but macOS kept the saved keys closed, so its key is still saved.
     @State private var keysWaiting = false
     @State private var confirmFullAccess = false
     @State private var confirmEvents = false
@@ -1479,7 +1479,7 @@ private struct KeysWaitingAlert: ViewModifier {
         content.alert("Removed, but its key is still saved", isPresented: $isPresented) {
             Button("OK", action: done)
         } message: {
-            Text("macOS didn't allow Lasso to open its saved keys. The key is deleted the next time Lasso can open them.")
+            Text("macOS didn't allow Lasso to open its saved keys, so its key couldn't be deleted. Installing it again starts without it.")
         }
     }
 }

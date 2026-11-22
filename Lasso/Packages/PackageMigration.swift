@@ -39,9 +39,21 @@ enum PackageMigration {
         // copy, and the migration runs again next launch.
         var finished = true
         for old in connectors {
-            guard let key = readKey(old.keyAccount), !key.isEmpty else { continue }
+            guard let key = readKey(old.keyAccount), !key.isEmpty else {
+                // While the saved keys are closed, no key means unknown, not none: try again next launch.
+                if Keychain.isRefused { finished = false }
+                continue
+            }
             let package: LassoPackage
             let wasOn = defaults.object(forKey: old.enabledKey) as? Bool ?? false
+            let installedKey = installedByMigrationKey(old.packageID)
+            if defaults.bool(forKey: installedKey), !store.isInstalled(old.packageID) {
+                // An earlier run installed it and the user removed it since: never again. The old key
+                // went with the package.
+                deleteKey(old.keyAccount)
+                defaults.removeObject(forKey: old.enabledKey)
+                continue
+            }
             if let installed = store.installed.first(where: { $0.id == old.packageID }) {
                 // Installed by an earlier run whose key didn't save: fill in the key, if it's still empty.
                 guard installed.origin == .bundled, let setting = installed.package.setting("key"),
@@ -51,6 +63,7 @@ enum PackageMigration {
                 guard let data = BundledPackages.data(old.packageID, bundle: bundle) else { continue }
                 do {
                     package = try store.install(data, origin: .bundled, enabled: wasOn)
+                    defaults.set(true, forKey: installedKey)
                 } catch {
                     Log.app.error("packages · couldn't move \(old.packageID, privacy: .public): \(error.localizedDescription, privacy: .public)")
                     continue
@@ -67,4 +80,8 @@ enum PackageMigration {
         }
         if finished { defaults.set(true, forKey: doneKey) }
     }
+
+    /// Set once a run installed this connector's package, so a later run (one whose key didn't save)
+    /// never installs it again after the user removed it.
+    static func installedByMigrationKey(_ packageID: String) -> String { "\(doneKey).\(packageID).installed" }
 }

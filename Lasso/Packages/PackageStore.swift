@@ -326,6 +326,12 @@ final class PackageStore {
         try fm.moveItem(at: staging, to: dir)
         var records = self.records
         let old = records[package.id]
+        // A fresh install starts empty: a key an earlier uninstall couldn't remove (the saved keys were
+        // closed) doesn't come back with it. Only when they open without asking; never a wipe otherwise.
+        if old == nil {
+            let secrets = package.settings.filter { $0.kind == .secret }.map { secretAccount(package.id, $0.id) }
+            Keychain.removeAll(secrets, retryIfRefused: false)
+        }
         // Full access survives an update only when no script changed.
         let keepsFullAccess = old?.fullAccess == true && (old?.files ?? [:]) == Self.hashes(files)
         // So does running by itself, and only if its event commands are the same ones.
@@ -372,8 +378,8 @@ final class PackageStore {
 
     /// Deletes the package, its preferences and its Keychain items. Its usage counts stay, so removing
     /// and reinstalling can't spend a free tier twice; files it saved to the workspace are the user's.
-    /// false when its keys couldn't be removed yet (the saved keys wouldn't open): they're removed the
-    /// next time they open, so a reinstall still starts empty.
+    /// false when its keys couldn't be removed (the saved keys wouldn't open): they stay saved, and a
+    /// fresh install of this id clears them (`install`).
     @discardableResult
     func remove(_ id: String) -> Bool {
         // Every version it had, not just the one on disk now: a broken package has none readable, and a
@@ -391,7 +397,7 @@ final class PackageStore {
         }
         // One write for all of them: one prompt at most, not one per version.
         let keysRemoved = Keychain.removeAll(secrets.sorted())
-        if !keysRemoved { Log.app.error("packages · \(id, privacy: .public)'s keys wait for the saved keys to open") }
+        if !keysRemoved { Log.app.error("packages · \(id, privacy: .public)'s keys couldn't be removed: the saved keys are closed") }
         unreadSecrets.subtract(secrets)
         let prefix = "package.\(id).setting."
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) { defaults.removeObject(forKey: key) }

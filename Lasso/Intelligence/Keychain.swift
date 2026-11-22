@@ -136,7 +136,6 @@ enum Keychain {
             }
         }
         state.refused = false
-        removePendingRemovals()
         if wasRefused {
             DispatchQueue.main.async { NotificationCenter.default.post(name: didOpenAfterRefusal, object: nil) }
         }
@@ -190,7 +189,6 @@ enum Keychain {
         // Never under the lock: a UserDefaults change posts a notification that can wait on the main
         // thread, and the main thread reads keys while drawing (a deadlock, seen in the test run).
         if moved { UserDefaults.standard.removeObject(forKey: openKey(account)) }
-        finishPendingRemovals()
         return value
     }
 
@@ -208,9 +206,6 @@ enum Keychain {
             SecItemDelete(query(account) as CFDictionary)
             return true
         }()
-        // Saved again (a package reinstalled): no longer waiting to be removed. Outside the lock, as in `get`.
-        if saved { forgetPendingRemoval([account]) }
-        finishPendingRemovals()
         return saved
     }
 
@@ -224,59 +219,23 @@ enum Keychain {
     /// Removes a key. false when the vault couldn't be opened (as in `set`): the key may still be saved.
     @discardableResult
     static func delete(_ account: String, retryIfRefused: Bool = true) -> Bool {
-        removeAll([account], retryIfRefused: retryIfRefused, rememberIfRefused: false)
+        removeAll([account], retryIfRefused: retryIfRefused)
     }
 
     /// Removes these keys in one write (one prompt at most after a refusal). false when they couldn't be
-    /// removed now. `rememberIfRefused`: then they're removed the next time the vault opens, in this
-    /// launch or a later one (an uninstalled package's key mustn't come back with a reinstall).
+    /// removed: nothing is touched then, not even an older version's own items (never a wipe while the
+    /// saved keys are closed).
     @discardableResult
-    static func removeAll(_ accounts: [String], retryIfRefused: Bool = true, rememberIfRefused: Bool = true) -> Bool {
+    static func removeAll(_ accounts: [String], retryIfRefused: Bool = true) -> Bool {
         guard !accounts.isEmpty else { return true }
         lock.lock()
         let removed = vault(retryIfRefused: retryIfRefused) != nil
             && update { values in accounts.forEach { values[$0] = nil } }
-        for account in accounts { SecItemDelete(query(account) as CFDictionary) }
+        if removed { for account in accounts { SecItemDelete(query(account) as CFDictionary) } }
         lock.unlock()
         // Outside the lock, as in `get`.
-        for account in accounts { UserDefaults.standard.removeObject(forKey: openKey(account)) }
-        if removed {
-            forgetPendingRemoval(accounts)
-        } else if rememberIfRefused {
-            var pending = pendingRemovals
-            pending.formUnion(accounts)
-            UserDefaults.standard.set(pending.sorted(), forKey: pendingRemovalsKey)
-        }
-        finishPendingRemovals()
+        if removed { for account in accounts { UserDefaults.standard.removeObject(forKey: openKey(account)) } }
         return removed
-    }
-
-    // MARK: Removals waiting for the vault to open
-
-    private static var pendingRemovalsKey: String { isTesting ? "keychain.pendingRemovals.tests" : "keychain.pendingRemovals" }
-    private static var pendingRemovals: Set<String> {
-        Set(UserDefaults.standard.stringArray(forKey: pendingRemovalsKey) ?? [])
-    }
-    /// Removed from the vault, still to be crossed off in UserDefaults (outside the lock). Guarded by `lock`.
-    nonisolated(unsafe) private static var removalsDone: Set<String> = []
-
-    /// Under the lock, the vault just read: what's waiting to be removed goes.
-    private static func removePendingRemovals() {
-        let pending = pendingRemovals
-        guard !pending.isEmpty else { return }
-        if update({ values in pending.forEach { values[$0] = nil } }) { removalsDone.formUnion(pending) }
-    }
-
-    private static func forgetPendingRemoval(_ accounts: [String]) {
-        let pending = pendingRemovals
-        guard !pending.isDisjoint(with: accounts) else { return }
-        UserDefaults.standard.set(pending.subtracting(accounts).sorted(), forKey: pendingRemovalsKey)
-    }
-
-    /// Outside the lock: crosses off the removals the vault has done.
-    private static func finishPendingRemovals() {
-        lock.lock(); let done = removalsDone; removalsDone = []; lock.unlock()
-        if !done.isEmpty { forgetPendingRemoval(Array(done)) }
     }
 
     /// A key an older version saved as its own item (this read may ask, once per key).

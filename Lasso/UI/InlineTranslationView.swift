@@ -44,6 +44,8 @@ struct InlineTranslationView: View {
     @State private var pass1Done = false
     @State private var pass1Started = Date()
     @State private var pass1Duration: TimeInterval?
+    /// "Translate with" couldn't switch the model (the saved keys wouldn't open): said in the menu.
+    @State private var switchRefused = false
     /// Bumped on every restart, so a session cancelled by a language change can't advance the new queue.
     @State private var generation = 0
     @State private var modelPass: ModelPass = .idle
@@ -440,7 +442,7 @@ struct InlineTranslationView: View {
         let intelligence = IntelligenceCoordinator.shared
         let canSwitch = LLMTranslation.Mode.current != .off && !PrivacyMode.localOnly
         return Menu {
-            Text(modelUnavailableReason ?? "")
+            Text(switchRefused ? ChatController.switchRefusedNotice : modelUnavailableReason ?? "")
             if canSwitch {
                 let groups = intelligence.registryGroups()
                 if !groups.isEmpty {
@@ -449,8 +451,8 @@ struct InlineTranslationView: View {
                         Menu("Translate with \(group.name)") {
                             ForEach(group.models) { model in
                                 Button(model.name) {
-                                    intelligence.selectRegistryModel(keyID: group.keyID, model: model.name)
-                                    startModelPass()
+                                    switchRefused = !intelligence.selectRegistryModel(keyID: group.keyID, model: model.name)
+                                    if !switchRefused { startModelPass() }
                                 }
                             }
                         }

@@ -1080,11 +1080,14 @@ final class IntelligenceCoordinator {
     }
 
     /// Make the stand-in the user's own choice. Only for a registry model (a pool candidate always is).
-    func switchToSubstitute() {
-        guard let routed = routedAround, let ref = routed.substitute?.ref else { return }
-        selectRegistryModel(keyID: ref.keyID, model: ref.model)
+    /// false when it couldn't switch (the saved keys wouldn't open): the notice stays.
+    @discardableResult
+    func switchToSubstitute() -> Bool {
+        guard let routed = routedAround, let ref = routed.substitute?.ref,
+              selectRegistryModel(keyID: ref.keyID, model: ref.model) else { return false }
         primaryCircuit.reset()
         routedAround = nil
+        return true
     }
 
     /// "Try again" / "Stop racing": the next request goes to the selected model on its own terms. The

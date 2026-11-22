@@ -828,9 +828,14 @@ final class ChatController {
 
     /// Switch to a model served by a specific connection — global, persists, matches Settings.
     func selectRegistryModel(keyID: String, model: String) {
-        intelligence.selectRegistryModel(keyID: keyID, model: model)
+        guard intelligence.selectRegistryModel(keyID: keyID, model: model) else {
+            composerNotice = Self.switchRefusedNotice
+            return
+        }
+        if composerNotice == Self.switchRefusedNotice { composerNotice = nil }
         Task { await refreshCapabilities() }
     }
+    static let switchRefusedNotice = "Couldn't switch: macOS didn't let Lasso open its saved keys."
     func isCurrentRegistryModel(keyID: String, model: String) -> Bool {
         intelligence.isCurrentRegistryModel(keyID: keyID, model: model)
     }
