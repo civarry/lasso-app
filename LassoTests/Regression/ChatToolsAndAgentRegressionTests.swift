@@ -3,10 +3,11 @@ import Foundation
 import Testing
 @testable import Lasso
 
-/// QA round 3 (throwaway): package tools, Agent history, images, persistence races.
+/// Regression: package tools and their cards, the Agent's history, images in context, save ordering.
+/// Each test is a bug a QA pass found; it fails without its fix.
 @MainActor
 @Suite(.serialized)
-struct ChatRound3RegressionTests {
+struct ChatToolsAndAgentRegressionTests {
     private func convoFile(_ id: UUID) -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Lasso/conversations/\(id.uuidString).json")

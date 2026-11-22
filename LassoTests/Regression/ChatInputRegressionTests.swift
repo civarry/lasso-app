@@ -4,9 +4,11 @@ import SwiftUI
 import Testing
 @testable import Lasso
 
+/// Regression: the composer, the chat panel's keys (Esc, Return after @word), code blocks in replies,
+/// and drafts kept through Regenerate. Each test is a bug a QA pass found; it fails without its fix.
 @MainActor
 @Suite(.serialized)
-struct ChatUIRegressionTests {
+struct ChatInputRegressionTests {
     /// A finished reply whose last fence never closed (cut off, stopped, or the model forgot) is still
     /// `closed: false`, so CodeBlockView withholds Copy and Run forever.
     @Test func finishedTextCompletesAnUnclosedFence() {
@@ -19,8 +21,7 @@ struct ChatUIRegressionTests {
     @Test func snippetOffsetFromFoldedText() {
         let text = String(repeating: "ß", count: 30) + " needle and more text after it"
         let s = ChatSearch.snippet(text, around: "needle")
-        print("QA snippet =", s)
-        #expect(s.contains("needle"), "snippet lost the word: \(s)")
+                #expect(s.contains("needle"), "snippet lost the word: \(s)")
     }
 
     @Test func snippetCrashes() {
@@ -41,8 +42,7 @@ struct ChatUIRegressionTests {
         chatPanel.cancelOperation(nil)
         try await Task.sleep(for: .milliseconds(100))
         let cardsAfter = NSApp.windows.filter { $0 is FloatingPanel && $0 !== chatPanel && $0.isVisible }.count
-        print("QA cards before/after Esc in chat:", cardsBefore, cardsAfter, "chat open:", ChatPanelController.shared.isOpen)
-        #expect(cardsAfter == cardsBefore, "Esc in the chat closed the result card")
+                #expect(cardsAfter == cardsBefore, "Esc in the chat closed the result card")
         #expect(!ChatPanelController.shared.isOpen, "Esc in the chat left the chat open")
     }
 
@@ -73,8 +73,7 @@ struct ChatUIRegressionTests {
         try await Task.sleep(for: .milliseconds(300))
         let after = chat.active.messages.count
         if chat.isStreaming { chat.cancelStreaming() }
-        print("QA @: sources=\(PackageRegistry.shared.sources(localOnly: false).map(\.name)) input='\(chat.active.input)' messages \(before)->\(after)")
-        #expect(after > before, "Return didn't send 'thanks @bob'")
+                #expect(after > before, "Return didn't send 'thanks @bob'")
     }
     /// "thanks bob" (no source called bob, or none installed): Return does nothing.
     @Test func controlReturnSendsPlain() async throws {
@@ -97,8 +96,7 @@ struct ChatUIRegressionTests {
         try await Task.sleep(for: .milliseconds(300))
         let after = chat.active.messages.count
         if chat.isStreaming { chat.cancelStreaming() }
-        print("QA @: sources=\(PackageRegistry.shared.sources(localOnly: false).map(\.name)) input='\(chat.active.input)' messages \(before)->\(after)")
-        #expect(after > before, "Return didn't send 'thanks @bob'")
+                #expect(after > before, "Return didn't send 'thanks @bob'")
     }
 
     /// Two identical code blocks in one reply, and the same code in another answer, keep their own runs.
@@ -119,7 +117,6 @@ struct ChatUIRegressionTests {
         chat.active.input = "my half-written follow-up"
         chat.regenerate(answer.id)
         chat.cancelStreaming()
-        print("QA draft after regenerate: '\(chat.active.input)' last user: '\(chat.active.messages.first?.text ?? "")'")
-        #expect(chat.active.input == "my half-written follow-up", "draft lost")
+                #expect(chat.active.input == "my half-written follow-up", "draft lost")
     }
 }

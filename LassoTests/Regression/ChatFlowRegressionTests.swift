@@ -3,10 +3,11 @@ import Network
 import Testing
 @testable import Lasso
 
-/// Chat flow bugs a QA pass found; each test asserts the right behaviour.
+/// Regression: reply versions (Regenerate), search snippets, and package /command replies (stop,
+/// close, busy flag). Each test is a bug a QA pass found; it fails without its fix.
 @MainActor
 @Suite(.serialized)
-struct QAVersionTests {
+struct ReplyVersionRegressionTests {
     @Test func showingAGoodEarlierAnswerClearsTheErrorStyling() {
         var reply = ChatMessage(role: .assistant, text: "Couldn't reach the model.")
         reply.isError = true
@@ -52,7 +53,7 @@ struct QAVersionTests {
 
 @MainActor
 @Suite(.serialized)
-struct QASnippetTests {
+struct SearchSnippetRegressionTests {
     @Test func snippetAfterSharpSIsAroundTheWord() {
         let text = "Größe Straße weiß heißen Fuß Maß Grüße " + String(repeating: "x", count: 60) + " needle " + String(repeating: "y", count: 60)
         let s = ChatSearch.snippet(text, around: "needle")
@@ -62,7 +63,7 @@ struct QASnippetTests {
 
 @MainActor
 @Suite(.serialized)
-struct QASnippetCrashTests {
+struct SearchSnippetCrashRegressionTests {
     @Test func snippetDoesNotCrashOnManySharpS() {
         let text = String(repeating: "ß", count: 40) + " needle"
         let s = ChatSearch.snippet(text, around: "needle")
@@ -95,7 +96,7 @@ final class HangingServer: @unchecked Sendable {
 
 @MainActor
 @Suite(.serialized)
-struct QAPackageFlowTests {
+struct PackageReplyRegressionTests {
     private func withStore(server: String, _ body: () async throws -> Void) async throws {
         let name = "lasso-qa-\(UUID().uuidString.prefix(6))"
         let root = FileManager.default.temporaryDirectory.appending(path: name, directoryHint: .isDirectory)

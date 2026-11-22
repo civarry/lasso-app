@@ -2,10 +2,11 @@ import Foundation
 import Testing
 @testable import Lasso
 
-/// QA round 2 (throwaway): memory/context, attachments, lifecycle, transcript.
+/// Regression: what the model's history holds, and what's saved, cleared and restored. Each test is a
+/// bug a QA pass found; it fails without its fix.
 @MainActor
 @Suite(.serialized)
-struct QARound2Tests {
+struct ChatHistoryAndSavingRegressionTests {
     private func file(_ path: String = "/tmp/qa-r2-\(UUID().uuidString).txt") -> FileAttachment {
         FileAttachment(id: UUID(), path: path, name: "notes.txt", kind: .text, typeName: "Plain text", bytes: 10)
     }
