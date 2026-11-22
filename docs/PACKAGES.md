@@ -483,12 +483,17 @@ The script gets `text` (the block's code), `language`, and `reply` (the whole re
 names). It answers with a console:
 
 ```json
-{"console": "Hello, iteration 0\n…", "failed": false, "image": "drawing.png",
+{"console": "Hello, iteration 0\n…", "failed": false, "image": "chart.png",
  "actions": [{"title": "Install numpy", "command": "install", "input": {"packages": "numpy"}, "rerun": true},
              {"title": "Fix it", "chat": "This code failed: … Fix it."}]}
 ```
 
 - `image`: a picture it made in its own folders, shown in the block (click opens it larger).
+- `html`: a page it made in its own folders (an `.html`, `.htm` or `.svg` file; Lasso 0.29), shown live
+  in the block, sized to its content, with **Open larger** for a window. Its JavaScript runs, walled in:
+  no internet except scripts and styles from `https://cdnjs.cloudflare.com/` (none in local-only mode),
+  no files outside its folder, no popups, nothing kept between pages, and a clicked web link opens the
+  browser instead. A console with a page and no text shows only the page.
 - `actions`: up to 3 buttons under the console. A `command` button runs another command of the same
   package with `input` in its standard input as `action` (and with `rerun`, the block's command again
   after it succeeds). A `chat` button sends that text to the chat as the user's message.

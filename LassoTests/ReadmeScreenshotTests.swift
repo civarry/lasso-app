@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Testing
+import WebKit
 @testable import Lasso
 
 /// The README's app screenshots, rendered from Lasso's real views in set-up states (never this Mac's
@@ -14,7 +15,7 @@ struct ReadmeScreenshotTests {
     private var folder: URL { URL(fileURLWithPath: ProcessInfo.processInfo.environment["LASSO_README_SHOTS"]!) }
 
     /// The view at `size`, with rounded corners and a soft shadow on a transparent background, at 2×.
-    private func shoot<V: View>(_ name: String, _ size: CGSize, _ view: V) async throws {
+    private func shoot<V: View>(_ name: String, _ size: CGSize, _ view: V, wait: Duration = .milliseconds(1200)) async throws {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let pad: CGFloat = 28
         let framed = view
@@ -32,12 +33,25 @@ struct ReadmeScreenshotTests {
         window.backgroundColor = .clear
         window.contentView = NSHostingView(rootView: framed)
         window.orderFrontRegardless()
-        try await Task.sleep(for: .milliseconds(1200))
+        try await Task.sleep(for: wait)
         let content = try #require(window.contentView)
         let rep = try #require(content.bitmapImageRepForCachingDisplay(in: content.bounds))
         content.cacheDisplay(in: content.bounds, to: rep)
+        // A web view draws in another process, so caching skips it: paint its own snapshot in.
+        for web in Self.webViews(in: content) {
+            let shot = try await web.takeSnapshot(configuration: nil)
+            let frame = web.convert(web.bounds, to: content)
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+            shot.draw(in: content.isFlipped ? NSRect(x: frame.minX, y: content.bounds.height - frame.maxY, width: frame.width, height: frame.height) : frame)
+            NSGraphicsContext.restoreGraphicsState()
+        }
         try #require(rep.representation(using: .png, properties: [:])).write(to: folder.appending(path: "\(name).png"))
         window.orderOut(nil); window.contentView = nil
+    }
+
+    private static func webViews(in view: NSView) -> [WKWebView] {
+        (view as? WKWebView).map { [$0] } ?? view.subviews.flatMap { webViews(in: $0) }
     }
 
     private static let currency = """
@@ -277,6 +291,35 @@ struct ReadmeScreenshotTests {
                            image: nil, actions: [.init(title: "Install numpy", command: "install", input: ["packages": "numpy"], rerun: true, chat: nil)], failed: true), elapsed: 0.041)
         sourcesChat.messages = [ChatMessage(role: .user, text: "can you run a simple for loop in python?"), ranReply, numpyReply, freshReply]
         try await shoot("code-run", CGSize(width: 440, height: 760), ChatView().background(Color(white: 0.12)))
+        CodeRunner.shared.runs = [:]
+
+        // 0.29: a package's page in its code block (Preview HTML), walled in. The chart library comes
+        // from cdnjs, the one place a page may load from.
+        try store.install(Data("""
+            {"lasso": 1, "id": "html-preview", "version": "1.0.0", "name": "Preview HTML", "summary": "Shows HTML from chat.", "author": "Lasso",
+             "commands": [{"id": "preview", "title": "Preview", "symbol": "eye", "surfaces": ["code"], "languages": ["html", "svg"], "input": ["text"],
+                           "output": "markdown", "run": {"script": {"path": "scripts/preview.sh"}}}]}
+            """.utf8), files: ["scripts/preview.sh": Data("#!/bin/sh\n".utf8)], origin: .catalog)
+        let chartPage = """
+            <!doctype html><html><head><meta charset="utf-8">
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+            <style>body{margin:0;padding:12px;font:13px -apple-system;background:#fff;color:#222}h2{font-size:14px;margin:0 0 8px}</style></head>
+            <body><h2>Steps this week</h2><canvas id="c" height="190"></canvas>
+            <script>new Chart(document.getElementById("c"), {type: "bar", data: {labels: ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"],
+            datasets: [{label: "Steps", data: [6200, 8100, 5400, 9900, 7300, 12100, 4800], backgroundColor: "#3b82f6", borderRadius: 4}]},
+            options: {animation: false, plugins: {legend: {display: false}}}});</script></body></html>
+            """
+        let pageFolder = FileManager.default.temporaryDirectory.appending(path: "lasso-shot-page", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: pageFolder, withIntermediateDirectories: true)
+        let pageFile = pageFolder.appending(path: "index.html")
+        try chartPage.write(to: pageFile, atomically: true, encoding: .utf8)
+        let chartReply = ChatMessage(role: .assistant, text: "Here's your week as a bar chart:\n\n```html\n\(chartPage)\n```\n\nSaturday was your best day.")
+        CodeRunner.shared.runs[CodeRunner.key(chartReply.id, chartPage)] = CodeRunner.Run(
+            title: "Preview", lines: ["Run started"], console: .init(text: "", image: nil, html: pageFile, actions: [], failed: false),
+            error: nil, running: false, started: Date(), elapsed: 0.012, packageID: "html-preview", commandID: "preview",
+            code: chartPage, language: "html", reply: chartReply.text)
+        sourcesChat.messages = [ChatMessage(role: .user, text: "make a bar chart of my steps this week: 6200, 8100, 5400, 9900, 7300, 12100, 4800"), chartReply]
+        try await shoot("html-preview", CGSize(width: 440, height: 560), ChatView().background(Color(white: 0.12)), wait: .seconds(4))
         CodeRunner.shared.runs = [:]
 
         // Table to CSV: how to use it, said plainly.

@@ -908,9 +908,17 @@ struct ChatView: View {
     }
 
     private var slashPalette: some View {
-        VStack(spacing: 0) {
-            ForEach(Array(slashMatches.enumerated()), id: \.element.id) { idx, cmd in
-                if cmd.package != nil, idx > 0, slashMatches[idx - 1].package == nil {
+        // One snapshot, with each row's divider worked out up front: the row closures run later, after
+        // the list may have changed (a package loaded or reloaded drops a command), so they must not
+        // index into slashMatches again.
+        let matches = slashMatches
+        let rows = matches.enumerated().map { idx, cmd in
+            (idx: idx, cmd: cmd, divider: cmd.package != nil && idx > 0 && matches[idx - 1].package == nil)
+        }
+        return VStack(spacing: 0) {
+            ForEach(rows, id: \.cmd.id) { row in
+                let idx = row.idx, cmd = row.cmd
+                if row.divider {
                     Divider().padding(.vertical, 2)
                 }
                 HStack(spacing: 10) {

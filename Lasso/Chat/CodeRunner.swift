@@ -85,6 +85,8 @@ final class CodeRunner {
                 switch result {
                 case .console(let c): console = c
                 case .text(let t): console = .init(text: t, image: nil, actions: [], failed: false)
+                case .file(let url) where PackageScript.Console.pages.contains(url.pathExtension.lowercased()):
+                    console = .init(text: "", image: nil, html: url, actions: [], failed: false)
                 case .file(let url): console = .init(text: "", image: url, actions: [], failed: false)
                 case .url(let url): console = .init(text: url.absoluteString, image: nil, actions: [], failed: false)
                 case .stream(let s): console = .init(text: try await PackageCommandRunner.collect(s), image: nil, actions: [], failed: false)

@@ -265,7 +265,7 @@ private struct CodeBlockView: View {
                 Spacer()
                 if complete {
                     Button {
-                        Pasteboard.copy(showingRun ? consoleText : content)
+                        Pasteboard.copy(copiesOutput ? consoleText : content)
                         copied = true
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
                     } label: {
@@ -276,7 +276,7 @@ private struct CodeBlockView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(copied ? Color.green : Color.secondary)
-                    .help(showingRun ? "Copy the output" : "Copy this code block")
+                    .help(copiesOutput ? "Copy the output" : "Copy this code block")
                 }
                 if showingRun, run != nil {
                     Button { showRun = false } label: {
@@ -301,7 +301,8 @@ private struct CodeBlockView: View {
                         .disabled(run?.running == true)
                         .help("\(item.command.title) with \(item.entry.package.name)")
                     }
-                    if !showingRun, run != nil {
+                    // A page's Preview is instant, so it doesn't need a second button for the last one.
+                    if !showingRun, run != nil, run?.console?.html == nil {
                         Button { showRun = true } label: {
                             Label("Output", systemImage: "terminal")
                                 .font(.system(size: fontSize - 3)).labelStyle(.titleAndIcon)
@@ -331,6 +332,9 @@ private struct CodeBlockView: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
+    /// A page has no text to copy, so Copy keeps copying its code.
+    private var copiesOutput: Bool { showingRun && !consoleText.isEmpty }
+
     private var consoleText: String {
         guard let run else { return "" }
         return run.console?.text ?? run.error ?? run.lines.joined(separator: "\n")
@@ -344,10 +348,18 @@ private struct CodeConsoleView: View {
     let fontSize: CGFloat
     let perform: (PackageScript.Console.Action) -> Void
 
+    /// A page that came out clean is the whole answer: its steps and timing would only be noise.
+    private var pageOnly: Bool {
+        guard let console = run.console, console.html != nil else { return false }
+        return !run.running && run.error == nil && !console.failed && console.text.isEmpty
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            ForEach(Array(run.lines.enumerated()), id: \.offset) { _, line in
-                Text(line).foregroundStyle(.secondary)
+            if !pageOnly {
+                ForEach(Array(run.lines.enumerated()), id: \.offset) { _, line in
+                    Text(line).foregroundStyle(.secondary)
+                }
             }
             if run.running {
                 HStack(spacing: 6) {
@@ -374,11 +386,23 @@ private struct CodeConsoleView: View {
                         }
                         .help("Click to open it larger")
                 }
+                if let page = console.html {
+                    HTMLPreviewView(url: page, fitHeight: 80...460)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                    Button {
+                        HTMLPreviewWindow.shared.show(page, title: page.lastPathComponent == "index.html" ? "Preview" : page.lastPathComponent)
+                    } label: {
+                        Label("Open larger", systemImage: "arrow.up.left.and.arrow.down.right")
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .font(.system(size: fontSize - 3))
+                    .help("Open the page in its own window")
+                }
             }
             if let error = run.error {
                 Text(error).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
-            if let elapsed = run.elapsed {
+            if let elapsed = run.elapsed, !pageOnly {
                 Text(run.error != nil || run.console?.failed == true
                      ? "Run failed after \(Self.duration(elapsed))" : "Run completed in \(Self.duration(elapsed))")
                     .foregroundStyle(.secondary)
