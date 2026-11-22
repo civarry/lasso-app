@@ -932,6 +932,11 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
     history follows the same skip rule as the model's; an image-only Agent reply is an answer
     ("(Showed an image.)"); only the newest image turn's images are re-sent, each counted
     (`ChatContextBuilder.imageCost`); with your own Hermes, @-source passages always ask first.
+  - **Memory and speed checks** (`LassoTests/Memory`, `LassoTests/Performance`): a closed or stopped
+    conversation is freed; a closed, cleared or evicted chat's code-run outputs are dropped
+    (`CodeRunner.forget`, they stayed for the whole session before); budgets for parsing a long reply,
+    searching 12,000 messages and building the model's context. Regression tests live in
+    `LassoTests/Regression`, one file per area.
 - **The chat's MLX menu lists the models you have (0.29.1).** It read only the Hugging Face cache, so a
   model in `~/models` or LM Studio's folder (the one chosen in Settings) was missing, and an embedding
   model downloaded for memory (bge) was offered as a chat model. `ChatController.mlxModels` now joins the

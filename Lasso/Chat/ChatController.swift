@@ -617,6 +617,7 @@ final class ChatController {
     func close(_ id: UUID) {
         guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
         denyWaitingTools(in: sessions[idx])
+        CodeRunner.shared.forget(sessions[idx].messages.map(\.id))
         sessions[idx].cancelWork()
         let wasActive = sessions[idx].id == active.id
         sessions.remove(at: idx)
@@ -674,6 +675,7 @@ final class ChatController {
     /// Reset the ACTIVE conversation in place (`/clear`) — scoped to the current chat, not the others.
     func clearActive() {
         denyWaitingTools(in: active)
+        CodeRunner.shared.forget(active.messages.map(\.id))
         active.cancelWork()
         active.memoryIndex.reset()
         active.memory = ConversationMemory()
@@ -704,7 +706,7 @@ final class ChatController {
         let fresh = Conversation()
         sessions = [fresh]
         active = fresh
-        for s in sessions { denyWaitingTools(in: s) }
+        for s in sessions { denyWaitingTools(in: s); CodeRunner.shared.forget(s.messages.map(\.id)) }
         ConversationStore.enqueue { ConversationStore.clearAll() }
     }
 
@@ -720,6 +722,7 @@ final class ChatController {
         guard overflow > 0 else { return }
         sessions.removeAll { session in
             guard overflow > 0, session.id != active.id else { return false }
+            CodeRunner.shared.forget(session.messages.map(\.id))
             session.cancelWork(); overflow -= 1; return true
         }
     }

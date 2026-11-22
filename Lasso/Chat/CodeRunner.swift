@@ -44,6 +44,14 @@ final class CodeRunner {
 
     func run(_ key: String) -> Run? { runs[key] }
 
+    /// Drops the runs of these replies (their chat was closed or cleared), so a long session doesn't
+    /// keep every output and picture it ever showed.
+    func forget(_ messages: [UUID]) {
+        let prefixes = Set(messages.map { "\($0.uuidString)#" })
+        guard !prefixes.isEmpty else { return }
+        runs = runs.filter { key, _ in !prefixes.contains { key.hasPrefix($0) } }
+    }
+
     func start(_ entry: PackageRegistry.Entry, _ command: PackageCommand, code: String, language: String,
                reply: String, key: String) {
         runs[key] = Run(title: command.title, lines: ["Run started"], console: nil, error: nil, running: true,
