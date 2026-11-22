@@ -142,6 +142,9 @@ struct ChatContextBuilder: Sendable {
     /// Assemble the send list. `memory` is the current two-track recap (may be empty); `history` is
     /// the full prior conversation (oldest-first, excluding the current turn); `currentUserText` /
     /// `currentImageBase64` are the turn being answered now.
+    /// What one image costs against the character budget (about what a vision model spends on it).
+    static let imageCost = 1_000
+
     func build(systemPrompt: String,
                memory: ConversationMemory,
                history: [HistoryTurn],
@@ -154,6 +157,13 @@ struct ChatContextBuilder: Sendable {
         let recentCount = min(budget.recentTurns, history.count)
         let overflow = Array(history.dropLast(recentCount))
         var recent = Array(history.suffix(recentCount))
+        // Images travel once: with this turn when it has some, else only the newest earlier turn's.
+        // Older ones are already in the text as their description (promptText), and re-sending every
+        // image with every follow-up grew each request by megabytes the budget never counted.
+        let keepImagesAt = currentImageBase64s.isEmpty ? recent.lastIndex(where: { !$0.imageBase64s.isEmpty }) : nil
+        for i in recent.indices where i != keepImagesAt && !recent[i].imageBase64s.isEmpty {
+            recent[i] = HistoryTurn(role: recent[i].role, text: recent[i].text, imageBase64s: [])
+        }
 
         // 2. The memory block represents the overflow. It's only meaningful when there *is* overflow
         //    (or memory already exists from earlier compression). Durable facts get their own reserve
@@ -226,7 +236,8 @@ struct ChatContextBuilder: Sendable {
             return turns
         }
 
-        func total(_ turns: [ChatTurn]) -> Int { turns.reduce(0) { $0 + $1.text.count } }
+        /// Characters, with each image counted as `imageCost` (a model reads an image as many tokens).
+        func total(_ turns: [ChatTurn]) -> Int { turns.reduce(0) { $0 + $1.text.count + $1.imageBase64s.count * Self.imageCost } }
 
         var shed: [HistoryTurn] = []
         var turns = assemble(recent)

@@ -925,6 +925,13 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
     a bullet or "4 * 5"; text after `$$…$$` on its line is kept; "## Learning C#" keeps its #; CRLF text
     parses; text copied from Pages/Word pastes as text, not its PDF picture. The edit box: Return sends,
     Shift-Return newline, Esc cancels the edit.
+  - **QA round 3, 7 more** (`ChatRound3RegressionTests`): saves and deletes of conversations run on one
+    serial queue (`ConversationStore.enqueue`), so a save queued before Close can't bring a closed chat
+    back; closing or clearing a chat denies its waiting tool cards at once (`denyWaitingTools`, not after
+    280 s); chat may call the over-budget tools it's offered (`PackageToolCall.call(agent:)`); the Agent's
+    history follows the same skip rule as the model's; an image-only Agent reply is an answer
+    ("(Showed an image.)"); only the newest image turn's images are re-sent, each counted
+    (`ChatContextBuilder.imageCost`); with your own Hermes, @-source passages always ask first.
 - **The chat's MLX menu lists the models you have (0.29.1).** It read only the Hugging Face cache, so a
   model in `~/models` or LM Studio's folder (the one chosen in Settings) was missing, and an embedding
   model downloaded for memory (bge) was offered as a chat model. `ChatController.mlxModels` now joins the

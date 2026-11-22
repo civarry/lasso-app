@@ -16,6 +16,13 @@ import ImageIO
 enum ConversationStore {
     static let schemaVersion = 1
 
+    /// Every write and delete goes through one serial queue, in the order asked: a save queued just
+    /// before Close can't land after Close's delete and bring the chat back.
+    private static let io = DispatchQueue(label: "lasso.conversations.io", qos: .utility)
+    static func enqueue(_ work: @escaping @Sendable () -> Void) { io.async(execute: work) }
+    /// Waits for every queued write (tests, and quitting).
+    static func flush() { io.sync {} }
+
     // MARK: - Locations
 
     private static var root: URL {

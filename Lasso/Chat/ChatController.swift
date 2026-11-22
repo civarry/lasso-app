@@ -126,12 +126,12 @@ final class ChatController {
         guard c.hasMessages else {
             // Everything deleted: the saved file goes too, or the chat would load back in full.
             let id = c.id
-            Task.detached(priority: .utility) { ConversationStore.delete(id: id); ConversationStore.writeIndex(entries) }
+            ConversationStore.enqueue { ConversationStore.delete(id: id); ConversationStore.writeIndex(entries) }
             return
         }
         let dto = ConversationStore.snapshot(c)
         let thumbs = ConversationStore.thumbnailJobs(c)
-        Task.detached(priority: .utility) {
+        ConversationStore.enqueue {
             ConversationStore.writeConversation(dto, thumbnails: thumbs)
             ConversationStore.writeIndex(entries)
         }
@@ -616,10 +616,13 @@ final class ChatController {
     /// recent remaining; closing the last conversation leaves a fresh empty one.
     func close(_ id: UUID) {
         guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
+        denyWaitingTools(in: sessions[idx])
         sessions[idx].cancelWork()
         let wasActive = sessions[idx].id == active.id
         sessions.remove(at: idx)
-        ConversationStore.delete(id: id)   // drop its file; index is rewritten below
+        // Drop its file after any save already queued for it (the same serial queue), or that save
+        // would bring it back.
+        ConversationStore.enqueue { ConversationStore.delete(id: id) }
         if sessions.isEmpty {
             let fresh = Conversation()
             sessions = [fresh]
@@ -670,6 +673,7 @@ final class ChatController {
 
     /// Reset the ACTIVE conversation in place (`/clear`) — scoped to the current chat, not the others.
     func clearActive() {
+        denyWaitingTools(in: active)
         active.cancelWork()
         active.memoryIndex.reset()
         active.memory = ConversationMemory()
@@ -688,7 +692,8 @@ final class ChatController {
         active.carriedVersions = []
         active.isStreaming = false
         // The conversation is now empty — drop its persisted file and refresh the index.
-        ConversationStore.delete(id: active.id)
+        let clearedID = active.id
+        ConversationStore.enqueue { ConversationStore.delete(id: clearedID) }
         persist(active)
     }
 
@@ -699,7 +704,8 @@ final class ChatController {
         let fresh = Conversation()
         sessions = [fresh]
         active = fresh
-        Task.detached(priority: .utility) { ConversationStore.clearAll() }
+        for s in sessions { denyWaitingTools(in: s) }
+        ConversationStore.enqueue { ConversationStore.clearAll() }
     }
 
     /// Append a session, make it active, and enforce the cap (drop the oldest non-active sessions).
@@ -2515,7 +2521,8 @@ final class ChatController {
                 continue
             }
             if m.role == .assistant, m.viaAgent {
-                let reply = Self.stripThoughtBlocks(from: m.text).trimmingCharacters(in: .whitespacesAndNewlines)
+                var reply = Self.stripThoughtBlocks(from: m.text).trimmingCharacters(in: .whitespacesAndNewlines)
+                if reply.isEmpty, !m.attachments.isEmpty { reply = "(Showed an image.)" }
                 if let last = turns.indices.last, turns[last].role == .user, !reply.isEmpty {
                     turns[last] = .init(role: .user, text: turns[last].text + agentNote(reply),
                                         imageBase64s: turns[last].imageBase64s)
@@ -2873,7 +2880,8 @@ final class ChatController {
         // anything else).
         if !mentioned.isEmpty {
             let looked = await lookInSources(typed: typed, mentioned: mentioned, excluded: excluded, session: session,
-                                             assistantID: assistantID, automatic: false)
+                                             assistantID: assistantID, automatic: false,
+                                             ownHermes: HermesAgent.usesOwnHermes)
             // Say what the source is, so "my notes" isn't taken for Apple Notes or anything else.
             let sources = PackageRegistry.shared.sources().filter { mentioned.contains($0.id) }
             let where_ = sources.map { source in
@@ -3030,10 +3038,20 @@ final class ChatController {
                               maxMessages: Int = 40, maxChars: Int = 60_000) -> [(role: String, content: String)] {
         var out: [(role: String, content: String)] = []
         var total = 0
-        for m in messages.reversed() where !m.isError {
-            let text = m.role == .assistant ? stripThoughtBlocks(from: m.text) : (m.promptText ?? m.text)
+        // The same rule as `historyTurns`: Lasso's notes are skipped, and a reply that isn't an answer goes
+        // with the question it failed to answer (no two user turns in a row).
+        var dropQuestion = false
+        for m in messages.reversed() {
+            if m.role == .assistant, m.isLocalNote { continue }
+            if m.role == .assistant, !m.isAnswer { dropQuestion = true; continue }
+            if m.role == .user, dropQuestion { dropQuestion = false; continue }
+            dropQuestion = false
+            var text = m.role == .assistant ? stripThoughtBlocks(from: m.text) : (m.promptText ?? m.text)
+            if m.role == .assistant, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !m.attachments.isEmpty {
+                text = "(Showed an image.)"
+            }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, trimmed != "(Stopped.)" else { continue }
+            guard !trimmed.isEmpty else { continue }
             guard out.count < maxMessages, total + trimmed.count <= maxChars else { break }
             total += trimmed.count
             out.append((m.role == .user ? "user" : "assistant", trimmed))
@@ -3075,7 +3093,8 @@ final class ChatController {
     /// ones Lasso picks itself. Each shows as a step; passages for a cloud model wait for the user's
     /// Allow. Returns the fenced passages for the model, and whether they're going to a cloud model.
     func lookInSources(typed: String, mentioned: [String], excluded: Set<String>, session: Conversation,
-                               assistantID: UUID, automatic: Bool = true) async -> (evidence: String?, cloudBound: Bool) {
+                               assistantID: UUID, automatic: Bool = true,
+                               ownHermes: Bool = false) async -> (evidence: String?, cloudBound: Bool) {
         func edit(_ mutate: (inout ChatMessage) -> Void) {
             if let i = session.messages.firstIndex(where: { $0.id == assistantID }) { mutate(&session.messages[i]) }
         }
@@ -3131,7 +3150,10 @@ final class ChatController {
             return try await SourceSearch.run(source, turn)
         }
         var kept = hits
-        let recipient = intelligence.textRecipient
+        // Your own Hermes thinks with a model Lasso can't see (set in Hermes, maybe on another Mac), so
+        // passages for it always ask, as they would for a cloud model.
+        let hermesHost = URL(string: HermesAgent.baseURLString)?.host ?? "Hermes"
+        let recipient = ownHermes ? (key: "hermes:\(hermesHost)", name: "your Hermes (\(hermesHost))") : intelligence.textRecipient
         // Before anything goes to a cloud model: the user's Allow, per source and provider.
         if let recipient {
             for outcome in outcomes {
@@ -3318,6 +3340,13 @@ final class ChatController {
         timer.cancel()
         edit { if $0.toolApproval?.id == id { $0.toolApproval = nil } }
         return allowed
+    }
+
+    /// A chat that's closed or cleared can't answer its cards: every tool waiting on one is denied now
+    /// (not after the 280 s timeout), and an Agent reply in it stops being the one asked.
+    func denyWaitingTools(in session: Conversation) {
+        for m in session.messages { if let request = m.toolApproval { answerToolApproval(request.id, allow: false) } }
+        if agentReply?.session === session { agentReply = nil }
     }
 
     /// The user's answer on the card (or a stop or timeout, as a no).

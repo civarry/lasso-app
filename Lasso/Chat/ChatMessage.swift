@@ -90,7 +90,8 @@ struct ChatMessage: Identifiable, @unchecked Sendable {
     /// A reply that's a real answer: not an error, not empty, not Stop's placeholder, not Lasso's own note.
     var isAnswer: Bool {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !isError && !isLocalNote && !t.isEmpty && t != "(Stopped.)" && t != "(No response.)"
+        // An image-only reply (the Agent's MEDIA:) is an answer too.
+        return !isError && !isLocalNote && (!t.isEmpty || !attachments.isEmpty) && t != "(Stopped.)" && t != "(No response.)"
     }
     /// Every answer this reply has had (Regenerate keeps the earlier ones, like other chat apps' ‹ 2/3 ›),
     /// with this one at `versionIndex`. Empty until it's regenerated. The shown answer's own fields are the
