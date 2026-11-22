@@ -232,6 +232,8 @@ enum PackageHowTo {
                         add("keyboard", "Set a shortcut for **\(command.title)** in Settings › Keyboard Shortcuts, then use it on highlighted text.")
                     }
                 case .tool: add("bubble.left", "Just ask in chat; the model uses **\(command.title)** when it helps.")
+                case .code:
+                    add("play", "Click **\(command.title)** on a \(command.languages.first ?? "code") code block in a chat reply.")
                 case .event:
                     let when = command.on.map { $0 == .capture ? "every capture" : "every chat reply" }.joined(separator: " and ")
                     add("bolt", PackageEvents.isAllowed(package.id)

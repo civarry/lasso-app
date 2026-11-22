@@ -182,6 +182,7 @@ package that silently does nothing.
 | `slash` | A chat command, `/<command-id>` | Runs on what's typed after it, or the last reply. Lasso's own names (`new`, `clear`, `copy`, `about`, `web`, `help`) are reserved; when two packages use the same id, both become `/<package-id>-<id>`. |
 | `tool` | A tool for the chat model and Lasso's Agent | See [Model and Agent tools](#model-and-agent-tools). |
 | `search` | A source for Lasso's web search (chat, Identify, Agent) | `input` MUST be `query`, `output` MUST be `results`. |
+| `code` | A button on code blocks in chat replies, for the `languages` it lists (`["python", "py"]`), next to Copy | Lasso 0.28. Input `text` (the block), output `markdown`; the run shows in the block itself (see [Code blocks](#code-blocks-a-run-button)). Nowhere else. |
 | `hotkey` | Listed in Settings › Shortcuts under Highlighted text; the user can assign a key that runs it on the text highlighted in the frontmost app | The package never assigns a key itself. Hotkeys are stored as `pkg.<package-id>.<command-id>`, cleared on Remove, and checked for conflicts with Lasso's own. `source.url` is empty for hotkeys. |
 
 ### Input
@@ -468,6 +469,32 @@ The review shows both: "Reads your message and your previous question when it se
 own best results instead of Lasso's word match", tagged New when an update adds them.
 After an update, the package page offers **Go back** to the version before. Try a source on saved turns
 with `lasso-pkg replay <folder> turns.json --setting notes=<folder>`.
+
+## Code blocks: a Run button
+
+Built (Lasso 0.28.0). A command with the `code` surface and `"languages": ["python", "py"]` puts its
+button (its `title` and `symbol`) in the header of every finished code block of those languages in a chat
+reply. Clicking it runs the command; the block turns into a console: "Run started", each `progress:` line
+the script writes to standard error, its answer, and "Run completed in 605 ms" (or "Run failed after …"),
+with **Code** to switch back. Nothing runs without the click; it's the user's own action, like a toolbar
+button.
+
+The script gets `text` (the block's code), `language`, and `reply` (the whole reply, for other files it
+names). It answers with a console:
+
+```json
+{"console": "Hello, iteration 0\n…", "failed": false, "image": "drawing.png",
+ "actions": [{"title": "Install numpy", "command": "install", "input": {"packages": "numpy"}, "rerun": true},
+             {"title": "Fix it", "chat": "This code failed: … Fix it."}]}
+```
+
+- `image`: a picture it made in its own folders, shown in the block (click opens it larger).
+- `actions`: up to 3 buttons under the console. A `command` button runs another command of the same
+  package with `input` in its standard input as `action` (and with `rerun`, the block's command again
+  after it succeeds). A `chat` button sends that text to the chat as the user's message.
+- **A command with `"surfaces": []`** appears nowhere: only its package's buttons run it. That's how a
+  package keeps internet access to one step: Run Python's `install` command declares `network`, its
+  runner doesn't, and the review lists both.
 
 ## Patches: changing Lasso's own content
 

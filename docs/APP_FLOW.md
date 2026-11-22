@@ -891,6 +891,15 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Code blocks: a package's Run button (0.28).** New `code` surface: a command with `languages` gets its
+  button in the header of finished code blocks of those languages in chat replies (`CodeRunner`, the
+  `codeBlockContext` environment set by `ChatView`, `CodeBlockView` in `MarkdownView.swift`). Clicking runs
+  it with the block's code, language and the whole reply; the block becomes a console (`CodeConsoleView`):
+  "Run started", the script's `progress:` lines (`PackageCommandRunner.run(progress:)`), its answer
+  (`PackageScript.Output.console`: text, an image from its own folders, up to 3 buttons), and the time,
+  with Code to switch back. A button runs another command of the same package (with `action` input, then
+  optionally the block again) or sends a chat message. Commands may have `"surfaces": []` (script only):
+  run only by those buttons, so a package can keep the network to one step (Run Python's `install`).
 - **Updates on the package's page (0.27.1).** The page and the Packages list read the catalog when they
   open (at most every 10 s, never in local-only mode). A newer version shows as a row under the
   package's header: **Update…** downloads it and opens the same review as Browse, or, when its

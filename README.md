@@ -17,11 +17,27 @@
 
 <p align="center"><img src="screenshots/hero.png" alt="Drag a box around anything on screen and translate it in place"></p>
 
-**Jump to:** [What's new](#whats-new-in-027) · [What it does](#what-it-does) · [Chat](#chat) ·
+**Jump to:** [What's new](#whats-new-in-028) · [What it does](#what-it-does) · [Chat](#chat) ·
 [Agent](#agent) · [Packages](#packages) · [Privacy](#privacy) · [Install](#install) ·
 [Updates](#updates) · [AI models](#ai-models) · [Build it](#build-it-yourself)
 
-## What's new in 0.27
+## What's new in 0.28
+
+**Run the code in a reply, right where it is.** With **Run Python** (Settings › Packages › Browse), every
+Python code block in chat gets a **Run** button.
+
+- The block shows the run as it happens, then the output and how long it took; **Code** switches back.
+- Turtle code shows its drawing in the block.
+- A missing library (numpy…) gets **Install numpy**: it goes into a private environment only Run Python
+  uses, then the code runs again. A failed run gets **Fix it**, which asks the chat model for a fix you
+  can run.
+- It's a package, not built in: Lasso 0.28 lets any package put a button on code blocks, so a runner
+  for another language can be a package too.
+
+<p align="center"><img src="screenshots/app/code-run.png" width="460" alt="Python code blocks in chat with Run, a finished run's output, and an Install numpy button"></p>
+
+<details>
+<summary>New in 0.27</summary>
 
 **Packages can fix more without waiting for a Lasso update.** A search package can now take over the
 whole search: it gets your message as you typed it and the question before it, and Lasso keeps only the
@@ -38,6 +54,8 @@ safety rules (what reaches the model, what leaves your Mac).
   saved chat turns ([guide](docs/PACKAGES.md#hooks-a-package-takes-over-a-step)).
 
 <p align="center"><img src="screenshots/app/source-hooks-chat.png" width="460" alt="A typo offer, the corrected search, and a follow-up that stays on the subject"></p>
+
+</details>
 
 <details>
 <summary>New in 0.26</summary>
@@ -235,6 +253,7 @@ A package can add, or change:
 - **Changes to Lasso itself:** the Summarize and Proofread prompts, action names, the toolbar's
   defaults, chat suggestions and extra chat instructions. Off undoes them.
 - **Shortcuts and sandboxed scripts** (new in 0.21) behind any of the above.
+- **Buttons on code blocks** in chat (new in 0.28), like Run Python's **Run**.
 - **Your own sources** like My notes, which can take over the whole search (new in 0.27): typos, other
   languages, follow-ups and dates are the package's job, so it improves without a Lasso update.
 

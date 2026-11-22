@@ -243,10 +243,21 @@ private struct CodeBlockView: View {
     let fontSize: CGFloat
     let selectable: Bool
     @State private var copied = false
+    /// After Run, the block shows its console; Code switches back. Unset: the console when there's a run.
+    @State private var showRun: Bool?
+    private var showingRun: Bool { showRun ?? (run != nil) }
+    @Environment(\.codeBlockContext) private var context
+    private var runner: CodeRunner { .shared }
+
+    private var key: String? { context.map { CodeRunner.key($0.message, content) } }
+    private var run: CodeRunner.Run? { key.flatMap { runner.run($0) } }
+    private var commands: [(entry: PackageRegistry.Entry, command: PackageCommand)] {
+        context != nil && complete ? runner.commands(for: language) : []
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
+            HStack(spacing: 10) {
                 Image(systemName: "chevron.left.forwardslash.chevron.right")
                     .font(.system(size: fontSize - 4))
                 Text(language?.isEmpty == false ? language! : "code")
@@ -254,7 +265,7 @@ private struct CodeBlockView: View {
                 Spacer()
                 if complete {
                     Button {
-                        Pasteboard.copy(content)
+                        Pasteboard.copy(showingRun ? consoleText : content)
                         copied = true
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
                     } label: {
@@ -265,7 +276,39 @@ private struct CodeBlockView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(copied ? Color.green : Color.secondary)
-                    .help("Copy this code block")
+                    .help(showingRun ? "Copy the output" : "Copy this code block")
+                }
+                if showingRun, run != nil {
+                    Button { showRun = false } label: {
+                        Label("Code", systemImage: "chevron.left.forwardslash.chevron.right")
+                            .font(.system(size: fontSize - 3)).labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Show the code")
+                } else {
+                    ForEach(commands, id: \.command.id) { item in
+                        Button {
+                            guard let key, let context else { return }
+                            runner.start(item.entry, item.command, code: content, language: language ?? "",
+                                         reply: context.reply, key: key)
+                            showRun = true
+                        } label: {
+                            Label(item.command.title, systemImage: item.command.symbol ?? "play")
+                                .font(.system(size: fontSize - 3, weight: .medium)).labelStyle(.titleAndIcon)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
+                        .disabled(run?.running == true)
+                        .help("\(item.command.title) with \(item.entry.package.name)")
+                    }
+                    if !showingRun, run != nil {
+                        Button { showRun = true } label: {
+                            Label("Output", systemImage: "terminal")
+                                .font(.system(size: fontSize - 3)).labelStyle(.titleAndIcon)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Show the last run")
+                    }
                 }
             }
             .foregroundStyle(.secondary)
@@ -273,15 +316,91 @@ private struct CodeBlockView: View {
             .padding(.vertical, 6)
             .background(.white.opacity(0.05))
 
-            HScroll {
-                Text(content)
-                    .font(.system(size: fontSize - 1, design: .monospaced))
-                    .textSelectable(selectable)
-                    .padding(8)
+            if showingRun, let run, let key {
+                CodeConsoleView(run: run, fontSize: fontSize, perform: { runner.perform($0, key: key) })
+            } else {
+                HScroll {
+                    Text(content)
+                        .font(.system(size: fontSize - 1, design: .monospaced))
+                        .textSelectable(selectable)
+                        .padding(8)
+                }
             }
         }
         .background(RoundedRectangle(cornerRadius: 6).fill(.white.opacity(0.08)))
         .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private var consoleText: String {
+        guard let run else { return "" }
+        return run.console?.text ?? run.error ?? run.lines.joined(separator: "\n")
+    }
+}
+
+/// A run in its code block: the steps (dim), the output, the picture, how long it took, and the
+/// buttons the script offered.
+private struct CodeConsoleView: View {
+    let run: CodeRunner.Run
+    let fontSize: CGFloat
+    let perform: (PackageScript.Console.Action) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(run.lines.enumerated()), id: \.offset) { _, line in
+                Text(line).foregroundStyle(.secondary)
+            }
+            if run.running {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Running…").foregroundStyle(.secondary)
+                }
+            }
+            if let console = run.console {
+                if !console.text.isEmpty {
+                    Text(console.text)
+                        .foregroundStyle(console.failed ? Color.orange : Color.primary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let url = console.image, let image = NSImage(contentsOf: url) {
+                    Image(nsImage: image)
+                        .resizable().aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: 520, maxHeight: 400, alignment: .leading)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .onTapGesture {
+                            if let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+                                ImageViewer.shared.show(cg, title: url.lastPathComponent, file: url)
+                            }
+                        }
+                        .help("Click to open it larger")
+                }
+            }
+            if let error = run.error {
+                Text(error).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            if let elapsed = run.elapsed {
+                Text(run.error != nil || run.console?.failed == true
+                     ? "Run failed after \(Self.duration(elapsed))" : "Run completed in \(Self.duration(elapsed))")
+                    .foregroundStyle(.secondary)
+            }
+            if let actions = run.console?.actions, !actions.isEmpty, !run.running {
+                HStack(spacing: 8) {
+                    ForEach(actions) { action in
+                        Button(action.title) { perform(action) }
+                            .buttonStyle(.bordered).controlSize(.small)
+                            .help(action.chat != nil ? "Asks the chat model" : action.title)
+                    }
+                }
+                .padding(.top, 4)
+            }
+        }
+        .font(.system(size: fontSize - 2, design: .monospaced))
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    static func duration(_ seconds: TimeInterval) -> String {
+        seconds < 1 ? "\(Int(seconds * 1000)) ms" : String(format: "%.1f s", seconds)
     }
 }
 

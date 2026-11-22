@@ -137,6 +137,7 @@ enum PackageOutput {
         case .url(let u): return u.absoluteString
         case .file(let u): return shortPath(u)
         case .stream(let s): return try await PackageCommandRunner.collect(s)
+        case .console(let c): return c.text
         }
     }
 
@@ -216,6 +217,7 @@ struct PackageCommandAction: CaptureAction {
                 case .text(let t): return .text(t)
                 case .url(let u): return .text(u.absoluteString)
                 case .file(let u): return .text(PackageOutput.shortPath(u))
+                case .console(let c): return .text(c.text)
                 }
             case .open:
                 await PackageOutput.deliver(result, output: .open, title: command.title)
