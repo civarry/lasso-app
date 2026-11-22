@@ -98,13 +98,18 @@ struct KeychainReviewTests {
         let package = try store.install(manifest(id: id), origin: .file)
         #expect(store.setValue("sk-pkg", id, try #require(package.setting("key"))), "precondition")
 
-        let reads = afterRefusal(100) { reads in
+        let (reads, removed) = afterRefusal(100) { reads in
             _ = Keychain.get("qa-review.any")   // refused at launch
-            store.remove(id)
-            return reads.count
+            let removed = store.remove(id)
+            return (reads.count, removed)
         }
         #expect(reads <= 2, "one uninstall prompted \(reads - 1) times after the launch's refusal")
-        #expect(Keychain.get(account) == nil, "the uninstalled package's key is still saved; a reinstall gets it back")
+        // Design changed after review 2: a key that couldn't be deleted is no longer replayed later
+        // (that replay deleted keys saved since). The uninstall says so, and a fresh install clears it.
+        #expect(!removed, "the uninstall claimed its key was deleted")
+        let again = try store.install(manifest(id: id), origin: .file)
+        #expect(store.value(id, try #require(again.setting("key"))) == "",
+                "a reinstall with this id got the old key back")
     }
 
     // R4. The hook is task-local, but what it causes (`refused`, a reset `cache`) is global. Suites run

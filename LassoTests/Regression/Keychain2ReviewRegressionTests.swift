@@ -90,26 +90,20 @@ struct Keychain2ReviewTests {
     //     new key the next time the first build opens the vault. Simulated: the other build's `set`
     //     clears only its own list, so this build's list is put back as it was.
     @Test func aWaitingRemovalDoesNotDeleteAKeySavedSince() {
+        // Design changed after this review: nothing is remembered for later, so no stale removal can run.
+        // This guards against bringing a replay back: a removal refused now never deletes a later key.
         let account = "qa2.pending.\(UUID().uuidString)"
-        let pendingKey = "keychain.pendingRemovals.tests"
-        defer {
-            Keychain.delete(account)
-            let list = (UserDefaults.standard.stringArray(forKey: pendingKey) ?? []).filter { $0 != account }
-            UserDefaults.standard.set(list, forKey: pendingKey)
-        }
+        defer { Keychain.delete(account) }
         launch(refusals: 100) { _ in
             _ = Keychain.get("qa2.any")
-            #expect(!Keychain.removeAll([account]), "precondition: removal waits for the vault")
+            #expect(!Keychain.removeAll([account]), "precondition: the removal can't happen now")
         }
-        let waiting = UserDefaults.standard.stringArray(forKey: pendingKey) ?? []
-        #expect(waiting.contains(account), "precondition: the removal is remembered")
-
-        // The other build reinstalls the package and saves its new key (its own preferences).
+        Keychain.resetCache()
+        // The other build reinstalls the package and saves its new key.
         #expect(launch(refusals: 0) { _ in Keychain.set("sk-reinstalled", for: account) }, "precondition")
-        UserDefaults.standard.set(waiting, forKey: pendingKey)
-
+        Keychain.resetCache()
         // This build's next launch opens the vault.
         let seen = launch(refusals: 0) { _ in Keychain.get(account) }
-        #expect(seen == "sk-reinstalled", "a removal remembered earlier deleted a key saved after it")
+        #expect(seen == "sk-reinstalled", "a removal refused earlier deleted a key saved after it")
     }
 }
