@@ -2990,6 +2990,7 @@ final class ChatController {
             if let i = session.messages.firstIndex(where: { $0.id == assistantID }) { mutate(&session.messages[i]) }
         }
         let available = PackageRegistry.shared.sources()
+        SourceAbout.fillIfEmpty(available)
         let forced = mentioned.compactMap { id in available.first { $0.id == id } }.filter { !excluded.contains($0.id) }
         let previous = session.messages.filter { !$0.isStreaming }.suffix(3).map(\.text).joined(separator: " ")
         let picked = automatic
@@ -3066,7 +3067,7 @@ final class ChatController {
         }
         edit { $0.sourceHits = kept }
         Log.chat.notice("sources · looked in \(chosen.count, privacy: .public), \(kept.count, privacy: .public) passage(s) sent, cloud=\(recipient != nil, privacy: .public)")
-        return (SourceSearch.evidence(kept), recipient != nil && !kept.isEmpty)
+        return (SourceSearch.evidence(kept) ?? SourceSearch.nothingFound(outcomes), recipient != nil && !kept.isEmpty)
     }
 
     enum SourceConsent { case always, once, deny }

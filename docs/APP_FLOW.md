@@ -747,13 +747,14 @@ flowchart LR
   Browse["Settings ▸ Packages ▸ Browse…<br/>(updates first; lasso://install?id= opens it)"] --> Index --> Dl --> Review
   Dev["Developer mode: New Package (starters) · Load Folder<br/>(polled every 2 s, reloaded without review;<br/>problems shown, last good copy kept)"] --> Pkgs
   subgraph Src["Sources on this Mac (search package, no network)"]
-    Pick["@ chip (forced, sticks) · or SourcePicker:<br/>shares words with What's in it, ≤ 2, relative margin;<br/>no model call"]
+    Pick["@ chip (forced, sticks) · or SourcePicker:<br/>shares words with What's in it, ≤ 2, relative margin;<br/>no model call (empty What's in it: filled from the folder)"]
     Gate["SourceSearch.look: user's own words, 5 s each,<br/>gate ≥ 2 words, 3 passages / 1,200 chars total, fenced"]
     Consent{"cloud model?<br/>allowed for this source + company?"}
   end
   ChatP --> Pick --> Gate --> Consent
   Consent -->|"local, or allowed"| Answer["passages with the turn's evidence<br/>(fallback scope on-device only if cloud)"]
   Consent -->|"ask: Allow for · This time · Don't send"| Answer
+  Gate -->|"nothing matched"| Nothing["the model is told: found nothing,<br/>say so, don't invent"]
 ```
 
 Files: `Intelligence/Connectors.swift` (built-in Web search only), `WebSourcesProvider.swift`
@@ -887,6 +888,18 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Sources: what a live test on a 9B local model showed.** Lasso's chat was run end to end on Qwen3.5
+  9B (MLX) against a notes folder with the Python 3.15 docs next to personal notes. Four fixes: when the
+  sources Lasso looked in find nothing, the turn tells the model so (`SourceSearch.nothingFound`: say it
+  plainly, nothing "from your notes", no buttons or menus, say an unfamiliar word is unknown), since it
+  had invented a Keychain feature and a "frozendcit" tool; `SourceWords.stem` runs until nothing changes,
+  so "meetings" and "meeting" match (My notes 1.3.0 stems the same way); an empty **What's in it** is
+  filled from the folder once it has notes (`SourceAbout.fillIfEmpty`, folder and file names first),
+  since a folder chosen while empty was never searched by itself; and "what's in my notes" lists folders
+  with their file counts and subfolders, the loose notes and the newest few (`SourceSearch.inventory`),
+  so 551 doc pages no longer hide the user's own notes. My notes 1.3.0 (catalog) ranks by BM25 scaled
+  by how much of the question it covers, picks passages that cover different words of it, and boosts a
+  note's title, file and folder names.
 - **Packages: the capture image, text positions, events, more patches.** New inputs, both from a capture
   (toolbar and the capture event only): `image` (a PNG: written into a script's `TMPDIR` before it starts,
   its path in `image`; a Shortcut's input file; sent with a prompt to a model that sees images, never to
@@ -922,7 +935,7 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
   line per command, shown first in How to use it. Checked with a rendered table through Lasso's own OCR.
 - **Sources: "list all my notes", and the Agent knowing what a source is.** A message with no words left
   once the source's own name is out ("can you list all my notes?") gets the source's files instead of a
-  search: Lasso reads the chosen folder itself (`SourceSearch.inventory`, newest first, up to 60 names),
+  search: Lasso reads the chosen folder itself (`SourceSearch.inventory`; by folder since the live-test fixes),
   step "Listed the files in My notes". An Agent turn with an @-mentioned source is told what it is ("My
   notes is the folder ~/Development/_docs on this Mac, not Apple Notes or another app") along with the
   passages, so it no longer reaches for Apple Notes; and the source's step stays above the Agent's own.

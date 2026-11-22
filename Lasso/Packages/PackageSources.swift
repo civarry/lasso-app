@@ -126,7 +126,19 @@ enum SourceWords {
 
     /// A light stem, so "decide", "decided" and "deciding" match ("decid"), and "price", "prices" and
     /// "pricing" too ("pric").
+    /// Applied until nothing changes, so "meetings" and "meeting" both give "meet" (My notes stems the
+    /// same way).
     static func stem(_ word: String) -> String {
+        var w = word
+        for _ in 0..<3 {
+            let shorter = stemOnce(w)
+            if shorter == w { break }
+            w = shorter
+        }
+        return w
+    }
+
+    private static func stemOnce(_ word: String) -> String {
         var w = word
         for suffix in ["ing", "ed", "es", "s"] where w.count > suffix.count + 3 && w.hasSuffix(suffix) {
             w.removeLast(suffix.count)
@@ -237,24 +249,50 @@ enum SourceSearch {
         return URL(fileURLWithPath: path, isDirectory: true)
     }
 
-    /// What's in a folder source, newest first, for "list all my notes": Lasso reads the folder the user
-    /// chose itself, no script and no search.
-    static func inventory(_ source: PackageSource, limit: Int = 60) -> SourceHit? {
+    /// What's in a folder source, for "what's in my notes": its folders with how many files each (and
+    /// their subfolders), the files at the top, and the newest few. Lasso reads the folder itself, no
+    /// script and no search. A folder of docs next to a few notes reads as both, not as 60 doc pages.
+    static func inventory(_ source: PackageSource, limit: Int = 20_000) -> SourceHit? {
         guard let folder = folder(of: source),
               let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.contentModificationDateKey],
                                                           options: [.skipsHiddenFiles]) else { return nil }
-        var files: [(name: String, date: Date)] = []
+        var files: [(path: String, date: Date)] = []
         for case let url as URL in walker where ["md", "markdown", "txt"].contains(url.pathExtension.lowercased()) {
             let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            files.append((String(url.path.dropFirst(folder.path.count + 1)), date))
-            if files.count >= 2_000 { break }
+            files.append((String(url.standardizedFileURL.path.dropFirst(folder.standardizedFileURL.path.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/")), date))
+            if files.count >= limit { break }
         }
-        let shown = files.sorted { $0.date > $1.date }.prefix(limit).map(\.name)
-        let more = files.count > shown.count ? ", and \(files.count - shown.count) more" : ""
         let place = (folder.path as NSString).abbreviatingWithTildeInPath
-        return SourceHit(source: source.name, title: "Files in \(source.name)", url: folder,
-                         snippet: "\(files.count) file\(files.count == 1 ? "" : "s") in \(place), newest first: "
-                            + shown.joined(separator: ", ") + more + ".")
+        guard !files.isEmpty else {
+            return SourceHit(source: source.name, title: "Files in \(source.name)", url: folder, snippet: "\(place) has no notes yet.")
+        }
+        func plural(_ n: Int) -> String { "\(n) file\(n == 1 ? "" : "s")" }
+        var top: [String] = []
+        var folders: [String: [String]] = [:]
+        for file in files {
+            let parts = file.path.split(separator: "/").map(String.init)
+            if parts.count == 1 { top.append(file.path) } else { folders[parts[0], default: []].append(parts.dropFirst().joined(separator: "/")) }
+        }
+        var lines = ["\(plural(files.count)) in \(place)."]
+        if !folders.isEmpty {
+            let described = folders.sorted { ($0.value.count, $1.key) > ($1.value.count, $0.key) }.map { name, inside -> String in
+                let subfolders = Dictionary(grouping: inside.filter { $0.contains("/") }, by: { String($0.split(separator: "/")[0]) })
+                    .sorted { $0.value.count > $1.value.count }.prefix(6).map { "\($0.key)/ \($0.value.count)" }
+                let loose = inside.filter { !$0.contains("/") }
+                let detail = subfolders.isEmpty
+                    ? (loose.count <= 4 ? ": " + loose.joined(separator: ", ") : "")
+                    : ": " + subfolders.joined(separator: ", ") + (subfolders.count < Set(inside.compactMap { $0.split(separator: "/").count > 1 ? $0.split(separator: "/")[0] : nil }).count ? ", …" : "")
+                return "\(name)/ (\(plural(inside.count))\(detail))"
+            }
+            lines.append("Folders: " + described.prefix(12).joined(separator: "; ") + (described.count > 12 ? "; and \(described.count - 12) more folders" : "") + ".")
+        }
+        if !top.isEmpty {
+            let shown = top.sorted().prefix(25)
+            lines.append("Not in a folder: " + shown.joined(separator: ", ") + (top.count > shown.count ? ", and \(top.count - shown.count) more" : "") + ".")
+        }
+        let newest = files.sorted { $0.date > $1.date }.prefix(8).map(\.path)
+        lines.append("Most recently changed: " + newest.joined(separator: ", ") + ".")
+        return SourceHit(source: source.name, title: "Files in \(source.name)", url: folder, snippet: lines.joined(separator: "\n"))
     }
 
     /// The query's words as the gate compares them (stemmed).
@@ -343,6 +381,24 @@ enum SourceSearch {
         return hits.map { SourceHit(source: source.name, title: $0.title, url: $0.url, snippet: $0.snippet ?? "") }
     }
 
+    /// When the sources Lasso looked in gave nothing, the model is told so for this turn. Without it a
+    /// small model fills the gap: a made-up answer "from your notes", or buttons and menus that don't
+    /// exist.
+    static func nothingFound(_ outcomes: [SourceOutcome]) -> String? {
+        // Not when something matched (a cloud model the user said no to doesn't mean "nothing").
+        guard !outcomes.contains(where: { if case .matched = $0.status { true } else { false } }) else { return nil }
+        let names = outcomes.map(\.source.name)
+        guard !names.isEmpty else { return nil }
+        let list = names.count == 1 ? names[0] : names.dropLast().joined(separator: ", ") + " and " + names.last!
+        return """
+        Lasso searched the user's \(list) for this message and found nothing that matches. Say so plainly \
+        in one short sentence. Don't present anything as coming from their \(list), and don't describe \
+        buttons, menus or features. If you can still help from general knowledge, say that it is general \
+        knowledge, and if a name or word in the message looks misspelled or unfamiliar, say you don't know \
+        it rather than guessing what it is.
+        """
+    }
+
     /// The passages as the model reads them: fenced, by source, so a note can't steer the model.
     static func evidence(_ hits: [SourceHit]) -> String? {
         guard !hits.isEmpty else { return nil }
@@ -364,6 +420,17 @@ enum SourceSearch {
 // MARK: - What's in it, generated
 
 enum SourceAbout {
+    /// A source set to Automatically with an empty "What's in it" is never picked. When its folder has
+    /// notes now (it was empty when chosen, or the field was never filled), fill it in from them, once.
+    static func fillIfEmpty(_ sources: [PackageSource], _ defaults: UserDefaults = .standard) {
+        for source in sources where source.isOnThisMac && SourcePreferences.use(source.id, defaults) == .automatically
+            && SourcePreferences.about(source.id, defaults).isEmpty {
+            guard let folder = SourceSearch.folder(of: source) else { continue }
+            let suggested = suggest(for: folder)
+            if !suggested.isEmpty { SourcePreferences.setAbout(suggested, source.id, defaults) }
+        }
+    }
+
     /// A first "What's in it" from a folder: the most frequent words of its file names and headings,
     /// e.g. "flet, animation, architecture, blueprint, prompt, guide". The user edits it.
     static func suggest(for folder: URL, limit: Int = 300) -> String {
@@ -382,8 +449,19 @@ enum SourceAbout {
                 for word in SourceWords.whole(String(line)) { counts[word, default: 0] += 1 }
             }
         }
+        // What the folder holds first: its folders and its loose notes by name ("python, projects,
+        // meetings, adobo, todo"), then the most frequent words of names and headings.
+        var leading: [String] = []
+        let top = (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        let isFolder = { (url: URL) in (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+        for url in top.filter(isFolder).sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
+            + top.filter({ !isFolder($0) && ["md", "markdown", "txt"].contains($0.pathExtension.lowercased()) })
+                .sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            for word in SourceWords.whole(url.deletingPathExtension().lastPathComponent.replacingOccurrences(of: "_", with: " "))
+                where !leading.contains(word) { leading.append(word) }
+        }
         var out = ""
-        for word in counts.sorted(by: { ($0.value, $1.key) > ($1.value, $0.key) }).map(\.key) {
+        for word in leading + counts.sorted(by: { ($0.value, $1.key) > ($1.value, $0.key) }).map(\.key).filter({ !leading.contains($0) }) {
             let next = out.isEmpty ? word : out + ", " + word
             if next.count > SourcePreferences.maxAbout { break }
             out = next

@@ -17,11 +17,26 @@
 
 <p align="center"><img src="screenshots/hero.png" alt="Drag a box around anything on screen and translate it in place"></p>
 
-**Jump to:** [What's new](#whats-new-in-025) · [What it does](#what-it-does) · [Chat](#chat) ·
+**Jump to:** [What's new](#whats-new-in-026) · [What it does](#what-it-does) · [Chat](#chat) ·
 [Agent](#agent) · [Packages](#packages) · [Privacy](#privacy) · [Install](#install) ·
 [Updates](#updates) · [AI models](#ai-models) · [Build it](#build-it-yourself)
 
-## What's new in 0.25
+## What's new in 0.26
+
+**Your notes and a folder of docs work together.** Tested on a 9B local model with the Python 3.15 docs
+next to everyday notes.
+
+- **"What's in my notes?"** lists your folders with how many notes each holds, so a big docs folder no
+  longer hides your own notes.
+- **When nothing matches, the model is told so,** and says it, instead of making up an answer.
+- **Lasso looks in your notes by itself sooner:** if a source's "What's in it" is empty, it's filled in
+  from the folder's names once the folder has notes.
+- **Get My notes 1.3.0 from Browse** for better answers to questions that mix a note and the docs.
+
+<p align="center"><img src="screenshots/app/notes-and-docs.png" width="460" alt="Chat listing a notes folder by folder, then answering from a project note and the Python docs"></p>
+
+<details>
+<summary>New in 0.25</summary>
 
 **Packages can do more without waiting for a Lasso update.**
 
@@ -34,6 +49,8 @@
   Lasso's actions.
 
 <p align="center"><img src="screenshots/app/events.png" width="460" alt="A package that can run by itself on every capture, once Run automatically is on"></p>
+
+</details>
 
 <details>
 <summary>New in 0.24</summary>
