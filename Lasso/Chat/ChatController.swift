@@ -503,7 +503,7 @@ final class ChatController {
     /// `text` and `prepare` are Regenerate's: the text the command ran on, and removing the old exchange,
     /// done only once the command is sure to run.
     func runPackageSlash(_ match: PackageSlashMatch, typed: String, carried: [ReplyVersion] = [],
-                         text given: String? = nil, prepare: (() -> Void)? = nil) {
+                         text given: String? = nil, prepare: (() -> Bool)? = nil) {
         if let problem = packageSlashProblem(match, text: given) { composerNotice = problem; return }
         let command = match.command, entry = match.entry
         let text = given ?? (match.argument.isEmpty ? (lastReplyText ?? "") : match.argument)
@@ -517,8 +517,7 @@ final class ChatController {
             }
             if let prepare {
                 // Stopped, switched away or started another reply meanwhile: leave the exchange alone.
-                guard active === session, !isStreaming else { return }
-                prepare()
+                guard active === session, !isStreaming, prepare() else { return }
             }
             startPackageReply(match, typed: typed, text: text, carried: carried)
         }
@@ -1137,10 +1136,14 @@ final class ChatController {
             let text = match.argument.isEmpty
                 ? (active.messages[..<uIdx].last { $0.role == .assistant && $0.isAnswer }?.text ?? "") : match.argument
             let session = active
+            let questionID = userMsg.id
             runPackageSlash(match, typed: typed, carried: kept, text: text) { [weak self] in
-                CodeRunner.shared.forget(session.messages[uIdx...].map(\.id))
-                session.messages.removeSubrange(uIdx..<session.messages.count)
+                // Found again by id: a delete during the check moves (or removes) the exchange.
+                guard let start = session.messages.firstIndex(where: { $0.id == questionID }) else { return false }
+                CodeRunner.shared.forget(session.messages[start...].map(\.id))
+                session.messages.removeSubrange(start..<session.messages.count)
                 if self?.active === session { self?.resetDerivedMemory() }
+                return true
             }
             return
         }
@@ -3519,13 +3522,16 @@ final class ChatController {
     nonisolated static func isInsideCode(_ prefix: Substring) -> Bool {
         let fences = prefix.components(separatedBy: "```").count - 1
         if fences % 2 == 1 { return true }
-        // ~~~ fences too, as the parser takes them: a ~~~ line opens, the next ~~~ line closes.
-        var tilde = false
+        // ~~~ fences too, as the parser takes them: one open fence at a time, closed by the same
+        // character, so a ~~~ line inside a ``` block (or the reverse) is just code.
+        var open: Character?
         for line in prefix.split(separator: "\n", omittingEmptySubsequences: false) {
             let t = line.drop(while: { $0 == " " })
-            if t.prefix(while: { $0 == "~" }).count >= 3 { tilde.toggle() }
+            guard let first = t.first, first == "`" || first == "~",
+                  t.prefix(while: { $0 == first }).count >= 3 else { continue }
+            if let current = open { if current == first { open = nil } } else { open = first }
         }
-        if tilde { return true }
+        if open == "~" { return true }
         return prefix.replacingOccurrences(of: "```", with: "").filter { $0 == "`" }.count % 2 == 1
     }
 

@@ -111,7 +111,7 @@ enum MarkdownParser {
             }
         }
 
-        blocks.append(contentsOf: parsePlain(String(source[cursor..<source.endIndex])))
+        blocks.append(contentsOf: parsePlain(String(source[cursor..<source.endIndex]), streaming: streaming))
         if streaming, case .table(var last)? = blocks.last {
             last.isOpen = true
             blocks[blocks.count - 1] = .table(last)
@@ -143,13 +143,27 @@ enum MarkdownParser {
 
     // MARK: Block scanning
 
+    /// Whether a line has a `$$` that isn't part of a longer run of dollars (`$$$ fine dining`).
+    static func hasLoneDoubleDollar(_ t: String) -> Bool {
+        let chars = Array(t)
+        var i = 0
+        while i < chars.count {
+            guard chars[i] == "$" else { i += 1; continue }
+            var run = 0
+            while i + run < chars.count, chars[i + run] == "$" { run += 1 }
+            if run == 2 { return true }
+            i += run
+        }
+        return false
+    }
+
     /// A ``` or ~~~ fence line (trimmed).
     static func isFenceLine(_ t: String) -> Bool {
         guard let first = t.first, first == "`" || first == "~" else { return false }
         return t.prefix(while: { $0 == first }).count >= 3
     }
 
-    static func parsePlain(_ text: String) -> [MarkdownBlock] {
+    static func parsePlain(_ text: String, streaming: Bool = false) -> [MarkdownBlock] {
         let lines = text.components(separatedBy: "\n")
         var blocks: [MarkdownBlock] = []
         var paragraph: [String] = []
@@ -181,18 +195,20 @@ enum MarkdownParser {
                     i += 1
                 } else {
                     // "$$ mid-range" (price tiers) or "$$ is the shell's PID" isn't math: with text on its
-                    // line, `$$` opens display math only when a later line ends with the closer before a
-                    // blank line. Nothing runs past a code fence either.
+                    // line, `$$` opens display math only when a later line closes it with a `$$` that isn't
+                    // part of `$$$`, before a blank line or a fence. While streaming, math whose closer
+                    // hasn't arrived yet stays math (no snap from raw LaTeX to an equation).
                     let bare = head.trimmingCharacters(in: .whitespaces).isEmpty
                     if delims.open == "$$", !bare {
-                        var j = i + 1, found = false
-                        while j < lines.count {
+                        var j = i + 1, found = false, reachedEnd = true
+                        if line.hasPrefix("$$$") { reachedEnd = false }
+                        while reachedEnd, j < lines.count {
                             let t = lines[j].trimmingCharacters(in: .whitespaces)
-                            if t.isEmpty || Self.isFenceLine(t) { break }
-                            if t.contains("$$") { found = t.hasSuffix("$$"); break }
+                            if t.isEmpty || Self.isFenceLine(t) { reachedEnd = false; break }
+                            if t.contains("$$") { found = Self.hasLoneDoubleDollar(t); reachedEnd = false; break }
                             j += 1
                         }
-                        if !found {
+                        if !found, !(streaming && reachedEnd) {
                             paragraph.append(raw)
                             i += 1
                             continue
@@ -643,8 +659,9 @@ enum StreamStabilizer {
         }
 
         var closers = ""
-        let text = outsideCode(work)
         if count(of: "`", in: work) % 2 == 1 { closers += "`" }
+        // Counted with the code span closed: "*`make" is italic around code, not a trailing star.
+        let text = outsideCode(work + closers)
         if count(of: "~~", in: text) % 2 == 1 { closers += "~~" }
         if count(of: "**", in: text) % 2 == 1 { closers += "**" }
         else if singleAsterisks(in: text) % 2 == 1 { closers += "*" }
@@ -662,7 +679,7 @@ enum StreamStabilizer {
     /// The line without its `code` spans (an unclosed one runs to the end): `**kwargs` in code isn't bold.
     private static func outsideCode(_ s: String) -> String {
         s.split(separator: "`", omittingEmptySubsequences: false).enumerated()
-            .filter { $0.offset % 2 == 0 }.map(\.element).joined(separator: " ")
+            .filter { $0.offset % 2 == 0 }.map(\.element).joined(separator: "x")
     }
 
     private static func count(of needle: String, in text: String) -> Int {

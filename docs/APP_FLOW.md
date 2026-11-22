@@ -993,6 +993,11 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
     old chats, not the fresh one. Rendering: `$$` with text on its line is display math only when a later
     line ends with `$$` (price tiers, bash's `$$`), and math never runs past a code fence; streaming
     emphasis ignores asterisks inside `code`; a `<think>` inside a `~~~` fence stays code.
+    A reviewer then found 6 problems in those fixes, now fixed (`Regression/Round8ReviewRegressionTests`):
+    Regenerate's /command finds its exchange again by id (a delete during the check crashed or
+    duplicated it); `isInsideCode` tracks one open fence at a time (a `~~~` line inside a ``` block hid
+    later thinking); `$$` math accepts a closer followed by text and stays math while streaming, and
+    only `$$$` is refused; italic around code still closes mid-stream.
 - **The chat's MLX menu lists the models you have (0.29.1).** It read only the Hugging Face cache, so a
   model in `~/models` or LM Studio's folder (the one chosen in Settings) was missing, and an embedding
   model downloaded for memory (bge) was offered as a chat model. `ChatController.mlxModels` now joins the
