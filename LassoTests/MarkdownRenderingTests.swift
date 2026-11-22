@@ -213,9 +213,11 @@ struct MarkdownRenderingTests {
         #expect(parsed == [.code(language: "swift", content: "let x = a * b * c\nlet y = **", closed: false)])
     }
 
+    /// Mid-stream an open fence is still code, not yet complete; once the text is finished (stopped,
+    /// or cut off at the token limit) it's all the code there will be, so it counts as complete.
     @Test func unterminatedFenceStillRendersAsCode() {
-        let parsed = blocks("```swift\nlet x = 1")
-        #expect(parsed == [.code(language: "swift", content: "let x = 1", closed: false)])
+        #expect(blocks("```swift\nlet x = 1", streaming: true) == [.code(language: "swift", content: "let x = 1", closed: false)])
+        #expect(blocks("```swift\nlet x = 1") == [.code(language: "swift", content: "let x = 1", closed: true)])
     }
 
     // MARK: - Reasoning wrappers

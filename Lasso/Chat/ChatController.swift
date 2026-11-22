@@ -119,6 +119,9 @@ final class ChatController {
     /// Persist one conversation (its own file) and refresh the shared index. Skips empty conversations
     /// (nothing to save until they have content). Disk I/O runs off the main actor.
     private func persist(_ c: Conversation) {
+        // A closed conversation stays closed: a turn still finishing after Close must not write its file
+        // back (it would reappear after relaunch).
+        guard sessions.contains(where: { $0 === c }) else { return }
         let entries = sessions.filter(\.hasMessages).map(ConversationStore.indexEntry)
         guard c.hasMessages else {
             Task.detached(priority: .utility) { ConversationStore.writeIndex(entries) }
@@ -390,6 +393,28 @@ final class ChatController {
     /// Whether the active conversation has anything to clear (drives the New chat affordance).
     var canClear: Bool { active.canClear }
 
+    /// Send `text` with these attachments without losing what the user was writing: Regenerate, Resend
+    /// and Edit go through the composer, so its draft and staged files are put back afterwards.
+    private func sendKeepingDraft(text: String, attachments: [Attachment], files: [FileAttachment]) {
+        let draft = active.input, staged = active.pendingAttachments, stagedFiles = active.pendingFiles
+        let session = active
+        session.input = text
+        session.pendingAttachments = attachments
+        session.pendingFiles = files
+        send()
+        session.input = draft
+        session.pendingAttachments = staged
+        session.pendingFiles = stagedFiles
+    }
+
+    /// A reply can be regenerated when it answers the message right before it: not Lasso's own notes
+    /// (/help, /about), which follow a reply and would otherwise replace the real exchange above them.
+    func canRegenerate(_ id: UUID) -> Bool {
+        guard let i = active.messages.firstIndex(where: { $0.id == id }), i > 0,
+              active.messages[i].role == .assistant else { return false }
+        return active.messages[i - 1].role == .user
+    }
+
     /// Show another answer of a regenerated reply. The model's history follows what's shown.
     func showVersion(_ id: UUID, _ index: Int) {
         guard !active.isStreaming, let i = active.messages.firstIndex(where: { $0.id == id }) else { return }
@@ -468,7 +493,7 @@ final class ChatController {
         return nil
     }
 
-    func runPackageSlash(_ match: PackageSlashMatch, typed: String) {
+    func runPackageSlash(_ match: PackageSlashMatch, typed: String, carried: [ReplyVersion] = []) {
         if let problem = packageSlashProblem(match) { composerNotice = problem; return }
         let command = match.command, entry = match.entry
         let text = match.argument.isEmpty ? (lastReplyText ?? "") : match.argument
@@ -479,11 +504,11 @@ final class ChatController {
                 composerNotice = "\(command.title) doesn't apply to this text."
                 return
             }
-            startPackageReply(match, typed: typed, text: text)
+            startPackageReply(match, typed: typed, text: text, carried: carried)
         }
     }
 
-    private func startPackageReply(_ match: PackageSlashMatch, typed: String, text: String) {
+    private func startPackageReply(_ match: PackageSlashMatch, typed: String, text: String, carried: [ReplyVersion] = []) {
         let command = match.command, entry = match.entry
         composerNotice = nil
         var user = ChatMessage(role: .user, text: typed)
@@ -492,11 +517,17 @@ final class ChatController {
         messages.append(user)
         var reply = ChatMessage(role: .assistant, text: "", isStreaming: true)
         reply.caption = PackageOutput.attribution(entry, command)
+        if !carried.isEmpty {
+            reply.versions = carried + [ReplyVersion(text: "")]
+            reply.versionIndex = carried.count
+        }
         messages.append(reply)
         let replyID = reply.id
         input = ""
         isStreaming = true
+        active.turnToken = UUID()
         let session = active
+        let token = session.turnToken
         func update(_ change: (inout ChatMessage) -> Void) {
             if let i = session.messages.firstIndex(where: { $0.id == replyID }) { change(&session.messages[i]) }
         }
@@ -504,7 +535,8 @@ final class ChatController {
         streamTask = Task { [weak self] in
             defer {
                 update { $0.isStreaming = false }
-                session.isStreaming = false
+                // A newer turn owns the busy flag once this one is stopped or replaced.
+                if session.turnToken == token { session.isStreaming = false }
                 self?.persist(session)
             }
             do {
@@ -539,6 +571,8 @@ final class ChatController {
                     update { $0.text = "\(command.title) returned nothing."; $0.isError = true }
                 }
             } catch {
+                // Stopped: cancelStreaming already says so; the cancellation isn't a failure.
+                guard !Task.isCancelled else { return }
                 update { $0.text = PackageOutput.failure(error, entry, command); $0.isError = true }
             }
         }
@@ -1020,10 +1054,7 @@ final class ChatController {
         let m = active.messages[idx]
         active.messages.removeSubrange(idx..<active.messages.count)
         resetDerivedMemory()
-        active.input = m.text
-        active.pendingAttachments = m.attachments
-        active.pendingFiles = m.files
-        send()
+        sendKeepingDraft(text: m.text, attachments: m.attachments, files: m.files)
     }
 
     /// Commit an inline edit of a user message (called on **Send**, not when Edit is clicked — so Cancel
@@ -1038,10 +1069,7 @@ final class ChatController {
         let files = active.messages[idx].files
         active.messages.removeSubrange(idx..<active.messages.count)
         resetDerivedMemory()
-        active.input = text
-        active.pendingAttachments = atts
-        active.pendingFiles = files
-        send()
+        sendKeepingDraft(text: text, attachments: atts, files: files)
     }
 
     /// Regenerate an assistant reply: drop this turn **and everything after** (they answered the old
@@ -1050,6 +1078,7 @@ final class ChatController {
     func regenerate(_ id: UUID) {
         guard !active.isStreaming, let aIdx = active.messages.firstIndex(where: { $0.id == id }),
               active.messages[aIdx].role == .assistant,
+              canRegenerate(id),
               let uIdx = active.messages[..<aIdx].lastIndex(where: { $0.role == .user }) else { return }
         let userMsg = active.messages[uIdx]
         let old = active.messages[aIdx]
@@ -1062,10 +1091,7 @@ final class ChatController {
         active.carriedVersions = kept
         active.messages.removeSubrange(uIdx..<active.messages.count)
         resetDerivedMemory()
-        active.input = userMsg.text
-        active.pendingAttachments = userMsg.attachments
-        active.pendingFiles = userMsg.files
-        send()
+        sendKeepingDraft(text: userMsg.text, attachments: userMsg.attachments, files: userMsg.files)
     }
 
     /// Drop **both** derived memories after a history edit — the semantic index *and* the running
@@ -1090,6 +1116,10 @@ final class ChatController {
 
     func send(text: String? = nil, extraContext: String? = nil, webSearch: Bool? = nil) {
         if let text { input = text }
+        // Earlier answers from a Regenerate belong to this send's reply only: taken now, so a send that
+        // returns early or goes to a package can't leave them for an unrelated later reply.
+        let carried = active.carriedVersions
+        active.carriedVersions = []
         var typed = input.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Slash commands typed in the composer act on the session, not the model. `/clear` resets to
@@ -1102,7 +1132,7 @@ final class ChatController {
         // A package's /command runs that command, not a model turn.
         if let match = packageSlash(typed), pendingAttachments.isEmpty, pendingFiles.isEmpty {
             guard !isStreaming else { return }
-            runPackageSlash(match, typed: typed)
+            runPackageSlash(match, typed: typed, carried: carried)
             return
         }
 
@@ -1130,10 +1160,9 @@ final class ChatController {
         messages.append(userMessage)
         let userID = userMessage.id
         var assistant = ChatMessage(role: .assistant, text: "", isStreaming: true)
-        if !active.carriedVersions.isEmpty {
-            assistant.versions = active.carriedVersions + [ReplyVersion(text: "")]
-            assistant.versionIndex = active.carriedVersions.count
-            active.carriedVersions = []
+        if !carried.isEmpty {
+            assistant.versions = carried + [ReplyVersion(text: "")]
+            assistant.versionIndex = carried.count
         }
         messages.append(assistant)
         let assistantID = assistant.id
@@ -3393,6 +3422,9 @@ final class ChatController {
     }
 
     private func finishStreaming(_ id: UUID) {
+        // Stopped or replaced by a newer turn: Stop already settled this reply, and the busy flag and
+        // the "every reply" packages belong to whatever runs now.
+        guard !Task.isCancelled else { return }
         update(id) {
             $0.isStreaming = false
             if $0.text.isEmpty {
@@ -3476,6 +3508,7 @@ final class ChatController {
     }
 
     private func finishError(_ id: UUID, _ message: String) {
+        guard !Task.isCancelled else { return }
         update(id) { $0.text = message; $0.isError = true; $0.isStreaming = false }
         isStreaming = false
     }

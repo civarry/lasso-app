@@ -904,6 +904,17 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
     word, accent- and case-insensitive, titles first then message text with a snippet; `ChatSearchView`
     replaces the chat area until a result is opened or Esc.
   - **Stop with ⌘. or Esc** while a reply streams (Esc only when no / or @ list is open).
+  - **QA pass, 15 bugs fixed** (each with a regression test in `ChatFlowRegressionTests` /
+    `ChatUIRegressionTests`): search's snippet crashed on text that folds longer ("ß"); Regenerate's
+    earlier answers are taken at the top of `send` (no leak into a later reply; package replies keep them
+    too); versions carry `isError`, caption, Agent flag, steps and passages; Regenerate only on a reply to
+    the message right before it (`canRegenerate`, not /help); a closed chat is never saved again
+    (`persist` checks `sessions`); a stopped package command isn't an error and its task no longer clears
+    a newer turn's busy flag (`turnToken`); `finishStreaming`/`finishError` skip cancelled turns; Esc in
+    the chat closes the chat, not an open result card; "thanks @bob" sends (a word naming no source isn't
+    a mention); a finished reply's unclosed fence counts as complete (Copy/Run show); code runs are keyed
+    by block position and answer too; Regenerate/Resend/Edit keep the composer's draft and staged files
+    (`sendKeepingDraft`); search is an overlay (an edit survives ⌘K) and ⌘. works anywhere in the panel.
 - **The chat's MLX menu lists the models you have (0.29.1).** It read only the Hugging Face cache, so a
   model in `~/models` or LM Studio's folder (the one chosen in Settings) was missing, and an embedding
   model downloaded for memory (bge) was offered as a chat model. `ChatController.mlxModels` now joins the

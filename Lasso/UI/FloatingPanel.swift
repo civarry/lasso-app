@@ -12,6 +12,8 @@ class MainCapablePanel: NSPanel {
 
 final class FloatingPanel: MainCapablePanel {
     override func cancelOperation(_ sender: Any?) {
+        // The chat panel is a FloatingPanel too: its Esc closes the chat, not whatever result card is open.
+        if self === ChatPanelController.shared.panel { ChatPanelController.shared.close(); return }
         FloatingPanelController.shared.close()
     }
 }

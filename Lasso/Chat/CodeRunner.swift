@@ -29,7 +29,10 @@ final class CodeRunner {
     /// By message and code block.
     var runs: [String: Run] = [:]
 
-    static func key(_ message: UUID, _ code: String) -> String { "\(message.uuidString)#\(code.hashValue)" }
+    /// A block's runs: its reply, which answer of it (‹ n/N ›), which code block, and the code.
+    static func key(_ message: UUID, _ code: String, index: Int = 0, version: Int = 0) -> String {
+        "\(message.uuidString)#\(version)#\(index)#\(code.hashValue)"
+    }
 
     /// The commands offered on a block of this language, from enabled packages.
     func commands(for language: String?) -> [(entry: PackageRegistry.Entry, command: PackageCommand)] {
@@ -113,6 +116,7 @@ final class CodeRunner {
 struct CodeBlockContext: Equatable {
     var message: UUID
     var reply: String
+    var version = 0
 }
 
 private struct CodeBlockContextKey: EnvironmentKey {

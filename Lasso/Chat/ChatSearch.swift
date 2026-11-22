@@ -61,15 +61,17 @@ enum ChatSearch {
         return Array((titled + inside).prefix(limit))
     }
 
-    /// About 90 characters of `text` around the first `word`, on one line.
+    /// About 90 characters of `text` around the first `word`, on one line. Found in the original text
+    /// (folding can change lengths: "ß" folds to "ss"), so the cut never lands past the end.
     static func snippet(_ text: String, around word: String) -> String {
         let flat = text.replacingOccurrences(of: "\n", with: " ")
-        guard let range = fold(flat).range(of: word) else { return String(flat.prefix(90)) }
-        let at = fold(flat).distance(from: fold(flat).startIndex, to: range.lowerBound)
-        let start = max(0, at - 30)
-        let chars = Array(flat)
-        let end = min(chars.count, start + 90)
-        return (start > 0 ? "…" : "") + String(chars[start..<end]).trimmingCharacters(in: .whitespaces) + (end < chars.count ? "…" : "")
+        guard let range = flat.range(of: word, options: [.caseInsensitive, .diacriticInsensitive]) else {
+            return String(flat.prefix(90))
+        }
+        let start = flat.index(range.lowerBound, offsetBy: -30, limitedBy: flat.startIndex) ?? flat.startIndex
+        let end = flat.index(start, offsetBy: 90, limitedBy: flat.endIndex) ?? flat.endIndex
+        return (start > flat.startIndex ? "…" : "") + flat[start..<end].trimmingCharacters(in: .whitespaces)
+            + (end < flat.endIndex ? "…" : "")
     }
 }
 
@@ -103,7 +105,12 @@ struct ChatSearchView: View {
             }
             .padding(10)
             if let notice {
-                Text(notice).font(.caption).foregroundStyle(.orange).padding(.horizontal, 10).padding(.bottom, 6)
+                HStack(spacing: 8) {
+                    Text(notice).font(.caption).foregroundStyle(.orange)
+                    Button("Stop it") { chat.cancelStreaming(); self.notice = nil }
+                        .controlSize(.small)
+                }
+                .padding(.horizontal, 10).padding(.bottom, 6)
             }
             Divider()
             if results.isEmpty {
@@ -162,7 +169,7 @@ struct ChatSearchView: View {
     private func open(_ result: ChatSearch.Result?) {
         guard let result else { return }
         if !result.isActive {
-            guard !chat.active.isStreaming else { notice = "Stop the reply first (⌘. or Esc), then open it."; return }
+            guard !chat.active.isStreaming else { notice = "A reply is still coming in this chat."; return }
             chat.switchTo(result.id)
         }
         close()

@@ -91,7 +91,10 @@ struct ChatMessage: Identifiable, @unchecked Sendable {
     var versionIndex = 0
 
     /// This reply's answer as a version.
-    var asVersion: ReplyVersion { ReplyVersion(text: text, reasoning: reasoning, sources: sources, steps: steps) }
+    var asVersion: ReplyVersion {
+        ReplyVersion(text: text, reasoning: reasoning, sources: sources, isError: isError, caption: caption,
+                     viaAgent: viaAgent, steps: steps, sourceHits: sourceHits)
+    }
 
     /// All versions with the shown one up to date.
     var currentVersions: [ReplyVersion] {
@@ -112,7 +115,11 @@ struct ChatMessage: Identifiable, @unchecked Sendable {
         text = picked.text
         reasoning = picked.reasoning
         sources = picked.sources
+        isError = picked.isError
+        caption = picked.caption
+        viaAgent = picked.viaAgent
         steps = picked.steps
+        sourceHits = picked.sourceHits
     }
 }
 
@@ -121,10 +128,31 @@ struct ReplyVersion: Sendable, Codable {
     var text: String
     var reasoning: String = ""
     var sources: [WebSourcesProvider.Hit] = []
-    /// What it did (searched, looked in notes), for this session only: steps aren't saved.
+    var isError = false
+    var caption: String?
+    var viaAgent = false
+    /// What it did (searched, looked in notes) and the passages it got, for this session only (not saved).
     var steps: [ActivityStep] = []
+    var sourceHits: [SourceHit] = []
 
-    enum CodingKeys: String, CodingKey { case text, reasoning, sources }
+    init(text: String, reasoning: String = "", sources: [WebSourcesProvider.Hit] = [], isError: Bool = false,
+         caption: String? = nil, viaAgent: Bool = false, steps: [ActivityStep] = [], sourceHits: [SourceHit] = []) {
+        self.text = text; self.reasoning = reasoning; self.sources = sources; self.isError = isError
+        self.caption = caption; self.viaAgent = viaAgent; self.steps = steps; self.sourceHits = sourceHits
+    }
+
+    enum CodingKeys: String, CodingKey { case text, reasoning, sources, isError, caption, viaAgent }
+
+    /// Every field but the text may be missing (files saved by an earlier version).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        text = try c.decode(String.self, forKey: .text)
+        reasoning = try c.decodeIfPresent(String.self, forKey: .reasoning) ?? ""
+        sources = try c.decodeIfPresent([WebSourcesProvider.Hit].self, forKey: .sources) ?? []
+        isError = try c.decodeIfPresent(Bool.self, forKey: .isError) ?? false
+        caption = try c.decodeIfPresent(String.self, forKey: .caption)
+        viaAgent = try c.decodeIfPresent(Bool.self, forKey: .viaAgent) ?? false
+    }
 }
 
 /// One step in an assistant turn's background activity trace.

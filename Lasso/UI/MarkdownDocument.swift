@@ -80,6 +80,17 @@ enum MarkdownParser {
     ///   the text does not jitter between shapes as it lands. Off for finished text, where every
     ///   character is final and withholding anything would silently drop content.
     static func parse(_ text: String, streaming: Bool = false) -> [MarkdownBlock] {
+        let blocks = parseBlocks(text, streaming: streaming)
+        // Finished text: a fence that never closed (stopped, or cut off at the token limit) is all the
+        // code there will be, so it's complete (Copy and Run show).
+        guard !streaming else { return blocks }
+        return blocks.map { block in
+            if case .code(let language, let content, false) = block { return .code(language: language, content: content, closed: true) }
+            return block
+        }
+    }
+
+    private static func parseBlocks(_ text: String, streaming: Bool) -> [MarkdownBlock] {
         let source = streaming ? StreamStabilizer.stabilize(text) : text
         var blocks: [MarkdownBlock] = []
         var cursor = source.startIndex
