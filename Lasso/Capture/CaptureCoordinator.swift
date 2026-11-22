@@ -53,6 +53,16 @@ final class CaptureCoordinator {
     /// grab, an `await` later): a second press in between must not start a second session.
     private var isStarting = false
 
+    #if DEBUG
+    /// Tests: a session over these pictures, without a screen grab or overlay windows.
+    func startForTesting(_ shots: [DisplayShot]) {
+        self.shots = shots
+        isActive = true
+    }
+    /// Tests: hold a selection's pre-pass this long before it reads the text (to order two of them).
+    var prePassDelayForTesting: ((CGRect) -> Duration?)?
+    #endif
+
     /// When set, the session skips the action bar and auto-runs this action's `id` once the selection
     /// (or full-screen grab) and pre-pass are ready — the "direct shortcut" path (e.g. ⇧⌘ → Lens).
     private(set) var pendingDirectActionID: String?
@@ -326,6 +336,9 @@ final class CaptureCoordinator {
     }
 
     private func runPrePass(crop: CGImage, base: CaptureContext, generation: Int) async {
+        #if DEBUG
+        if let delay = prePassDelayForTesting?(base.selectionRect) { try? await Task.sleep(for: delay) }
+        #endif
         let ocrResult = (try? await ocr.recognize(crop)) ?? .empty
         let bars = (try? await barcode.detect(in: crop)) ?? []
         let detected = await dataDetector.detect(in: ocrResult.text)

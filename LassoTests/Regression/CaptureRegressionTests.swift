@@ -115,3 +115,104 @@ struct CaptureRegressionTests {
         #expect(probe.taskCancelled, ".task was never cancelled after close()")
     }
 }
+
+/// Regression: the capture session (selection, pre-pass, actions, Esc), driven over a synthetic picture
+/// through the DEBUG `startForTesting` hook, no real screen grab. Each test is a bug a QA pass found.
+@MainActor
+@Suite(.serialized)
+struct CaptureSessionRegressionTests {
+    static func shot() throws -> DisplayShot {
+        let ctx = try #require(CGContext(data: nil, width: 800, height: 600, bitsPerComponent: 8, bytesPerRow: 0,
+                                         space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        ctx.setFillColor(CGColor(gray: 1, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: 800, height: 600))
+        return DisplayShot(id: 99_999, image: try #require(ctx.makeImage()), frame: CGRect(x: 0, y: 0, width: 800, height: 600), scale: 1)
+    }
+
+    struct FakeAction: CaptureAction {
+        var id = "qa.fake"
+        var title = "Fake"
+        var systemImage = "star"
+        var relevancePriority = 99
+        var delay: Duration = .zero
+        var outcome: ActionResult = .text("done")
+        func isRelevant(to ctx: CaptureContext) -> Bool { true }
+        func disabledReason(for ctx: CaptureContext, visionAvailable: Bool) -> String? { nil }
+        func perform(_ ctx: CaptureContext) async throws -> ActionResult {
+            try await Task.sleep(for: delay)
+            return outcome
+        }
+    }
+
+    func session(_ body: (CaptureCoordinator) async throws -> Void) async throws {
+        let capture = CaptureCoordinator.shared
+        capture.startForTesting([try Self.shot()])
+        defer { capture.prePassDelayForTesting = nil; capture.cancel(); FloatingPanelController.shared.close() }
+        try await body(capture)
+    }
+
+    /// An older selection's slow pre-pass finished last and replaced the newer selection's context
+    /// (Copy text copied the first area).
+    @Test func anOlderPrePassNeverOverwritesANewerSelection() async throws {
+        try await session { capture in
+            let first = CGRect(x: 10, y: 10, width: 300, height: 200)
+            let second = CGRect(x: 400, y: 300, width: 100, height: 80)
+            capture.prePassDelayForTesting = { $0 == first ? .milliseconds(600) : nil }
+            capture.commitSelection(rectInPoints: first, displayID: 99_999)
+            capture.commitSelection(rectInPoints: second, displayID: 99_999)
+            try await Task.sleep(for: .milliseconds(1_200))
+            #expect(capture.context?.selectionRect == second, "context is for \(String(describing: capture.context?.selectionRect))")
+        }
+    }
+
+    /// After Esc, a pre-pass still running put its picture back on the torn-down session.
+    @Test func aPrePassAfterEscLeavesNothingBehind() async throws {
+        let capture = CaptureCoordinator.shared
+        capture.startForTesting([try Self.shot()])
+        capture.prePassDelayForTesting = { _ in .milliseconds(300) }
+        defer { capture.prePassDelayForTesting = nil }
+        capture.commitSelection(rectInPoints: CGRect(x: 10, y: 10, width: 200, height: 100), displayID: 99_999)
+        capture.cancel()
+        try await Task.sleep(for: .milliseconds(700))
+        #expect(capture.context == nil, "a cancelled session's pre-pass wrote its context back")
+    }
+
+    /// Esc while an action ran still showed its card afterwards.
+    @Test func escWhileAnActionRunsShowsNoCard() async throws {
+        try await session { capture in
+            capture.commitSelection(rectInPoints: CGRect(x: 10, y: 10, width: 200, height: 100), displayID: 99_999)
+            capture.run(FakeAction(delay: .milliseconds(300)))
+            capture.cancel()
+            try await Task.sleep(for: .milliseconds(700))
+            #expect(!NSApp.windows.contains { $0 is FloatingPanel && $0.isVisible && $0 !== ChatPanelController.shared.panel },
+                    "a card appeared for a dismissed capture")
+        }
+    }
+
+    /// A new selection kept showing the old selection's inline translation.
+    @Test func aNewSelectionLeavesInlineTranslate() async throws {
+        try await session { capture in
+            capture.commitSelection(rectInPoints: CGRect(x: 10, y: 10, width: 200, height: 100), displayID: 99_999)
+            capture.run(FakeAction(outcome: .inlineTranslate))
+            for _ in 0..<20 where !capture.translating { try await Task.sleep(for: .milliseconds(25)) }
+            #expect(capture.translating, "precondition: translating")
+            capture.commitSelection(rectInPoints: CGRect(x: 400, y: 300, width: 100, height: 80), displayID: 99_999)
+            #expect(!capture.translating, "the old translation stays over the new selection")
+        }
+    }
+
+    /// The Lens card's button, drawn before local-only mode was turned on, still uploaded.
+    @Test func lensNeverOpensInLocalOnlyMode() throws {
+        let defaults = UserDefaults.standard
+        let was = (defaults.object(forKey: "privacy.localOnly"), defaults.object(forKey: LensSearchAction.enabledKey))
+        defer {
+            defaults.set(was.0, forKey: "privacy.localOnly"); defaults.set(was.1, forKey: LensSearchAction.enabledKey)
+            LensPanelController.shared.close()
+        }
+        defaults.set(true, forKey: LensSearchAction.enabledKey)
+        defaults.set(true, forKey: "privacy.localOnly")
+        let image = try Self.shot().image
+        let before = NSApp.windows.filter(\.isVisible).count
+        LensPanelController.shared.present(image: image, anchor: nil)
+        #expect(NSApp.windows.filter(\.isVisible).count == before, "Lens opened (and would upload) in local-only mode")
+    }
+}
