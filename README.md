@@ -32,6 +32,7 @@ next to everyday notes.
 - **Lasso looks in your notes by itself sooner:** if a source's "What's in it" is empty, it's filled in
   from the folder's names once the folder has notes.
 - **Get My notes 1.3.0 from Browse** for better answers to questions that mix a note and the docs.
+- **0.26.1:** Settings › Models › Language model › **Manage connections** opens again.
 
 <p align="center"><img src="screenshots/app/notes-and-docs.png" width="460" alt="Chat listing a notes folder by folder, then answering from a project note and the Python docs"></p>
 
