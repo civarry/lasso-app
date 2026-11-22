@@ -62,6 +62,8 @@ final class Conversation: Identifiable {
     var mentions: [String] = []
     /// Sources the next turn leaves out ("Answer without it").
     var excludedOnce: Set<String> = []
+    /// The earlier answers of a reply being regenerated, for the new reply to keep (‹ 1/2 ›).
+    var carriedVersions: [ReplyVersion] = []
     /// Package tools used in the last turn: still offered next turn, so a follow-up works.
     var recentTools: Set<String> = []
     /// Sources (package ids) that gave passages last turn: a `source/1` source is a candidate again for

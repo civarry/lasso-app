@@ -390,6 +390,14 @@ final class ChatController {
     /// Whether the active conversation has anything to clear (drives the New chat affordance).
     var canClear: Bool { active.canClear }
 
+    /// Show another answer of a regenerated reply. The model's history follows what's shown.
+    func showVersion(_ id: UUID, _ index: Int) {
+        guard !active.isStreaming, let i = active.messages.firstIndex(where: { $0.id == id }) else { return }
+        active.messages[i].showVersion(index)
+        resetDerivedMemory()
+        persist(active)
+    }
+
     // MARK: - Session management
 
     /// Recents-menu rows (id, title, icon, active flag), most-recent first. Only conversations with
@@ -1044,6 +1052,14 @@ final class ChatController {
               active.messages[aIdx].role == .assistant,
               let uIdx = active.messages[..<aIdx].lastIndex(where: { $0.role == .user }) else { return }
         let userMsg = active.messages[uIdx]
+        let old = active.messages[aIdx]
+        // Keep the answer being replaced: the new reply shows ‹ n/n › to go back to it.
+        // An error isn't an answer worth going back to: only the answers before it are kept.
+        var kept = old.versions.isEmpty ? [old.asVersion] : old.currentVersions
+        if old.isError, kept.indices.contains(old.versions.isEmpty ? 0 : old.versionIndex) {
+            kept.remove(at: old.versions.isEmpty ? 0 : old.versionIndex)
+        }
+        active.carriedVersions = kept
         active.messages.removeSubrange(uIdx..<active.messages.count)
         resetDerivedMemory()
         active.input = userMsg.text
@@ -1113,7 +1129,12 @@ final class ChatController {
         userMessage.mentions = mentioned.compactMap { id in PackageRegistry.shared.sources().first { $0.id == id }?.name }
         messages.append(userMessage)
         let userID = userMessage.id
-        let assistant = ChatMessage(role: .assistant, text: "", isStreaming: true)
+        var assistant = ChatMessage(role: .assistant, text: "", isStreaming: true)
+        if !active.carriedVersions.isEmpty {
+            assistant.versions = active.carriedVersions + [ReplyVersion(text: "")]
+            assistant.versionIndex = active.carriedVersions.count
+            active.carriedVersions = []
+        }
         messages.append(assistant)
         let assistantID = assistant.id
 

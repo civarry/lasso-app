@@ -14,6 +14,7 @@ struct ChatView: View {
     @State private var isDropTarget = false
     /// The conversation is scrolled to the bottom (so new text is followed).
     @State private var followsLatest = true
+    @State private var searching = false
     @State private var slashSelection = 0
     @State private var mentionSelection = 0
     @Environment(\.openWindow) private var openWindow
@@ -26,9 +27,16 @@ struct ChatView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            routedAroundBar
-            conversation
-            composer
+            if searching {
+                ChatSearchView { searching = false; inputFocused = true }
+            } else {
+                routedAroundBar
+                conversation
+                composer
+            }
+        }
+        .background {
+            Button("") { searching.toggle() }.keyboardShortcut("k", modifiers: .command).hidden()
         }
         .frame(width: window.size.width, height: window.size.height)
         .background(.ultraThinMaterial)
@@ -134,6 +142,9 @@ struct ChatView: View {
                 .disabled(s.isActive || chat.active.isStreaming)
             }
             if !chat.sessionSummaries.isEmpty { Divider() }
+            if chat.sessionSummaries.count > 1 {
+                Button { searching = true } label: { Label("Search chats…  ⌘K", systemImage: "magnifyingglass") }
+            }
             Button { chat.newChat(); inputFocused = true } label: {
                 Label("New conversation", systemImage: "square.and.pencil")
             }
@@ -480,7 +491,8 @@ struct ChatView: View {
 
                 if chat.isStreaming {
                     Button { chat.cancelStreaming() } label: { Image(systemName: "stop.fill") }
-                        .buttonStyle(IconButtonStyle()).help("Stop")
+                        .buttonStyle(IconButtonStyle()).help("Stop (⌘. or Esc)")
+                        .keyboardShortcut(".", modifiers: .command)
                 } else {
                     Button { Task { await voice.sendEndingDictation() } } label: {
                         Image(systemName: "arrow.up")
@@ -539,6 +551,8 @@ struct ChatView: View {
     /// Return, Tab and Esc drive it; otherwise Return sends.
     private func composerKey(_ key: ComposerTextView.Key) -> Bool {
         if key == .escape, voice.isActive { voice.cancel(); return true }
+        // Esc stops a reply that's coming in (when no list is open to close first).
+        if key == .escape, chat.isStreaming, slashMatches.isEmpty, mentionMatches == nil { chat.cancelStreaming(); return true }
         if !slashMatches.isEmpty {
             switch key {
             case .down:
@@ -1137,6 +1151,22 @@ struct MessageBubble: View {
     /// actions confirm.
     private var actionsRow: some View {
         HStack(spacing: 12) {
+            if !isUser, message.versions.count > 1 {
+                // Earlier answers, kept by Regenerate.
+                HStack(spacing: 0) {
+                    Button { chat.showVersion(message.id, message.versionIndex - 1) } label: {
+                        Image(systemName: "chevron.left").padding(.horizontal, 5).padding(.vertical, 3).contentShape(Rectangle())
+                    }
+                    .disabled(message.versionIndex == 0)
+                    .help("Previous answer")
+                    Text("\(message.versionIndex + 1)/\(message.versions.count)").monospacedDigit()
+                    Button { chat.showVersion(message.id, message.versionIndex + 1) } label: {
+                        Image(systemName: "chevron.right").padding(.horizontal, 5).padding(.vertical, 3).contentShape(Rectangle())
+                    }
+                    .disabled(message.versionIndex == message.versions.count - 1)
+                    .help("Next answer")
+                }
+            }
             Button {
                 Pasteboard.copy(message.text)
                 copied = true
@@ -1187,7 +1217,8 @@ struct MessageBubble: View {
         .buttonStyle(.plain)
         .padding(.top, 1)
         .disabled(chat.active.isStreaming)
-        .confirmationDialog("Delete this message?", isPresented: $confirmDelete, titleVisibility: .visible) {
+        .confirmationDialog(message.versions.count > 1 ? "Delete this message and its \(message.versions.count) answers?" : "Delete this message?",
+                            isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) { chat.deleteMessage(message.id) }
             Button("Cancel", role: .cancel) {}
         }

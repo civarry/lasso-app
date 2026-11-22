@@ -894,6 +894,16 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Chat catches up with the big chat apps (0.30).** From a side-by-side with ChatGPT, Claude and Gemini:
+  - **Regenerate keeps the earlier answers.** `regenerate` carries the replaced answer
+    (`Conversation.carriedVersions`; an error reply is dropped) into the new reply's `ChatMessage.versions`;
+    the action row shows ‹ n/N › and `ChatController.showVersion` swaps the shown answer (the model's
+    history follows it; derived memory is reset). Saved in `MessageDTO.versions`/`versionIndex`
+    (optional, older files decode). Later turns of a middle reply are still dropped, and edits don't branch.
+  - **Search chats** (⌘K, or the conversations menu with 2+ chats): `ChatSearch.results` matches every
+    word, accent- and case-insensitive, titles first then message text with a snippet; `ChatSearchView`
+    replaces the chat area until a result is opened or Esc.
+  - **Stop with ⌘. or Esc** while a reply streams (Esc only when no / or @ list is open).
 - **The chat's MLX menu lists the models you have (0.29.1).** It read only the Hugging Face cache, so a
   model in `~/models` or LM Studio's folder (the one chosen in Settings) was missing, and an embedding
   model downloaded for memory (bge) was offered as a chat model. `ChatController.mlxModels` now joins the

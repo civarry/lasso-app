@@ -84,6 +84,47 @@ struct ChatMessage: Identifiable, @unchecked Sendable {
     var viaAgent = false
     /// One line above a reply that a package wrote: "Study tools · Qwen3.5 · on this Mac".
     var caption: String?
+    /// Every answer this reply has had (Regenerate keeps the earlier ones, like other chat apps' ‹ 2/3 ›),
+    /// with this one at `versionIndex`. Empty until it's regenerated. The shown answer's own fields are the
+    /// truth for its slot; `versions[versionIndex]` is refreshed when switching or saving.
+    var versions: [ReplyVersion] = []
+    var versionIndex = 0
+
+    /// This reply's answer as a version.
+    var asVersion: ReplyVersion { ReplyVersion(text: text, reasoning: reasoning, sources: sources, steps: steps) }
+
+    /// All versions with the shown one up to date.
+    var currentVersions: [ReplyVersion] {
+        guard !versions.isEmpty, versions.indices.contains(versionIndex) else { return versions }
+        var list = versions
+        list[versionIndex] = asVersion
+        return list
+    }
+
+    /// Show another answer (keeps the shown one in its slot).
+    mutating func showVersion(_ index: Int) {
+        var list = currentVersions
+        guard list.indices.contains(index), index != versionIndex else { return }
+        let picked = list[index]
+        list[versionIndex] = asVersion
+        versions = list
+        versionIndex = index
+        text = picked.text
+        reasoning = picked.reasoning
+        sources = picked.sources
+        steps = picked.steps
+    }
+}
+
+/// One answer of a reply that was regenerated.
+struct ReplyVersion: Sendable, Codable {
+    var text: String
+    var reasoning: String = ""
+    var sources: [WebSourcesProvider.Hit] = []
+    /// What it did (searched, looked in notes), for this session only: steps aren't saved.
+    var steps: [ActivityStep] = []
+
+    enum CodingKeys: String, CodingKey { case text, reasoning, sources }
 }
 
 /// One step in an assistant turn's background activity trace.

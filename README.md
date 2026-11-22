@@ -17,11 +17,27 @@
 
 <p align="center"><img src="screenshots/hero.png" alt="Drag a box around anything on screen and translate it in place"></p>
 
-**Jump to:** [What's new](#whats-new-in-029) · [What it does](#what-it-does) · [Chat](#chat) ·
+**Jump to:** [What's new](#whats-new-in-030) · [What it does](#what-it-does) · [Chat](#chat) ·
 [Agent](#agent) · [Packages](#packages) · [Privacy](#privacy) · [Install](#install) ·
 [Updates](#updates) · [AI models](#ai-models) · [Build it](#build-it-yourself)
 
-## What's new in 0.29
+## What's new in 0.30
+
+**Chat works more like the chat apps you know.**
+
+- **Regenerate keeps the earlier answer:** a regenerated reply shows **‹ 2/2 ›**; go back to the
+  answer you liked, and the chat continues from that one.
+- **Search chats** with **⌘K** (or the conversations menu): titles and what was said, with the line
+  that matched.
+- **Stop a reply** with **⌘.** or **Esc**.
+- The MLX model menu lists the models in `~/models` and LM Studio's folder, and no longer offers
+  embedding models (like bge), which can't chat.
+
+<p align="center"><img src="screenshots/app/reply-versions.png" width="420" alt="A regenerated reply with 2/2 to switch between its answers"></p>
+<p align="center"><img src="screenshots/app/chat-search.png" width="420" alt="Search chats showing a title match and a chat that mentions adobo"></p>
+
+<details>
+<summary>New in 0.29</summary>
 
 **Ask for something visual, see it live in chat.** With **Preview HTML** (Settings › Packages ›
 Browse), every html and svg code block in a reply gets a **Preview** button, the way chat apps show
@@ -35,6 +51,8 @@ artifacts.
   way. The turtle drawing is gone.
 
 <p align="center"><img src="screenshots/app/html-preview.png" width="460" alt="A chat reply with an html code block previewed as a live bar chart of steps this week"></p>
+
+</details>
 
 <details>
 <summary>New in 0.28</summary>
