@@ -158,11 +158,15 @@ enum PackageBundle {
         var files: PackageFiles.Files = [:]
         for (path, value) in raw {
             let parts = path.split(separator: "/", omittingEmptySubsequences: false)
-            guard !path.hasPrefix("/"), !parts.contains(".."), !parts.contains(""), path != "lasso.json",
-                  let bytes = Data(base64Encoded: value) else { return nil }
+            // No "." or hidden names either: "./lasso.json" would overwrite the reviewed manifest, and a
+            // hidden file is counted at install but never read back (the package comes up "changed").
+            guard !path.hasPrefix("/"), !parts.contains(""), !parts.contains { $0.hasPrefix(".") },
+                  path != "lasso.json", let bytes = Data(base64Encoded: value) else { return nil }
             files[path] = bytes
         }
         guard files.values.reduce(0, { $0 + $1.count }) <= PackageFiles.maxFolderBytes else { return nil }
+        // The disk ignores case: two names that differ only by it would land on one file.
+        guard Set(files.keys.map { $0.lowercased() }).count == files.count else { return nil }
         return (manifest, files)
     }
 }

@@ -373,12 +373,20 @@ final class PackageStore {
     /// Deletes the package, its preferences and its Keychain items. Its usage counts stay, so removing
     /// and reinstalling can't spend a free tier twice; files it saved to the workspace are the user's.
     func remove(_ id: String) {
-        let package = installed.first { $0.id == id }?.package
-        if let package { PackageHotkeys.clear(package) }
-        for setting in package?.settings ?? [] {
-            if setting.kind == .secret { Keychain.delete(secretAccount(id, setting.id)) }
-            else { defaults.removeObject(forKey: settingKey(id, setting.id)) }
+        // Every version it had, not just the one on disk now: a broken package has none readable, and a
+        // setting an update dropped is still stored. A later package with this id must start empty.
+        var versions: [LassoPackage] = []
+        if let current = installed.first(where: { $0.id == id })?.package { versions.append(current) }
+        if let approved = records[id]?.approved, let package = PackageValidator.validate(approved).package { versions.append(package) }
+        if let disk = manifestData(id), let package = PackageValidator.validate(disk).package { versions.append(package) }
+        if let previous = try? Data(contentsOf: previousFolder(id).appending(path: "lasso.json")),
+           let package = PackageValidator.validate(previous).package { versions.append(package) }
+        for package in versions {
+            PackageHotkeys.clear(package)
+            for setting in package.settings where setting.kind == .secret { Keychain.delete(secretAccount(id, setting.id)) }
         }
+        let prefix = "package.\(id).setting."
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) { defaults.removeObject(forKey: key) }
         try? FileManager.default.removeItem(at: root.appending(path: id, directoryHint: .isDirectory))
         try? FileManager.default.removeItem(at: previousFolder(id))
         // Its data folder goes too; what it saved to ~/LassoWorkspace/<id>/ is the user's.
@@ -406,12 +414,16 @@ final class PackageStore {
     }
 
     /// The user reviewed a manifest that changed on disk and chose Turn On.
-    func approveChange(_ id: String) {
+    /// `reviewed`: the manifest the review showed. If the disk changed again since, nothing is approved
+    /// (the next review shows the new one): the user approves what they read, not what's there at the click.
+    @discardableResult
+    func approveChange(_ id: String, reviewed: Data? = nil) -> Bool {
         var records = self.records
         guard var record = records[id], let data = try? Data(contentsOf: manifestURL(id)),
-              PackageValidator.validate(data).package != nil else { return }
+              PackageValidator.validate(data).package != nil else { return false }
+        if let reviewed, reviewed != data { reload(); return false }
         let files = (try? Self.readFiles(in: folder(id))) ?? [:]
-        guard let package = PackageValidator.validate(data).package, Self.fileProblems(package, files).isEmpty else { return }
+        guard let package = PackageValidator.validate(data).package, Self.fileProblems(package, files).isEmpty else { return false }
         if record.files ?? [:] != Self.hashes(files) { record.fullAccess = nil }
         record.sha256 = Self.contentHash(data, files)
         record.files = Self.hashes(files)
@@ -420,6 +432,7 @@ final class PackageStore {
         records[id] = record
         self.records = records
         reload()
+        return true
     }
 
     /// The manifest as it is on disk now (for "Show the package file").

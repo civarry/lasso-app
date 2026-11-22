@@ -70,12 +70,35 @@ enum PackageSearch {
     static func hits(_ list: [[String: String]], entry: PackageRegistry.Entry) -> [WebSourcesProvider.Hit] {
         list.prefix(10).compactMap { item -> WebSourcesProvider.Hit? in
             guard let title = item["title"]?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else { return nil }
-            let url = item["url"].flatMap(URL.init(string:)).flatMap { ["http", "https", "file"].contains($0.scheme?.lowercased() ?? "") ? $0 : nil }
+            let url = item["url"].flatMap(URL.init(string:)).flatMap { url -> URL? in
+                switch url.scheme?.lowercased() {
+                case "http", "https": return url
+                case "file": return openableFile(url, entry: entry) ? url : nil
+                default: return nil
+                }
+            }
             var snippet = item["snippet"].map { String($0.prefix(500)) }
             if let date = item["date"], !date.isEmpty, let text = snippet { snippet = "[\(date.prefix(10))] " + text }
             return WebSourcesProvider.Hit(title: String(title.prefix(200)), url: url, source: entry.package.name,
                                           snippet: snippet?.isEmpty == false ? snippet : nil)
         }
+    }
+
+    /// A file a result may link to: one in a folder the user picked for this package (their notes),
+    /// and not a program. A script can write files in its own folders, so a link to one of those (a
+    /// `.command` it made) would run it outside the sandbox with a click.
+    static func openableFile(_ url: URL, entry: PackageRegistry.Entry) -> Bool {
+        let path = url.resolvingSymlinksInPath().path
+        guard let folders = entry.places?.folders, !folders.isEmpty,
+              folders.contains(where: { path.hasPrefix($0.resolvingSymlinksInPath().path + "/") }) else { return false }
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: path, isDirectory: &isDirectory) else { return false }
+        if isDirectory.boolValue { return false }
+        if fm.isExecutableFile(atPath: path) { return false }
+        let programs: Set<String> = ["app", "command", "tool", "sh", "zsh", "bash", "pkg", "mpkg", "terminal",
+                                     "workflow", "scpt", "applescript", "jar", "dmg", "webloc", "inetloc", "fileloc"]
+        return !programs.contains(url.pathExtension.lowercased())
     }
 
     /// A `describe/1` command: the What's in it line and picking words.

@@ -929,7 +929,11 @@ struct AddPackageSheet: View {
 
     private func commit(_ c: Candidate) {
         if c.turnOn {
-            store.approveChange(c.package.id)
+            // Only what this sheet showed: if the folder changed again meanwhile, nothing turns on.
+            guard store.approveChange(c.package.id, reviewed: c.data) else {
+                show(problems: [], headline: "It changed again while you were reading it", detail: "Close this and review it again: nothing was turned on.")
+                return
+            }
             added(c.package.id)
             return
         }
@@ -1437,7 +1441,7 @@ struct PackagePage: View {
             if let previous = store.previousVersion(package.id) {
                 SettingsRow("Version \(package.version) not working?", caption: "Go back to the version you had before. Its settings stay.") {
                     Button("Go back to \(previous)") {
-                        do { try store.goBack(package.id) } catch { goBackError = error.localizedDescription }
+                        do { try store.goBack(package.id); goBackError = nil } catch { goBackError = error.localizedDescription }
                     }
                     .buttonStyle(.bordered)
                 }

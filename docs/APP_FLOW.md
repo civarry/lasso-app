@@ -953,6 +953,16 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
     translate; Lens checks its opt-in and local-only mode where the upload starts. Translate: Spanish
     into English is no longer "already in English" (same-script languages are told apart), and
     Traditional into Simplified Chinese translates when the text actually differs.
+  - **QA round 5, packages, 5 fixed** (`Regression/PackageSecurityRegressionTests`): two sandbox
+    escapes closed. A script's result could link to a program it wrote (`notes.command`), and a click
+    ran it in Terminal outside the sandbox: file links must be in a folder the user picked and not a
+    program (`PackageSearch.openableFile`). A console picture named `chart.command` opened in Terminal
+    from "Open in Preview": pictures must be named as pictures, and Open in Preview opens Preview
+    (`ImageViewer.openInPreviewApp`). A `.lassopkg` can't carry `.`/hidden names or case twins (one
+    could swap the reviewed manifest). Turn On after a review approves only the manifest the review
+    showed (`approveChange(reviewed:)`). Remove forgets every setting, secret and hotkey of every
+    version (current, approved, previous), so a later package with the id starts empty. Go back clears
+    an old error. `PanelActivationTests` skip, saying why, while the screen is locked.
 - **The chat's MLX menu lists the models you have (0.29.1).** It read only the Hugging Face cache, so a
   model in `~/models` or LM Studio's folder (the one chosen in Settings) was missing, and an embedding
   model downloaded for memory (bge) was offered as a chat model. `ChatController.mlxModels` now joins the
