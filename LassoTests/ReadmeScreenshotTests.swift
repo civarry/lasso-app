@@ -171,7 +171,7 @@ struct ReadmeScreenshotTests {
         let sourcesConversation = sourcesChat.active.id
         defer { sourcesChat.close(sourcesConversation) }
         var looked = ChatMessage(role: .assistant, text: "You decided on **per-seat pricing at $12 a month** for enterprise, with 10% off annual plans (pricing.md).")
-        looked.steps = [ActivityStep(icon: "note.text", text: "Looked in Meeting Notes · 1 match", done: true,
+        looked.steps = [ActivityStep(icon: "note.text", text: "Looked in Meeting Notes · sent 1 passage", done: true,
                                      actions: [.answerWithout(source: "meeting-notes", name: "Meeting Notes"),
                                                .onlyWhenMentioned(source: "meeting-notes", name: "Meeting Notes")])]
         looked.sourceHits = [SourceHit(source: "Meeting Notes", title: "pricing", url: shotNotes.appending(path: "pricing.md"),
@@ -194,7 +194,7 @@ struct ReadmeScreenshotTests {
         var listed = ChatMessage(role: .assistant, text: "557 notes. **python-3.15/** is the Python 3.15 documentation (552 pages). Your own: **projects/** (kestrel.md), **meetings/** (1), **inbox/** (1), and adobo.md and todo.md at the top.")
         listed.steps = [ActivityStep(icon: "note.text", text: "Listed the files in Meeting Notes", done: true)]
         var mixed = ChatMessage(role: .assistant, text: "Kestrel runs **Python 3.12** (kestrel.md). Lazy imports (`lazy import`, PEP 810) are new in **3.15**, so it can't use them until it upgrades.")
-        mixed.steps = [ActivityStep(icon: "note.text", text: "Looked in Meeting Notes · 2 matches", done: true,
+        mixed.steps = [ActivityStep(icon: "note.text", text: "Looked in Meeting Notes · sent 2 passages", done: true,
                                     actions: [.answerWithout(source: "meeting-notes", name: "Meeting Notes"),
                                               .onlyWhenMentioned(source: "meeting-notes", name: "Meeting Notes")])]
         mixed.sourceHits = [SourceHit(source: "Meeting Notes", title: "Project Kestrel (projects/kestrel)", url: kestrel,
@@ -205,6 +205,42 @@ struct ReadmeScreenshotTests {
                                 ChatMessage(role: .user, text: "which python version does project Kestrel use, and can it use lazy imports?"), mixed]
         sourcesChat.active.mentions = []
         try await shoot("notes-and-docs", CGSize(width: 420, height: 640), ChatView().background(Color(white: 0.12)))
+
+        // 0.27: the source's own offer for a typo (a step for the user, never the model), and a
+        // follow-up the source answers with the previous question's subject.
+        var typo = ChatMessage(role: .assistant, text: "Your notes don't mention “frozendcit”, and I don't know that name.")
+        typo.steps = [ActivityStep(icon: "note.text", text: "Searched Meeting Notes · nothing matched", done: true,
+                                   actions: [.searchFor(source: "meeting-notes", name: "Meeting Notes", query: "frozendict", label: "Did you mean “frozendict”?")])]
+        var fixed = ChatMessage(role: .assistant, text: "`frozendict` is new in **3.15** (PEP 814): an immutable dict you can hash and use as a key.")
+        fixed.steps = [ActivityStep(icon: "note.text", text: "Searched Meeting Notes for “frozendict” · sent 2 passages", done: true)]
+        fixed.sourceHits = [SourceHit(source: "Meeting Notes", title: "What's new in Python 3.15", url: whatsNew, snippet: "PEP 814: Add frozendict built-in type")]
+        var example = ChatMessage(role: .assistant, text: "```python\nconfig = frozendict(host=\"localhost\", port=8080)\ncache[config] = load()\n```")
+        example.steps = [ActivityStep(icon: "note.text", text: "Looked in Meeting Notes for “frozendict example” · sent 1 passage", done: true,
+                                      actions: [.answerWithout(source: "meeting-notes", name: "Meeting Notes")])]
+        example.sourceHits = [SourceHit(source: "Meeting Notes", title: "Built-in Types", url: whatsNew, snippet: "class frozendict(**kwargs)")]
+        sourcesChat.messages = [ChatMessage(role: .user, text: "how does frozendcit work"), typo, fixed,
+                                ChatMessage(role: .user, text: "show me an example"), example]
+        try await shoot("source-hooks-chat", CGSize(width: 420, height: 720), ChatView().background(Color(white: 0.12)))
+
+        // 0.27: a source on the hooks, its review lines, and Go back after an update.
+        let hooked = """
+        {"lasso": 1, "id": "notes-hooks", "version": "VERSION", "name": "My notes", "summary": "Lets chat answer from a folder of your Markdown notes.",
+         "author": "Lasso", "settings": [{"id": "notes", "label": "Notes folder", "kind": "folder"}],
+         "commands": [{"id": "search", "title": "My notes", "surfaces": ["search"], "input": ["query"], "output": "results", "hook": "source/1", "ranks": true,
+                       "run": {"script": {"path": "scripts/search.sh", "timeout": 5}}, "test": {"query": "standup"}},
+                      {"id": "describe", "title": "What's in it", "hook": "describe/1", "run": {"script": {"path": "scripts/search.sh"}}}]}
+        """
+        let shScript = ["scripts/search.sh": Data("#!/bin/sh\necho '{\"status\": \"nothing\", \"results\": []}'\n".utf8)]
+        try store.install(Data(hooked.replacingOccurrences(of: "VERSION", with: "1.4.0").utf8), files: shScript, origin: .catalog)
+        try store.install(Data(hooked.replacingOccurrences(of: "VERSION", with: "1.5.0").utf8), files: shScript, origin: .catalog)
+        if let folder = store.installed.first(where: { $0.id == "notes-hooks" })?.package.setting("notes") {
+            store.setValue(shotNotes.path, "notes-hooks", folder)
+        }
+        SourcePreferences.setAbout("adobo, meetings, projects, python, todo", "notes-hooks")
+        defer { SourcePreferences.forget("notes-hooks") }
+        try await shoot("source-hooks-page", CGSize(width: 520, height: 1500),
+                        ScrollView { PackagePage(id: "notes-hooks", localOnly: false, removed: {}) }
+                            .background(SettingsPalette.pageFill))
 
         // Table to CSV: how to use it, said plainly.
         try store.install(Data("""

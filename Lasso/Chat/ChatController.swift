@@ -2991,12 +2991,31 @@ final class ChatController {
         }
         let available = PackageRegistry.shared.sources()
         SourceAbout.fillIfEmpty(available)
-        let forced = mentioned.compactMap { id in available.first { $0.id == id } }.filter { !excluded.contains($0.id) }
+        SourceDescribe.refreshIfDue(available)
+        // A query the user picked from a source's offer runs that source, like an @.
+        let searchFor = session.searchFor
+        session.searchFor = [:]
+        let forced = (mentioned + searchFor.keys.filter { !mentioned.contains($0) })
+            .compactMap { id in available.first { $0.id == id } }.filter { !excluded.contains($0.id) }
         let previous = session.messages.filter { !$0.isStreaming }.suffix(3).map(\.text).joined(separator: " ")
-        let picked = automatic
+        var picked = automatic
             ? SourcePicker.automatic(typed, lastExchange: previous, from: available)
                 .filter { source in !forced.contains(source) && !excluded.contains(source.id) }
             : []
+        // A follow-up: a source/1 source that gave passages last turn is asked again; it says
+        // `irrelevant` (no step, no context) when the message isn't about it.
+        if automatic {
+            for source in available where session.recentSources.contains(source.id) && source.command.hook == .source
+                && !forced.contains(source) && !picked.contains(source) && !excluded.contains(source.id)
+                && SourcePreferences.use(source.id) == .automatically
+                // "thanks" isn't a question for it: a follow-up needs words to search with.
+                && !SourceSearch.query(typed, for: source).isEmpty {
+                picked.append(source)
+            }
+        }
+        let earlier = session.messages.filter { !$0.isStreaming }
+        let lastUser = earlier.last(where: { $0.role == .user && $0.text != typed }) ?? earlier.dropLast().last(where: { $0.role == .user })
+        let lastReply = earlier.last(where: { $0.role == .assistant })
         let chosen = forced.map { ($0, automatic: false) } + picked.map { ($0, automatic: true) }
         guard !chosen.isEmpty else {
             if let offer = SourcePicker.offered(typed, from: available, searched: excluded) {
@@ -3013,7 +3032,14 @@ final class ChatController {
             stepIDs[source.id] = step.id
             edit { $0.steps.append(step) }
         }
-        let (hits, outcomes) = await SourceSearch.look(chosen, message: typed)
+        let recent = session.recentSources
+        let baseTurn = SourceTurn(message: typed, query: "", previous: lastUser?.text, previousReply: lastReply?.text)
+        let (hits, outcomes, notes) = await SourceSearch.look(chosen, turn: baseTurn) { source, turn in
+            var turn = turn
+            turn.previousSearched = recent.contains(source.id)
+            if let query = searchFor[source.id] { turn.searchFor = query; turn.intent = .search }
+            return try await SourceSearch.run(source, turn)
+        }
         var kept = hits
         let recipient = intelligence.textRecipient
         // Before anything goes to a cloud model: the user's Allow, per source and provider.
@@ -3042,19 +3068,39 @@ final class ChatController {
             let own = kept.filter { $0.source == name }
             var text: String
             var actions: [StepAction] = []
+            // What it searched, when not the user's words: "for “frozendict” (you typed frozendcit)".
+            let searchedFor = outcome.searched.map { " for “\($0)”" } ?? ""
             switch outcome.status {
             case .matched(let n) where own.isEmpty:
-                text = "\(verb) \(name) · \(n) match\(n == 1 ? "" : "es") · didn't send them"
-            case .matched where own.first?.title.hasPrefix("Files in ") == true:
+                text = "\(verb) \(name)\(searchedFor) · \(n) passage\(n == 1 ? "" : "s") found · didn't send them"
+            case .matched where outcome.listed:
                 text = "Listed the files in \(name)"
             case .matched:
-                text = "\(verb) \(name) · \(own.count) match\(own.count == 1 ? "" : "es")"
+                // Counts what reached the model, never what the answer used (Lasso can't know that).
+                text = "\(verb) \(name)\(searchedFor) · sent \(own.count) passage\(own.count == 1 ? "" : "s")"
                 if outcome.automatic {
                     actions = [.answerWithout(source: id, name: name), .onlyWhenMentioned(source: id, name: name)]
                 }
-            case .nothing: text = "\(verb) \(name) · nothing matched"
+            case .nothing: text = "\(verb) \(name)\(searchedFor) · nothing matched"
+            case .irrelevant: text = outcome.automatic ? "" : "\(verb) \(name) · nothing related"
+            case .cant(let why): text = "\(name): \(why)"
             case .timedOut: text = "\(name) didn't answer in \(Int(SourceSearch.timeout)) seconds"
             case .failed(let why): text = "Couldn't look in \(name): \(why)"
+            }
+            // Its offer goes to the user, never to the model: one click searches it.
+            if let ask = outcome.ask {
+                // The button is the question: the step line stays short enough to read in the panel.
+                actions.insert(.searchFor(source: id, name: name, query: ask, label: "Did you mean “\(ask)”?"), at: 0)
+            } else if let searched = outcome.searched, case .matched = outcome.status {
+                // It corrected the words itself: one click searches what the user typed.
+                let typedWords = SourceSearch.query(typed, for: outcome.source).joined(separator: " ")
+                if !typedWords.isEmpty, typedWords.lowercased() != searched.lowercased() {
+                    actions.append(.searchFor(source: id, name: name, query: typedWords, label: "Search “\(typedWords)” instead"))
+                }
+            }
+            if text.isEmpty {
+                edit { $0.steps.removeAll { $0.id == stepID } }
+                continue
             }
             let links = own.map { WebSourcesProvider.Hit(title: $0.title, url: $0.url, source: name, snippet: $0.snippet) }
             edit { message in
@@ -3066,8 +3112,18 @@ final class ChatController {
             }
         }
         edit { $0.sourceHits = kept }
+        session.recentSources = Set(kept.map(\.source).compactMap { name in available.first { $0.name == name }?.id })
         Log.chat.notice("sources · looked in \(chosen.count, privacy: .public), \(kept.count, privacy: .public) passage(s) sent, cloud=\(recipient != nil, privacy: .public)")
-        return (SourceSearch.evidence(kept) ?? SourceSearch.nothingFound(outcomes), recipient != nil && !kept.isEmpty)
+        // A note goes with its source's passages, and only if they're being sent.
+        // For a cloud model, a note counts as the source's content: only with its passages (allowed
+        // this time) or the user's standing Allow.
+        let sentNotes = notes.filter { name, _ in
+            guard kept.contains(where: { $0.source == name }) || !hits.contains(where: { $0.source == name }) else { return false }
+            guard let recipient, !kept.contains(where: { $0.source == name }) else { return true }
+            return available.first { $0.name == name }.map { SourcePreferences.allowed($0.id).contains(recipient.key) } ?? false
+        }
+        return (SourceSearch.evidence(kept, notes: sentNotes) ?? SourceSearch.nothingFound(outcomes, notes: sentNotes),
+                recipient != nil && !kept.isEmpty)
     }
 
     enum SourceConsent { case always, once, deny }
@@ -3101,6 +3157,9 @@ final class ChatController {
         case .automatically(let id, let name):
             SourcePreferences.setUse(.automatically, id)
             setStep(on: messageID, matching: action, text: "\(name) is used automatically again.", actions: [])
+        case .searchFor(let id, _, let query, _):
+            active.searchFor = [id: query]
+            regenerate(messageID)
         }
     }
 

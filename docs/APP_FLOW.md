@@ -748,10 +748,13 @@ flowchart LR
   Dev["Developer mode: New Package (starters) · Load Folder<br/>(polled every 2 s, reloaded without review;<br/>problems shown, last good copy kept)"] --> Pkgs
   subgraph Src["Sources on this Mac (search package, no network)"]
     Pick["@ chip (forced, sticks) · or SourcePicker:<br/>shares words with What's in it, ≤ 2, relative margin;<br/>no model call (empty What's in it: filled from the folder)"]
-    Gate["SourceSearch.look: user's own words, 5 s each,<br/>gate ≥ 2 words, 3 passages / 1,200 chars total, fenced"]
+    Gate["SourceSearch.look: user's own words, 5 s each,<br/>gate ≥ 2 words (skipped if it ranks its own),<br/>3 passages / 1,200 chars total incl. notes, fenced"]
+    Hook["source/1 package: whole turn in (message, previous,<br/>today); status · results · searched · ask · note out"]
     Consent{"cloud model?<br/>allowed for this source + company?"}
   end
   ChatP --> Pick --> Gate --> Consent
+  Pick -->|"follow-up: gave passages last turn"| Hook --> Gate
+  Hook -->|"ask: Did you mean …? (a link, never to the model)"| ChatP
   Consent -->|"local, or allowed"| Answer["passages with the turn's evidence<br/>(fallback scope on-device only if cloud)"]
   Consent -->|"ask: Allow for · This time · Don't send"| Answer
   Gate -->|"nothing matched"| Nothing["the model is told: found nothing,<br/>say so, don't invent"]
@@ -888,6 +891,21 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Package hooks (0.27, `docs/PACKAGE-HOOKS.md`):** a step a package can take over, with one shape:
+  the turn in, a status out, Lasso's limits after. `source/1` on a search command gets the message as
+  typed, the previous turn, `today`, the locale and an `intent` (`about` for "what's in my notes"), and
+  answers `found | nothing | inventory | irrelevant | cant` with results, `searched` (step: "for
+  “frozendict”"), `ask` (a "Did you mean …?" link for the user, never sent to the model) and a `note`
+  (fenced, in the budget; for a cloud model it follows the source's Allow). `"ranks": true` skips Lasso's
+  2-word gate; budget, fencing and consent stay. A `source/1` source that gave passages last turn is asked
+  again on the next message that has words to search (`Conversation.recentSources`). `describe/1` writes
+  What's in it (only over an automatic line, `SourcePreferences.setAutomaticAbout`) and picking words the
+  picker uses (`SourcePreferences.words`), on folder choice and at most daily (`SourceDescribe`). Steps
+  count what reached the model ("· sent 2 passages"). The shared core (`SourceCore.swift`: turn, gate,
+  budget, evidence) is compiled into `lasso-pkg`, whose new `replay` runs saved turns through it. An
+  update keeps the version it replaced (`Packages/.previous/<id>`), and the page offers **Go back**.
+- **Settings: Manage connections opens again (0.26.1).** The connections sheet hung off the Models page,
+  which the Language model page is pushed over; it's on the Settings window now.
 - **Sources: what a live test on a 9B local model showed.** Lasso's chat was run end to end on Qwen3.5
   9B (MLX) against a notes folder with the Python 3.15 docs next to personal notes. Four fixes: when the
   sources Lasso looked in find nothing, the turn tells the model so (`SourceSearch.nothingFound`: say it

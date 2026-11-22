@@ -1450,7 +1450,10 @@ private struct SourcesFooter: View {
                 }
                 ForEach(actionable.filter { step in !groups.keys.contains(step.actions.first?.sourceName ?? "") }) { step in
                     HStack(spacing: 8) {
-                        Text(step.text).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        // "Did you mean …?" says it all; the step's line is already in the trace above.
+                        if case .searchFor = step.actions[0] {} else {
+                            Text(step.text).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        }
                         actions(step)
                     }
                 }

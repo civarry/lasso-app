@@ -64,7 +64,7 @@ enum PackageCommandRunner {
     }
 
     /// Markers around text Lasso hands a model as content (what you lassoed, a reply, highlighted text).
-    nonisolated static let fence = "<<<LASSO-CONTENT>>>"
+    nonisolated static let fence = SourceCore.fence
 
     static func run(_ entry: PackageRegistry.Entry, _ command: PackageCommand, input: PackageInput,
                     intelligence: IntelligenceCoordinator = .shared) async throws -> PackageCommandResult {
@@ -98,6 +98,8 @@ enum PackageCommandRunner {
             case .file(let url): return .file(url)
             case .url: throw RunError.notAURL
             case .results(let list): return .text(list.compactMap { $0["title"] }.joined(separator: "\n"))
+            case .source(let reply): return .text(reply.results.compactMap { $0["title"] }.joined(separator: "\n"))
+            case .describe(let about, _): return .text(about)
             }
         case .prompt(let run):
             let (prompt, _) = promptText(run, values: values(entry, input), text: input.text)
@@ -239,8 +241,9 @@ extension PackageWhen {
 extension PackageScript {
     /// The standard-input JSON: only the inputs the command declares, and non-secret settings.
     static func stdin(_ entry: PackageRegistry.Entry, _ command: PackageCommand, input: PackageInput,
-                      query: String? = nil) -> Data {
-        var out: [String: Any] = ["command": command.id]
+                      query: String? = nil, extra: [String: Any] = [:]) -> Data {
+        var out: [String: Any] = extra
+        out["command"] = command.id
         if command.input.contains(.text) { out["text"] = input.text ?? "" }
         if command.input.contains(.table) { out["table"] = input.table ?? "" }
         if command.input.contains(.lines) { out["lines"] = input.linesJSON }

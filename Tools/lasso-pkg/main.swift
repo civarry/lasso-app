@@ -11,6 +11,8 @@ struct LassoPkg {
       lasso-pkg validate <folder or lasso.json>... [--catalog]     every rule Lasso checks
       lasso-pkg run <folder> <command> [--text T] [--table TSV] [--image file.png] [--query Q] [--arg name=value]...
                     [--setting id=value]... [--send]
+      lasso-pkg replay <folder> <turns.json> [--setting id=value]... [--data folder]
+                    a source's search command on saved chat turns: what it got, what passed, what the model reads
       lasso-pkg pack <folder> [--out file.lassopkg]                 one file to share
       lasso-pkg index <packages folder> --base-url URL --out folder the catalog's index.json and downloads
 
@@ -25,6 +27,7 @@ struct LassoPkg {
             case "new": try new(args)
             case "validate": exit(try validate(args) ? 0 : 1)
             case "run": try await run(args)
+            case "replay": try await replay(args)
             case "pack": try pack(args)
             case "index": try index(args)
             case "-h", "--help", "help": print(usage)
@@ -199,6 +202,11 @@ struct LassoPkg {
                 stdin["image"] = "\(PackageScript.tmpToken)/capture.png"
             }
             if command.input.contains(.query) { stdin["query"] = query }
+            if command.hook == .source {
+                let words = SourceCore.query(query, sourceName: package.name).joined(separator: " ")
+                stdin.merge(SourceTurn(message: query, query: words).fields()) { _, new in new }
+            }
+            if command.hook == .describe { stdin["hook"] = "describe/1" }
             if command.input.contains(.args) { stdin["args"] = args }
             stdin["settings"] = Dictionary(uniqueKeysWithValues: package.settings.filter { $0.kind != .secret }.map { ($0.id, values["settings.\($0.id)"] ?? "") })
             let input = try JSONSerialization.data(withJSONObject: stdin, options: [.sortedKeys])
@@ -223,8 +231,97 @@ struct LassoPkg {
             case .results(let list):
                 print("\n\(list.count) result\(list.count == 1 ? "" : "s"):")
                 for item in list { print("- \(item["title"] ?? "")  \(item["url"] ?? "")") }
+            case .source(let reply):
+                print("\nstatus: \(reply.status.rawValue)")
+                if let searched = reply.searched { print("searched: \(searched)") }
+                if let ask = reply.ask { print("offers the user: \(ask)") }
+                if let note = reply.note { print("note for the model: \(note)") }
+                print("\(reply.results.count) result\(reply.results.count == 1 ? "" : "s"):")
+                for item in reply.results { print("- \(item["title"] ?? "")  \(item["url"] ?? "")") }
+            case .describe(let about, let words):
+                print("\nWhat's in it: \(about)\npicking words: \(words.joined(separator: ", "))")
             }
         }
+    }
+
+    /// Saved chat turns through a source's search command, as Lasso runs it: the turn it gets (with the
+    /// previous one), what it answers, what passes Lasso's gate (unless it ranks its own), and what the
+    /// model would read after the budget. turns.json: [{"message": "...", "expect": "file-part"?}, ...].
+    /// No model, no network beyond what the package declares; the data folder persists with --data.
+    static func replay(_ args: [String]) async throws {
+        let o = options(args)
+        guard o.positional.count == 2 else { fail("Usage: lasso-pkg replay <folder> <turns.json> [--setting id=value]... [--data folder]") }
+        let loaded = try load(o.positional[0])
+        let (found, list) = problems(loaded, catalog: false)
+        guard let package = found, list.isEmpty else { fail(list.joined(separator: "\n")) }
+        guard let folder = loaded.folder else { fail("Replay a package from its folder.") }
+        guard let command = package.commands.first(where: { $0.surfaces.contains(.search) }), let run = command.script else {
+            fail("Replay needs a search command that runs a script.")
+        }
+        guard let turnsData = FileManager.default.contents(atPath: o.positional[1]),
+              let turns = try JSONSerialization.jsonObject(with: turnsData) as? [[String: Any]] else {
+            fail("\(o.positional[1]) should be a JSON list of {\"message\": ...}.")
+        }
+        var settings: [String: String] = [:]
+        for pair in o.values["--setting"] ?? [] {
+            if let eq = pair.firstIndex(of: "=") { settings[String(pair[..<eq])] = String(pair[pair.index(after: eq)...]) }
+        }
+        let scratch = FileManager.default.temporaryDirectory.appending(path: "lasso-pkg-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let data = o.values["--data"]?.last.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? scratch.appending(path: "data", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
+        let folders = package.settings.filter { $0.kind == .folder }.compactMap { settings[$0.id] }.filter { !$0.isEmpty }
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let places = PackageScript.Places(package: folder, data: data, workspace: scratch.appending(path: "workspace", directoryHint: .isDirectory),
+                                          folders: folders)
+        var previous: String?, previousFound = false
+        var expected = 0, met = 0
+        for (n, turn) in turns.enumerated() {
+            guard let message = turn["message"] as? String else { continue }
+            let words = SourceCore.query(message, sourceName: package.name)
+            var sourceTurn = SourceTurn(message: message, query: words.joined(separator: " "), previous: previous,
+                                        previousReply: nil, previousSearched: previousFound)
+            sourceTurn.intent = words.isEmpty ? .about : .search
+            var stdin: [String: Any] = ["command": command.id, "query": sourceTurn.query,
+                                        "settings": Dictionary(uniqueKeysWithValues: package.settings.filter { $0.kind != .secret }.map { ($0.id, settings[$0.id] ?? "") })]
+            if command.hook == .source { stdin.merge(sourceTurn.fields()) { _, new in new } }
+            let input = try JSONSerialization.data(withJSONObject: stdin, options: [.sortedKeys])
+            let request = PackageScript.Request(command: command.id, stdin: input, secrets: [:], run: run, localOnly: true)
+            print("\n[\(n + 1)] \(message)")
+            if command.hook == .source { print("    gets: message, previous: \(previous.map { "\"\($0)\"" } ?? "none"), intent: \(sourceTurn.intent.rawValue), query: \"\(sourceTurn.query)\"") }
+            else { print("    gets: query \"\(sourceTurn.query)\" (a plain search script: no message, no previous turn)") }
+            var hits: [SourceHit] = [], note: String?, status = "found"
+            do {
+                switch try await PackageScript.run(request, places: places) {
+                case .source(let reply):
+                    status = reply.status.rawValue
+                    note = reply.note
+                    hits = reply.results.compactMap { r in r["title"].map { SourceHit(source: package.name, title: $0, url: r["url"].flatMap(URL.init(string:)), snippet: r["snippet"] ?? "") } }
+                    if let s = reply.searched { print("    searched: \(s)") }
+                    if let a = reply.ask { print("    offers the user: Did you mean \(a)?") }
+                case .results(let list):
+                    hits = list.compactMap { r in r["title"].map { SourceHit(source: package.name, title: $0, url: r["url"].flatMap(URL.init(string:)), snippet: r["snippet"] ?? "") } }
+                    status = hits.isEmpty ? "nothing" : "found"
+                default: status = "bad output"
+                }
+            } catch { status = "failed: \(error.localizedDescription)" }
+            let gateWords = words.map(SourceWords.stem).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+            let passed = command.ranks || status == "inventory" || gateWords.isEmpty ? hits : hits.filter { SourceCore.passes($0, words: gateWords) }
+            let kept = status == "irrelevant" ? [] : SourceCore.budget([passed], notes: note?.count ?? 0)
+            print("    status: \(status) · \(hits.count) returned · \(passed.count) passed\(command.ranks ? " (ranks its own)" : " Lasso's gate") · \(kept.count) to the model")
+            if let note { print("    note for the model: \(note)") }
+            for hit in kept { print("    - \(hit.title): \(hit.snippet.prefix(110))") }
+            if let expect = turn["expect"] as? String {
+                expected += 1
+                let ok = kept.contains { ($0.url?.path ?? "").contains(expect) || $0.title.contains(expect) || $0.snippet.contains(expect) }
+                if ok { met += 1 }
+                print("    expect \"\(expect)\": \(ok ? "yes" : "NO")")
+            }
+            previous = message
+            previousFound = !kept.isEmpty
+        }
+        if expected > 0 { print("\n\(met) of \(expected) turns found what they expected.") }
+        if expected > met { exit(1) }
     }
 
     static func pack(_ args: [String]) throws {

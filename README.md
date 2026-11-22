@@ -17,11 +17,28 @@
 
 <p align="center"><img src="screenshots/hero.png" alt="Drag a box around anything on screen and translate it in place"></p>
 
-**Jump to:** [What's new](#whats-new-in-026) · [What it does](#what-it-does) · [Chat](#chat) ·
+**Jump to:** [What's new](#whats-new-in-027) · [What it does](#what-it-does) · [Chat](#chat) ·
 [Agent](#agent) · [Packages](#packages) · [Privacy](#privacy) · [Install](#install) ·
 [Updates](#updates) · [AI models](#ai-models) · [Build it](#build-it-yourself)
 
-## What's new in 0.26
+## What's new in 0.27
+
+**Packages can fix more without waiting for a Lasso update.** A search package can now take over the
+whole search: it gets your message as you typed it and the question before it, and Lasso keeps only the
+safety rules (what reaches the model, what leaves your Mac).
+
+- **My notes 1.5** (from Browse) uses it: it fixes typos ("frozendcit" finds frozendict, or offers
+  **Did you mean frozendict?**), understands Taglish ("paano magluto ng adobo?"), follows up ("show me an
+  example" stays on the same subject) and reads dates ("what did we decide last week?").
+- **Steps say what reached the model:** "Looked in My notes · sent 2 passages".
+- **Go back:** after a package update, its page offers the version you had before.
+- For package authors: the `source/1` and `describe/1` hooks, and `lasso-pkg replay` to try a source on
+  saved chat turns ([guide](docs/PACKAGES.md#hooks-a-package-takes-over-a-step)).
+
+<p align="center"><img src="screenshots/app/source-hooks-chat.png" width="460" alt="A typo offer, the corrected search, and a follow-up that stays on the subject"></p>
+
+<details>
+<summary>New in 0.26</summary>
 
 **Your notes and a folder of docs work together.** Tested on a 9B local model with the Python 3.15 docs
 next to everyday notes.
@@ -35,6 +52,8 @@ next to everyday notes.
 - **0.26.1:** Settings › Models › Language model › **Manage connections** opens again.
 
 <p align="center"><img src="screenshots/app/notes-and-docs.png" width="460" alt="Chat listing a notes folder by folder, then answering from a project note and the Python docs"></p>
+
+</details>
 
 <details>
 <summary>New in 0.25</summary>
@@ -214,6 +233,8 @@ A package can add, or change:
 - **Changes to Lasso itself:** the Summarize and Proofread prompts, action names, the toolbar's
   defaults, chat suggestions and extra chat instructions. Off undoes them.
 - **Shortcuts and sandboxed scripts** (new in 0.21) behind any of the above.
+- **Your own sources** like My notes, which can take over the whole search (new in 0.27): typos, other
+  languages, follow-ups and dates are the package's job, so it improves without a Lasso update.
 
 **You stay in control:**
 
@@ -222,6 +243,7 @@ A package can add, or change:
 - A command uses **your** chosen model, never another one.
 - Local-only mode pauses packages that reach off your Mac, and cuts scripts off the internet.
 - Scripts run in a sandbox unless you give that package Full access.
+- After a package update, **Go back** on its page returns to the version you had.
 
 Make your own: [`docs/CONTRIBUTING-PACKAGES.md`](docs/CONTRIBUTING-PACKAGES.md) has examples, the rules,
 Developer mode and `lasso-pkg`. The full design is in [`docs/PACKAGES.md`](docs/PACKAGES.md), and what can be changed in

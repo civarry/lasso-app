@@ -27,6 +27,27 @@ enum PackageScript {
         case url(String)
         case file(URL)
         case results([[String: String]])
+        /// A `source/1` command's answer.
+        case source(SourceReply)
+        /// A `describe/1` command's answer: the What's in it line and picking words.
+        case describe(about: String, words: [String])
+    }
+
+    /// What a `source/1` command answers (docs/PACKAGE-HOOKS.md). Lasso applies its limits afterwards.
+    struct SourceReply: Sendable, Equatable {
+        enum Status: String, Sendable, CaseIterable { case found, nothing, inventory, irrelevant, cant }
+        var status: Status
+        var results: [[String: String]]
+        /// The query it ran, when not the user's own words ("frozendict").
+        var searched: String?
+        /// A corrected query to offer the user, never sent to the model.
+        var ask: String?
+        /// One fact about the search for the model, fenced and counted in the budget.
+        var note: String?
+
+        static let maxAsk = 80
+        static let maxNote = 160
+        static let maxSearched = 120
     }
 
     struct Places: Sendable {
@@ -149,6 +170,23 @@ enum PackageScript {
         let raw = String(decoding: data.prefix(maxOutput), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         guard raw.hasPrefix("{"), let object = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any] else {
             return .text(raw)
+        }
+        if let name = object["status"] as? String {
+            guard let status = SourceReply.Status(rawValue: name) else {
+                throw RunError.badOutput("status must be one of \(SourceReply.Status.allCases.map(\.rawValue).joined(separator: ", ")).")
+            }
+            func clean(_ key: String, _ limit: Int) -> String? {
+                guard let value = (object[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+                return String(value.prefix(limit))
+            }
+            let list = (object["results"] as? [[String: Any]] ?? []).map { $0.compactMapValues { $0 as? String } }
+            return .source(SourceReply(status: status, results: list, searched: clean("searched", SourceReply.maxSearched),
+                                       ask: clean("ask", SourceReply.maxAsk), note: clean("note", SourceReply.maxNote)))
+        }
+        if let about = object["about"] as? String {
+            let words = (object["words"] as? [String] ?? []).map { $0.lowercased() }.filter { !$0.isEmpty }
+            return .describe(about: String(about.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120)),
+                             words: Array(words.prefix(100)))
         }
         if let text = object["text"] as? String { return .text(text) }
         if let url = object["url"] as? String { return .url(url) }

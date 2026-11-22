@@ -81,6 +81,18 @@ struct PackageCommand: Sendable, Equatable {
     var on: [Event] = []
     /// Sample tool arguments for the Test button.
     var testArgs: [String: String] = [:]
+    /// A hook (docs/PACKAGE-HOOKS.md): Lasso hands the package a whole step instead of a fixed slot.
+    var hook: Hook? = nil
+    /// A `source/1` command that judges its own results' relevance, instead of Lasso's word gate.
+    var ranks: Bool = false
+
+    enum Hook: String, Sendable, CaseIterable {
+        /// A search command that gets the user's message as typed, the previous turn and the date, and
+        /// answers with a status, results, the query it ran, an offer for the user and a note.
+        case source = "source/1"
+        /// Run when the folder is chosen or changes: answers the What's in it line and picking words.
+        case describe = "describe/1"
+    }
 
     var http: PackageHTTPRun? { if case .http(let h) = runner { h } else { nil } }
     var prompt: PackagePromptRun? { if case .prompt(let p) = runner { p } else { nil } }
@@ -478,7 +490,31 @@ private struct Reader {
     // MARK: Commands
 
     mutating func command(_ o: [String: Any], at path: String, hosts: [String], settings: [PackageSetting]) -> PackageCommand? {
-        onlyKnown(o, ["id", "title", "symbol", "surfaces", "input", "when", "run", "output", "tool", "test", "howTo", "on"], at: path)
+        onlyKnown(o, ["id", "title", "symbol", "surfaces", "input", "when", "run", "output", "tool", "test", "howTo", "on",
+                      "hook", "ranks"], at: path)
+        var hook: PackageCommand.Hook?
+        if let raw = o["hook"] {
+            if let name = raw as? String, let known = PackageCommand.Hook(rawValue: name) { hook = known }
+            else { problem(join(path, "hook"), "This Lasso knows the hooks \(PackageCommand.Hook.allCases.map(\.rawValue).joined(separator: " and ")); \"\(raw)\" may need a newer Lasso.") }
+        }
+        let ranks = o["ranks"] as? Bool ?? false
+        if o["ranks"] != nil, !(o["ranks"] is Bool) { problem(join(path, "ranks"), "Must be true or false.") }
+        if ranks, hook != .source { problem(join(path, "ranks"), "Only for commands with \"hook\": \"source/1\".") }
+        let runsScript = (o["run"] as? [String: Any])?["script"] != nil
+        if hook != nil, !runsScript { problem(join(path, "hook"), "A hook runs a script: \"run\": {\"script\": ...}.") }
+        if hook == .describe {
+            // Not a button or a search: Lasso runs it when the folder is chosen or changes.
+            for key in ["surfaces", "input", "output", "when", "tool", "test", "on"] where o[key] != nil {
+                problem(join(path, key), "A describe/1 command has no \"\(key)\": Lasso runs it itself.")
+            }
+            let id = string(o, "id", at: path) ?? ""
+            let title = string(o, "title", at: path, length: 1...24) ?? ""
+            guard let runObject = o["run"] as? [String: Any],
+                  let runner = self.runner(runObject, at: join(path, "run"), hosts: hosts, settings: settings,
+                                           values: ["language"], output: .markdown, isSearch: false) else { return nil }
+            return PackageCommand(id: id, title: title, symbol: nil, surfaces: [], input: [], output: .markdown,
+                                  runner: runner, when: nil, testQuery: nil, testText: nil, hook: .describe)
+        }
         let howTo = string(o, "howTo", at: path, required: false, length: 1...140)
         let id = string(o, "id", at: path) ?? ""
         if !id.isEmpty, !PackageValidator.matches(id, PackageValidator.commandIDPattern) {
@@ -498,6 +534,7 @@ private struct Reader {
         } else { problem(join(path, "surfaces"), "Required: a list of where the command appears.") }
         let isSearch = surfaces.contains(.search)
         if isSearch, surfaces.count > 1 { problem(join(path, "surfaces"), "A search command can't appear anywhere else.") }
+        if hook == .source, !isSearch { problem(join(path, "hook"), "\"source/1\" is for search commands.") }
         // Events: what it runs on, alone on its own surface (it runs with no click, once the user allows it).
         var on: [PackageCommand.Event] = []
         if surfaces.contains(.event) {
@@ -638,7 +675,7 @@ private struct Reader {
         guard let output else { return nil }
         return PackageCommand(id: id, title: title, symbol: symbol, surfaces: surfaces, input: inputs, output: output,
                               runner: runner, when: when, testQuery: testQuery, testText: testText,
-                              tool: tool, howTo: howTo, on: on, testArgs: testArgs)
+                              tool: tool, howTo: howTo, on: on, testArgs: testArgs, hook: hook, ranks: ranks)
     }
 
     mutating func tool(_ raw: Any, at path: String) -> PackageTool? {

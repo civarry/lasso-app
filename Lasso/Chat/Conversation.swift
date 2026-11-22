@@ -64,6 +64,11 @@ final class Conversation: Identifiable {
     var excludedOnce: Set<String> = []
     /// Package tools used in the last turn: still offered next turn, so a follow-up works.
     var recentTools: Set<String> = []
+    /// Sources (package ids) that gave passages last turn: a `source/1` source is a candidate again for
+    /// the next message, so "show me an example" reaches it (it says `irrelevant` if not).
+    var recentSources: Set<String> = []
+    /// A query the user picked from a source's own offer ("Did you mean frozendict?"), for the next turn.
+    var searchFor: [String: String] = [:]
     var input = ""
     var pendingAttachments: [Attachment] = []
     var pendingFiles: [FileAttachment] = []

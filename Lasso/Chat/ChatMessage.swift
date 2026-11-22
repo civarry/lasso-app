@@ -107,11 +107,15 @@ enum StepAction: Sendable, Equatable {
     case onlyWhenMentioned(source: String, name: String)
     /// Put it back to automatic (Undo).
     case automatically(source: String, name: String)
+    /// Search this source for a query it offered ("Did you mean frozendict?"), or the user's own words
+    /// again after it searched a corrected one.
+    case searchFor(source: String, name: String, query: String, label: String)
 
     /// The source it's about, by name.
     var sourceName: String {
         switch self {
-        case .answerWithout(_, let name), .lookIn(_, let name), .onlyWhenMentioned(_, let name), .automatically(_, let name): name
+        case .answerWithout(_, let name), .lookIn(_, let name), .onlyWhenMentioned(_, let name), .automatically(_, let name),
+             .searchFor(_, let name, _, _): name
         }
     }
 
@@ -121,6 +125,7 @@ enum StepAction: Sendable, Equatable {
         case .lookIn(_, let name): "Look in \(name) for this"
         case .onlyWhenMentioned: "Only when I @ it"
         case .automatically: "Undo"
+        case .searchFor(_, _, _, let label): label
         }
     }
 }

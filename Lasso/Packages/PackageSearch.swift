@@ -44,18 +44,61 @@ enum PackageSearch {
         guard case .results(let list) = try await PackageScript.run(request, places: places) else {
             throw PackageScript.RunError.badOutput("a search script answers {\"results\": [...]}.")
         }
-        return list.prefix(10).compactMap { item -> WebSourcesProvider.Hit? in
+        return hits(list, entry: entry)
+    }
+
+    /// A `source/1` command: the whole turn in (docs/PACKAGE-HOOKS.md), a status and results out. Lasso
+    /// applies the gate (unless it ranks its own), the budget, fencing and consent afterwards.
+    static func source(_ entry: PackageRegistry.Entry, _ command: PackageCommand, turn: SourceTurn) async throws -> SourceAnswer {
+        guard let run = command.script else { return SourceAnswer(status: .nothing, hits: []) }
+        guard let places = entry.places else { throw PackageScript.RunError.missing(run.path) }
+        let stdin = PackageScript.stdin(entry, command, input: PackageInput(), query: turn.query, extra: turn.fields())
+        let request = PackageScript.Request(command: command.id, stdin: stdin, secrets: PackageScript.secrets(entry),
+                                            run: run, unsandboxed: entry.fullAccess)
+        let reply: PackageScript.SourceReply
+        switch try await PackageScript.run(request, places: places) {
+        case .source(let answer): reply = answer
+        case .results(let list): reply = .init(status: list.isEmpty ? .nothing : .found, results: list)
+        default: throw PackageScript.RunError.badOutput("a source/1 script answers {\"status\": ..., \"results\": [...]}.")
+        }
+        return SourceAnswer(status: reply.status, hits: hits(reply.results, entry: entry).map {
+            SourceHit(source: entry.package.name, title: $0.title, url: $0.url, snippet: $0.snippet ?? "")
+        }, searched: reply.searched, ask: reply.ask, note: reply.note)
+    }
+
+    /// A script's results as hits: at most 10, a web page or a file on this Mac.
+    static func hits(_ list: [[String: String]], entry: PackageRegistry.Entry) -> [WebSourcesProvider.Hit] {
+        list.prefix(10).compactMap { item -> WebSourcesProvider.Hit? in
             guard let title = item["title"]?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else { return nil }
-            // A web page, or a file on this Mac (a note).
             let url = item["url"].flatMap(URL.init(string:)).flatMap { ["http", "https", "file"].contains($0.scheme?.lowercased() ?? "") ? $0 : nil }
-            let snippet = item["snippet"].map { String($0.prefix(500)) }
+            var snippet = item["snippet"].map { String($0.prefix(500)) }
+            if let date = item["date"], !date.isEmpty, let text = snippet { snippet = "[\(date.prefix(10))] " + text }
             return WebSourcesProvider.Hit(title: String(title.prefix(200)), url: url, source: entry.package.name,
                                           snippet: snippet?.isEmpty == false ? snippet : nil)
         }
     }
 
+    /// A `describe/1` command: the What's in it line and picking words.
+    static func describe(_ entry: PackageRegistry.Entry, _ command: PackageCommand) async throws -> (about: String, words: [String]) {
+        guard let run = command.script, let places = entry.places else { throw PackageScript.RunError.missing(command.script?.path ?? "") }
+        let stdin = PackageScript.stdin(entry, command, input: PackageInput(), extra: ["hook": "describe/1"])
+        let request = PackageScript.Request(command: command.id, stdin: stdin, secrets: PackageScript.secrets(entry),
+                                            run: run, unsandboxed: entry.fullAccess)
+        guard case .describe(let about, let words) = try await PackageScript.run(request, places: places) else {
+            throw PackageScript.RunError.badOutput("a describe/1 script answers {\"about\": ..., \"words\": [...]}.")
+        }
+        return (about, words)
+    }
+
     /// The Test button: runs the command's test query and says what came back.
     static func test(_ entry: PackageRegistry.Entry, _ command: PackageCommand) async -> Result<[WebSourcesProvider.Hit], Error> {
+        if command.hook == .source {
+            let q = command.testQuery ?? "lasso"
+            do {
+                let answer = try await source(entry, command, turn: SourceTurn(message: q, query: q))
+                return .success(answer.hits.map { WebSourcesProvider.Hit(title: $0.title, url: $0.url, source: entry.package.name, snippet: $0.snippet) })
+            } catch { return .failure(error) }
+        }
         if command.script != nil {
             do { return .success(try await script(entry, command, query: command.testQuery ?? "lasso")) } catch { return .failure(error) }
         }
