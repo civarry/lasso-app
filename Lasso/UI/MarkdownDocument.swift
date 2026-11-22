@@ -205,10 +205,14 @@ enum MarkdownParser {
                         while reachedEnd, j < lines.count {
                             let t = lines[j].trimmingCharacters(in: .whitespaces)
                             if t.isEmpty || Self.isFenceLine(t) { reachedEnd = false; break }
-                            if t.contains("$$") { found = Self.hasLoneDoubleDollar(t); reachedEnd = false; break }
+                            let prose = t.split(separator: "`", omittingEmptySubsequences: false).enumerated()
+                                .filter { $0.offset % 2 == 0 }.map(\.element).joined(separator: " ")
+                            if prose.contains("$$") { found = Self.hasLoneDoubleDollar(prose); reachedEnd = false; break }
                             j += 1
                         }
-                        if !found, !(streaming && reachedEnd) {
+                        // Mid-stream, only a head that reads as LaTeX stays math until its closer arrives.
+                        let latex = head.contains { "\\^_{=".contains($0) }
+                        if !found, !(streaming && reachedEnd && latex) {
                             paragraph.append(raw)
                             i += 1
                             continue
@@ -695,21 +699,24 @@ enum StreamStabilizer {
 
     /// Asterisks that aren't part of a `**` pair — the single-emphasis delimiters.
     private static func singleAsterisks(in text: String) -> Int {
-        var n = 0
-        var run = 0
-        var before: Character? = nil
+        // Only a star that can open (text after it) opens, and only one that can close (text before
+        // it) closes: "4 * 5", a "* " bullet, and C's "char* buf" are neither an opener nor left open.
+        var open = false
         let chars = Array(text)
-        for (i, c) in chars.enumerated() {
-            if c == "*" {
-                if run == 0 { before = i > 0 ? chars[i - 1] : nil }
-                run += 1
-                continue
+        var i = 0
+        while i < chars.count {
+            guard chars[i] == "*" else { i += 1; continue }
+            var run = 0
+            while i + run < chars.count, chars[i + run] == "*" { run += 1 }
+            if run % 2 == 1 {
+                let before: Character? = i > 0 ? chars[i - 1] : nil
+                let after: Character? = i + run < chars.count ? chars[i + run] : nil
+                let canClose = before.map { !$0.isWhitespace } ?? false
+                let canOpen = after.map { !$0.isWhitespace } ?? false
+                if open, canClose { open = false } else if canOpen { open = true }
             }
-            // A lone * with space on both sides (a "* " bullet, "4 * 5") can't open or close emphasis.
-            if run % 2 == 1, (before == nil || before!.isWhitespace), c.isWhitespace { run -= 1 }
-            n += run % 2; run = 0
+            i += run
         }
-        if run % 2 == 1, before == nil || before!.isWhitespace { run -= 1 }
-        return n + run % 2
+        return open ? 1 : 0
     }
 }

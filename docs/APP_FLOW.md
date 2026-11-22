@@ -998,6 +998,11 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
     duplicated it); `isInsideCode` tracks one open fence at a time (a `~~~` line inside a ``` block hid
     later thinking); `$$` math accepts a closer followed by text and stays math while streaming, and
     only `$$$` is refused; italic around code still closes mid-stream.
+    A second review found 7 more (`Regression/Round8bReviewRegressionTests`): `isInsideCode` now reads
+    fences line by line like the parser (same character, closer at least as long, so a ``` inside
+    `~~~` or a four-backtick fence no longer leaks later thinking) and ignores backticks inside fenced
+    blocks; a `$$` inside `code` isn't a closer; mid-stream, only a LaTeX-looking `$$` head stays math;
+    streaming emphasis treats a star as an opener only with text after it ("char* buf").
 - **The chat's MLX menu lists the models you have (0.29.1).** It read only the Hugging Face cache, so a
   model in `~/models` or LM Studio's folder (the one chosen in Settings) was missing, and an embedding
   model downloaded for memory (bge) was offered as a chat model. `ChatController.mlxModels` now joins the

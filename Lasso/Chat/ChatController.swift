@@ -3520,19 +3520,28 @@ final class ChatController {
     /// Whether text ending here is inside a Markdown code fence or an inline code span: an odd number
     /// of ``` fences, or, outside fences, an odd number of backticks.
     nonisolated static func isInsideCode(_ prefix: Substring) -> Bool {
-        let fences = prefix.components(separatedBy: "```").count - 1
-        if fences % 2 == 1 { return true }
-        // ~~~ fences too, as the parser takes them: one open fence at a time, closed by the same
-        // character, so a ~~~ line inside a ``` block (or the reverse) is just code.
-        var open: Character?
+        // Fences line by line, as the parser reads them: one open at a time, closed by a line of the same
+        // character at least as long. Backticks inside a fenced block aren't inline code.
+        var open: (char: Character, length: Int)?
+        var ticks = 0
         for line in prefix.split(separator: "\n", omittingEmptySubsequences: false) {
             let t = line.drop(while: { $0 == " " })
-            guard let first = t.first, first == "`" || first == "~",
-                  t.prefix(while: { $0 == first }).count >= 3 else { continue }
-            if let current = open { if current == first { open = nil } } else { open = first }
+            if let first = t.first, first == "`" || first == "~" {
+                let run = t.prefix(while: { $0 == first }).count
+                let rest = t.dropFirst(run)
+                if run >= 3 {
+                    if let fence = open {
+                        if fence.char == first, run >= fence.length, rest.allSatisfy(\.isWhitespace) { open = nil }
+                        continue
+                    }
+                    // "```x```" on one line is inline code, not a fence.
+                    if !(first == "`" && rest.contains("`")) { open = (first, run); continue }
+                }
+            }
+            if open != nil { continue }
+            ticks += line.replacingOccurrences(of: "```", with: "").filter { $0 == "`" }.count
         }
-        if open == "~" { return true }
-        return prefix.replacingOccurrences(of: "```", with: "").filter { $0 == "`" }.count % 2 == 1
+        return open != nil || ticks % 2 == 1
     }
 
     private func finishStreaming(_ id: UUID) {
