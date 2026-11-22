@@ -942,6 +942,17 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
     an open Settings window. `AppActivation.bringForward` asks again once `didBecomeActive` arrives
     (the last window asked for, if still visible). `PanelActivationTests` had been failing locally for
     this reason, read as a test-environment quirk; it fails without the fix and passes with it.
+  - **QA round 4, capture side, 8 fixed** (`Regression/CaptureRegressionTests`): closing a result card
+    stops its work: `FloatingPanelController.close` drops the window's content (ordering out kept the
+    SwiftUI views and their `.task`s running: a Summarize stream, Identify's web search) and ends the
+    card's `CardLifetime`, which the stream reader is adopted into; the capture overlay drops its
+    content too. The pre-pass is one cancellable task per selection with a generation check (an older
+    OCR can't overwrite a newer selection, or reach a torn-down session); a second hotkey press before
+    the screen grab finishes can't start a second session (`isStarting`) or leak an Esc monitor; Esc
+    while an action runs shows no card and no "Error: cancelled"; a new selection leaves inline
+    translate; Lens checks its opt-in and local-only mode where the upload starts. Translate: Spanish
+    into English is no longer "already in English" (same-script languages are told apart), and
+    Traditional into Simplified Chinese translates when the text actually differs.
 - **The chat's MLX menu lists the models you have (0.29.1).** It read only the Hugging Face cache, so a
   model in `~/models` or LM Studio's folder (the one chosen in Settings) was missing, and an embedding
   model downloaded for memory (bge) was offered as a chat model. `ChatController.mlxModels` now joins the

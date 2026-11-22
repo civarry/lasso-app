@@ -142,7 +142,11 @@ enum LanguageDetect {
             return Locale.Language(identifier: "ja")
         }
         guard let nonTargetScript = counts.filter({ $0.key != targetScript })
-            .max(by: { $0.value < $1.value })?.key else { return nil }
+            .max(by: { $0.value < $1.value })?.key else {
+            // All one script, the target's: Spanish into English, say. The language decides.
+            if let found = detection(of: text), baseCode(found.language.minimalIdentifier) != targetBase { return found.language }
+            return nil
+        }
 
         let recognizer = NLLanguageRecognizer()
         recognizer.processString(text)

@@ -45,6 +45,13 @@ final class CaptureCoordinator {
     private var overlayWindows: [OverlayWindow] = []
     private var keyMonitor: Any?
     private var runTask: Task<Void, Never>?
+    /// The selection's OCR/detector pass, and which selection it's for: a newer selection (or Esc)
+    /// cancels it, and an old pass never writes over a newer selection's context.
+    private var prePassTask: Task<Void, Never>?
+    private var prePassGeneration = 0
+    /// Set from the hotkey press until the session is up (`isActive` only turns on after the screen
+    /// grab, an `await` later): a second press in between must not start a second session.
+    private var isStarting = false
 
     /// When set, the session skips the action bar and auto-runs this action's `id` once the selection
     /// (or full-screen grab) and pre-pass are ready — the "direct shortcut" path (e.g. ⇧⌘ → Lens).
@@ -87,8 +94,9 @@ final class CaptureCoordinator {
     // MARK: - Session lifecycle
 
     func begin() {
-        guard !isActive else { return }
-        Task { await start() }
+        guard !isActive, !isStarting else { return }
+        isStarting = true
+        Task { await start(); isStarting = false }
     }
 
     /// Same-hotkey toggle: start a session, or dismiss the current one (Circle-to-Search style).
@@ -112,9 +120,10 @@ final class CaptureCoordinator {
     /// Direct full-screen shortcut: grab the display under the pointer (no drag, no overlay) and
     /// auto-run `actionID` — Findit's "Full Screen Search".
     func beginFullScreen(actionID: String) {
-        guard !isActive else { return }
+        guard !isActive, !isStarting else { return }
         guard passesDirectGate(actionID) else { return }
-        Task { await startFullScreen(actionID: actionID) }
+        isStarting = true
+        Task { await startFullScreen(actionID: actionID); isStarting = false }
     }
 
     /// The one place every direct hotkey is checked before a pixel is captured.
@@ -192,7 +201,8 @@ final class CaptureCoordinator {
         if let intelligence { Task { await intelligence.refreshVisionAvailability() } }
         if actionID == "identify" { intelligence?.prewarmVision() }
         pendingDirectActionID = actionID
-        await runPrePass(crop: shot.image, base: base)
+        prePassGeneration += 1
+        await runPrePass(crop: shot.image, base: base, generation: prePassGeneration)
     }
 
     private func start() async {
@@ -253,9 +263,13 @@ final class CaptureCoordinator {
         finishAgentSelection(nil)   // Esc while the Agent waited: it hears "cancelled"
         KeyboardShortcuts.disable(.cancelCapture)
         runTask?.cancel(); runTask = nil
+        prePassTask?.cancel(); prePassTask = nil
+        prePassGeneration += 1
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
-        overlayWindows.forEach { $0.orderOut(nil) }
+        // Drop the content too: an ordered-out window keeps its SwiftUI views (an inline translation's
+        // model pass) running.
+        overlayWindows.forEach { $0.orderOut(nil); $0.contentViewController = nil; $0.contentView = nil }
         overlayWindows.removeAll()
         shots.removeAll()
         activeDisplayID = nil
@@ -278,6 +292,8 @@ final class CaptureCoordinator {
               rect.width >= 4, rect.height >= 4 else { return }
         activeDisplayID = displayID
         committedRect = rect
+        // A new selection leaves an inline translation of the old one.
+        translating = false
         panelDragOffset = .zero
         pretranslated = [:]
         pretranslatedTarget = nil
@@ -303,10 +319,13 @@ final class CaptureCoordinator {
         if pendingDirectActionID == "identify" || actions.contains(where: { $0 is IdentifyAction }) {
             intelligence?.prewarmVision()
         }
-        Task { await runPrePass(crop: crop, base: base) }
+        prePassTask?.cancel()
+        prePassGeneration += 1
+        let generation = prePassGeneration
+        prePassTask = Task { await runPrePass(crop: crop, base: base, generation: generation) }
     }
 
-    private func runPrePass(crop: CGImage, base: CaptureContext) async {
+    private func runPrePass(crop: CGImage, base: CaptureContext, generation: Int) async {
         let ocrResult = (try? await ocr.recognize(crop)) ?? .empty
         let bars = (try? await barcode.detect(in: crop)) ?? []
         let detected = await dataDetector.detect(in: ocrResult.text)
@@ -332,6 +351,8 @@ final class CaptureCoordinator {
             PackageEvents.fire(.capture, input: PackageInput(text: read.ocrText, sourceApp: read.sourceApp, sourceBundleID: read.sourceBundleID,
                                                              table: read.tableText, image: PackageInput.png(read.image), lines: read.ocrLines))
         }
+        // A newer selection, Esc, or an action already running own the session now.
+        guard generation == prePassGeneration, !Task.isCancelled, isActive else { return }
         context = ctx
 
         // Direct shortcut: the context is now complete — run the pre-bound action and skip the bar.
@@ -369,6 +390,8 @@ final class CaptureCoordinator {
         runTask = Task {
             do {
                 let outcome = try await action.perform(ctx)
+                // Esc while it ran: no card for a capture the user dismissed.
+                guard !Task.isCancelled else { return }
                 switch outcome {
                 case .text, .stream, .custom:
                     // We have the data — drop the freeze and float the result (persists; Esc/✕ to close).
@@ -385,6 +408,7 @@ final class CaptureCoordinator {
                     teardown()
                 }
             } catch {
+                if error is CancellationError || Task.isCancelled { return }
                 FloatingPanelController.shared.present(
                     AnyView(FloatingResultView(title: action.title,
                                                result: .text("Error: \(error.localizedDescription)"))),
@@ -462,6 +486,8 @@ final class CaptureCoordinator {
     }
 
     private func installKeyMonitor() {
+        // Never two: a leaked monitor would eat every Esc in the app.
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
             if event.keyCode == 53 { // Esc

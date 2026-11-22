@@ -5,7 +5,8 @@ Every bug that's fixed gets a test here that fails without the fix, so it can't 
 - One file per area: `ChatFlow` (Regenerate and its versions, search snippets, package `/command`
   replies), `ChatInput` (composer, panel keys, code blocks, drafts), `ChatHistoryAndSaving` (what the
   model sees, what's saved and restored), `ChatToolsAndAgent` (tool cards, the Agent, images in
-  context, save ordering), `Markdown` (rendering, reasoning tags, math, paste).
+  context, save ordering), `Markdown` (rendering, reasoning tags, math, paste), `Capture` (result
+  cards closing, translate detection).
 - A test's name says the right behaviour; its comment says what went wrong.
 - Tests that touch `ChatController.shared` make their own conversation and close it. Tests that need
   packages use their own `PackageStore` in a temporary folder, never this Mac's.

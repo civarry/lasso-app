@@ -142,7 +142,20 @@ enum TranslationPlan {
                                  override: Locale.Language?) -> Bool {
         guard !isVerbatim(block.text) else { return false }
         guard let source = source(of: block, override: override) else { return false }
-        return base(source) != base(target)
+        guard base(source) == base(target) else { return true }
+        return chineseScriptDiffers(block.text, from: source, to: target)
+    }
+
+    /// Chinese into the other script (Traditional into Simplified) is a translation, but only when the
+    /// text changes: many characters are the same in both, and a detected script is a guess.
+    static func chineseScriptDiffers(_ text: String, from source: Locale.Language, to target: Locale.Language) -> Bool {
+        guard base(target) == "zh" else { return false }
+        func script(_ l: Locale.Language) -> String? {
+            l.script?.identifier ?? Locale.Language(identifier: l.maximalIdentifier).script?.identifier
+        }
+        guard let to = script(target), script(source) != to else { return false }
+        let transform = StringTransform(to == "Hans" ? "Traditional-Simplified" : "Simplified-Traditional")
+        return text.applyingTransform(transform, reverse: false).map { $0 != text } ?? false
     }
 
     /// Translatable blocks Apple can handle, grouped by source language, largest group first. Apple's Translation
