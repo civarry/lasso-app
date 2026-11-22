@@ -891,6 +891,11 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Updates on the package's page (0.27.1).** The page and the Packages list read the catalog when they
+  open (at most every 10 s, never in local-only mode). A newer version shows as a row under the
+  package's header: **Update…** downloads it and opens the same review as Browse, or, when its
+  `minLasso` is newer than this Lasso, "It needs Lasso X" with **Check for Lasso Updates**. The list row
+  says "Version X available".
 - **Package hooks (0.27, `docs/PACKAGE-HOOKS.md`):** a step a package can take over, with one shape:
   the turn in, a status out, Lasso's limits after. `source/1` on a search command gets the message as
   typed, the previous turn, `today`, the locale and an `intent` (`about` for "what's in my notes"), and
