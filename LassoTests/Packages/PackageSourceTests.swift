@@ -155,18 +155,18 @@ struct PackageSourceTests {
         let a = Self.source(Self.notes)
         let b = Self.source(Self.package("code-docs", name: "Code docs", run: #"{"script": {"path": "scripts/s.py"}}"#))
         let slow = Self.source(Self.package("slow-src", name: "Slow", run: #"{"script": {"path": "scripts/s.py"}}"#))
-        let (hits, outcomes) = await SourceSearch.look([(a, automatic: true), (b, automatic: false), (slow, automatic: false)],
-                                                       message: "pricing decision for enterprise customers") { source, query in
+        let (hits, outcomes, _) = await SourceSearch.look([(a, automatic: true), (b, automatic: false), (slow, automatic: false)],
+                                                          turn: SourceTurn(message: "pricing decision for enterprise customers", query: "")) { source, turn in
             // The source gets the user's words, minus its own name.
-            #expect(!query.contains("note"))
-            if source.id == "slow-src" { try await Task.sleep(for: .seconds(30)); return [] }
+            #expect(!turn.query.contains("note"))
+            if source.id == "slow-src" { try await Task.sleep(for: .seconds(30)); return SourceAnswer(status: .nothing, hits: []) }
             let make = { (t: String, s: String) in SourceHit(source: source.name, title: t, url: URL(fileURLWithPath: "/n/\(t).md"), snippet: s) }
-            return source.id == "my-notes"
+            return SourceAnswer(status: .found, hits: source.id == "my-notes"
                 ? [make("pricing", "The pricing decision: enterprise pays per seat."),
                    make("q3", "Enterprise customers asked about pricing."),
                    make("misc", "Unrelated grocery list."),
                    make("more", "Pricing decision follow-up for enterprise.")]
-                : [make("api", "Enterprise customers use the pricing API.")]
+                : [make("api", "Enterprise customers use the pricing API.")])
         }
         #expect(hits.count == 3)
         #expect(hits.contains { $0.source == "Code docs" })
@@ -177,8 +177,9 @@ struct PackageSourceTests {
     }
 
     @Test func nothingPassesTheGateNothingIsSent() async {
-        let (hits, outcomes) = await SourceSearch.look([(Self.source(Self.notes), automatic: true)], message: "pricing decision") { source, _ in
-            [SourceHit(source: source.name, title: "x", url: nil, snippet: "unrelated text about cats")]
+        let (hits, outcomes, _) = await SourceSearch.look([(Self.source(Self.notes), automatic: true)],
+                                                          turn: SourceTurn(message: "pricing decision", query: "")) { source, _ in
+            SourceAnswer(status: .found, hits: [SourceHit(source: source.name, title: "x", url: nil, snippet: "unrelated text about cats")])
         }
         #expect(hits.isEmpty)
         #expect(outcomes.first?.status == .nothing)
@@ -318,7 +319,7 @@ struct SourceChatTests {
             #expect(looked.evidence?.contains("per seat") == true)
             #expect(!looked.cloudBound)
             #expect(message.sourceHits.map(\.title) == ["pricing"])
-            #expect(message.steps.first?.text == "Looked in My notes · 1 match", "\(message.steps.map(\.text))")
+            #expect(message.steps.first?.text == "Looked in My notes · sent 1 passage", "\(message.steps.map(\.text))")
             #expect(message.steps.first?.actions.first == .answerWithout(source: "my-notes", name: "My notes"))
             #expect(message.toolApproval == nil)
 
@@ -371,7 +372,7 @@ struct SourceChatTests {
                                          session: chat.active, assistantID: id)
             let about = SourcePreferences.about("my-notes")
             #expect(about.hasPrefix("groceries, pricing"), "\(about)")
-            #expect(chat.active.messages.first { $0.id == id }?.steps.first?.text == "Looked in My notes · 1 match")
+            #expect(chat.active.messages.first { $0.id == id }?.steps.first?.text == "Looked in My notes · sent 1 passage")
         }
     }
 

@@ -12,7 +12,7 @@ generated=$(mktemp -d)
 trap 'rm -rf "$generated"' EXIT
 print "enum LassoPkgVersion { static let lasso = \"$version\" }" > "$generated/Version.swift"
 engine=(PackageManifest PackageTemplate PackagePatches BuiltInContent PackageHTTP PackageScript PackageShortcut
-        PackageRequirements PackageFiles PackageStarters)
+        PackageRequirements PackageFiles PackageStarters SourceCore)
 swiftc -O -swift-version 6 -parse-as-library -module-name lasso_pkg -o "$out" \
   "$root"/Tools/lasso-pkg/main.swift "$root"/Tools/lasso-pkg/Shims.swift "$generated/Version.swift" \
   $(for f in $engine; print "$root/Lasso/Packages/$f.swift")

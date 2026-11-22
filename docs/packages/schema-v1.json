@@ -522,6 +522,17 @@
             },
             "minItems": 1,
             "description": "For the event surface: what it runs on"
+          },
+          "hook": {
+            "enum": [
+              "source/1",
+              "describe/1"
+            ],
+            "description": "A hook (docs/PACKAGE-HOOKS.md): source/1 on a search command gets the whole turn; describe/1 writes What's in it"
+          },
+          "ranks": {
+            "type": "boolean",
+            "description": "With source/1: the command judges its results' relevance instead of Lasso's word gate"
           }
         }
       }

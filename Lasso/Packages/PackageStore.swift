@@ -291,9 +291,10 @@ final class PackageStore {
 
     /// Installs (or updates) after the user approved the review. Settings carry over by id.
     @discardableResult
-    func install(_ data: Data, files: Files = [:], origin: Origin, enabled: Bool = true, source: URL? = nil) throws -> LassoPackage {
+    func install(_ data: Data, files: Files = [:], origin: Origin, enabled: Bool = true, source: URL? = nil,
+                 allowOlder: Bool = false) throws -> LassoPackage {
         let package: LassoPackage
-        switch review(data, files: files, anyVersion: origin == .developer) {
+        switch review(data, files: files, anyVersion: origin == .developer || allowOlder) {
         case .failure(let error): throw error
         case .success(let reviewed): package = reviewed.package
         }
@@ -309,7 +310,19 @@ final class PackageStore {
             try contents.write(to: url)
             if path.hasPrefix("scripts/") { try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path) }
         }
-        if fm.fileExists(atPath: dir.path) { try fm.removeItem(at: dir) }
+        if fm.fileExists(atPath: dir.path) {
+            // The version it replaces is kept (one step), for Go back: packages now carry fixes that
+            // used to ship in Lasso releases. Not for developer folders or a copy changed on disk.
+            let current = installed.first { $0.id == package.id }
+            if origin != .developer, let current, !current.changedOnDisk, current.package.version != package.version {
+                let kept = previousFolder(package.id)
+                try? fm.createDirectory(at: kept.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? fm.removeItem(at: kept)
+                try fm.moveItem(at: dir, to: kept)
+            } else {
+                try fm.removeItem(at: dir)
+            }
+        }
         try fm.moveItem(at: staging, to: dir)
         var records = self.records
         let old = records[package.id]
@@ -333,6 +346,30 @@ final class PackageStore {
         return package
     }
 
+    /// The version an update replaced, kept for Go back.
+    private func previousFolder(_ id: String) -> URL {
+        root.appending(path: ".previous/\(id)", directoryHint: .isDirectory)
+    }
+
+    /// The version Go back would return to, if one is kept.
+    func previousVersion(_ id: String) -> String? {
+        guard let data = try? Data(contentsOf: previousFolder(id).appending(path: "lasso.json")),
+              let package = PackageValidator.validate(data).package, package.id == id else { return nil }
+        return package.version
+    }
+
+    /// Go back: reinstalls the kept version (the user approved it when they installed it), keeping the
+    /// package's settings and its on/off state. One step: the newer version isn't kept.
+    func goBack(_ id: String) throws {
+        let kept = previousFolder(id)
+        let data = try Data(contentsOf: kept.appending(path: "lasso.json"))
+        let files = try Self.readFiles(in: kept)
+        let record = records[id]
+        try install(data, files: files, origin: record?.origin ?? .catalog, enabled: record?.enabled ?? true, allowOlder: true)
+        try? FileManager.default.removeItem(at: kept)
+        reload()
+    }
+
     /// Deletes the package, its preferences and its Keychain items. Its usage counts stay, so removing
     /// and reinstalling can't spend a free tier twice; files it saved to the workspace are the user's.
     func remove(_ id: String) {
@@ -343,6 +380,7 @@ final class PackageStore {
             else { defaults.removeObject(forKey: settingKey(id, setting.id)) }
         }
         try? FileManager.default.removeItem(at: root.appending(path: id, directoryHint: .isDirectory))
+        try? FileManager.default.removeItem(at: previousFolder(id))
         // Its data folder goes too; what it saved to ~/LassoWorkspace/<id>/ is the user's.
         try? FileManager.default.removeItem(at: dataRoot.appending(path: id, directoryHint: .isDirectory))
         var records = self.records

@@ -410,6 +410,14 @@ struct PackagePermissionsList: View {
                 line("arrow.up.message", "Sends the matching passages to your chat model. With a cloud model they leave this Mac, after you allow it.",
                      tag: nil)
             }
+            if package.commands.contains(where: { $0.hook == .source }) {
+                line("text.bubble", "Reads your message and your previous question when it searches",
+                     tag: tag(changed: false, new: compareTo.map { !$0.commands.contains { $0.hook == .source } } ?? false))
+            }
+            if package.commands.contains(where: \.ranks) {
+                line("line.3.horizontal.decrease", "Picks its own best results instead of Lasso's word match",
+                     tag: tag(changed: false, new: compareTo.map { !$0.commands.contains(where: \.ranks) } ?? false))
+            }
             if package.commands.contains(where: { $0.input.contains(.source) }) {
                 line("app.badge", "Sees which app the text came from", tag: nil)
             }
@@ -524,6 +532,7 @@ struct PackagePermissionsList: View {
 
     /// One sentence for where a command appears.
     static func doesLine(_ command: PackageCommand) -> String {
+        if command.hook == .describe { return "\(command.title): tells Lasso what's in your folder, so it knows when to look there" }
         if command.surfaces.contains(.search) { return PackageStatus.roleLine(command) }
         var places: [String] = []
         for surface in command.surfaces {
@@ -970,6 +979,7 @@ struct PackagePage: View {
     let removed: () -> Void
 
     @State private var reviewing = false
+    @State private var goBackError: String?
     @State private var confirmRemove = false
     @State private var confirmFullAccess = false
     @State private var confirmEvents = false
@@ -1029,10 +1039,10 @@ struct PackagePage: View {
                 }
             }
         }
-        if package.commands.contains(where: { !$0.surfaces.contains(.search) }) {
+        if package.commands.contains(where: { !$0.surfaces.contains(.search) && $0.hook == nil }) {
             SettingsCard(title: "Commands") {
-                // A source isn't a command: it has its own In chat card.
-                ForEach(package.commands.filter { !$0.surfaces.contains(.search) }, id: \.id) { command in
+                // A source isn't a command: it has its own In chat card. Nor is a hook Lasso runs itself.
+                ForEach(package.commands.filter { !$0.surfaces.contains(.search) && $0.hook == nil }, id: \.id) { command in
                     SettingsRow(command.title, symbol: command.symbol ?? package.iconSymbol ?? "shippingbox",
                                 caption: Self.whereLine(package, command)) {
                         if package.commands.count > 1 {
@@ -1067,7 +1077,7 @@ struct PackagePage: View {
         else if let command = package.commands.first(where: Self.isSafeToTest) { commandTestCard(item, command) }
         if !package.commands.compactMap(\.shortcut).isEmpty { shortcutsCard(package) }
         PackagePermissionsList(package: package,
-                               showsWhatItDoes: !package.commands.contains { !$0.surfaces.contains(.search) },
+                               showsWhatItDoes: !package.commands.contains { !$0.surfaces.contains(.search) && $0.hook == nil },
                                values: store.settingValues(for: package).values,
                                fullAccess: store.hasFullAccess(id))
         if package.commands.contains(where: { $0.surfaces.contains(.event) }) { eventsCard(package) }
@@ -1218,7 +1228,8 @@ struct PackagePage: View {
     /// Test only what has no side effects: a prompt, a GET, or an `open` (shown, not opened). A POST
     /// could create a real task or send a real message.
     static func isSafeToTest(_ command: PackageCommand) -> Bool {
-        command.prompt != nil || (command.http?.method == "GET" && command.output != .notify)
+        guard command.hook == nil else { return false }
+        return command.prompt != nil || (command.http?.method == "GET" && command.output != .notify)
             || (command.script.map { !$0.network } == true && command.output == .markdown)
     }
 
@@ -1361,6 +1372,17 @@ struct PackagePage: View {
             if let homepage = package.homepage {
                 SettingsRow("Homepage") { Link(homepage.host ?? homepage.absoluteString, destination: homepage) }
             }
+            if let previous = store.previousVersion(package.id) {
+                SettingsRow("Version \(package.version) not working?", caption: "Go back to the version you had before. Its settings stay.") {
+                    Button("Go back to \(previous)") {
+                        do { try store.goBack(package.id) } catch { goBackError = error.localizedDescription }
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            if let goBackError {
+                Text(goBackError).font(SettingsFont.sub).foregroundStyle(.red).padding(.horizontal, SettingsMetrics.rowPaddingH)
+            }
             SettingsRow("Remove \(package.name) from Lasso") {
                 Button("Remove \(package.name)…", role: .destructive) { confirmRemove = true }.buttonStyle(.bordered)
             }
@@ -1444,10 +1466,16 @@ private struct PackageSettingRow: View {
                     panel.message = "Choose the folder \(packageName) can read. It can't read anything else of yours."
                     if panel.runModal() == .OK, let url = panel.url {
                         text = url.path; commit()
-                        // A first "What's in it" from the folder, if there's none yet; the user edits it.
-                        if SourcePreferences.about(packageID).isEmpty {
-                            SourcePreferences.setAbout(SourceAbout.suggest(for: url), packageID)
-                            NotificationCenter.default.post(name: SourcePreferences.aboutChanged, object: packageID)
+                        // A first "What's in it" from the folder, unless the user wrote their own; then the
+                        // package's own describe/1, if it has one, replaces Lasso's guess.
+                        SourcePreferences.setAutomaticAbout(SourceAbout.suggest(for: url), packageID)
+                        NotificationCenter.default.post(name: SourcePreferences.aboutChanged, object: packageID)
+                        if let entry = PackageRegistry.shared.all.first(where: { $0.package.id == packageID }),
+                           SourceDescribe.command(of: entry) != nil {
+                            Task {
+                                await SourceDescribe.refresh(entry)
+                                NotificationCenter.default.post(name: SourcePreferences.aboutChanged, object: packageID)
+                            }
                         }
                     }
                 }

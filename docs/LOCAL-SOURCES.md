@@ -85,7 +85,7 @@ question off the Mac. Automatic use never skips the cloud Allow card.
 
 **Seeing it, fixing it in one click.**
 
-- Every automatic look is a step: "Looked in My notes · 3 matches · **Answer without it**". The link
+- Every automatic look is a step: "Looked in My notes · sent 3 passages · **Answer without it**". The link
   regenerates the reply without that source. The step's menu has "**Only when I @ it**" (then: "My notes
   now waits for @. Undo"). One wrong pick doesn't switch a source off by itself.
 - While the planning step runs: "Checking My notes…".
@@ -170,7 +170,7 @@ would go to a cloud model, the reply shows Lasso's inline Allow card **before th
 
 ### In the reply
 
-- One step per source: "Searched My notes · 3 matches", "Searched My notes · nothing matched".
+- One step per source: "Searched My notes · sent 3 passages", "Searched My notes · nothing matched" (since 0.27 it counts only what reached the model).
 - When nothing matched, the model is told so for that turn: say it plainly, present nothing as coming
   from the source, describe no buttons or menus, and call an unfamiliar word unknown instead of guessing.
 - Sources in separate groups: **From My notes** (`doc.text`, file name, its folder; click opens, ⌥-click

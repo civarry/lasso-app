@@ -158,7 +158,7 @@ struct SourceTestCard: View {
         let source = source
         Task {
             do {
-                let hits = try await SourceSearch.run(source, words)
+                let hits = try await SourceSearch.run(source, SourceTurn(message: words, query: words)).hits
                 let checked = Self.markdownCount(source)
                 phase = .found(count: hits.count, ms: Int(Date().timeIntervalSince(started) * 1000),
                                files: hits.prefix(3).map { $0.url?.lastPathComponent ?? $0.title }, checked: checked)

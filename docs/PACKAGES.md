@@ -423,14 +423,51 @@ are all loopback) is a **source on this Mac**, not part of web search:
 - It runs when the user types **@** and its name in chat (a chip that stays for follow-ups), or when
   Lasso picks it: a message shares words with its **What's in it** line (set on its page, suggested
   from its folder). At most 2 are picked; the user can set one to "Only when I @ it".
-- It gets the user's own words (never the query rewritten for the web), in `query`.
+- It gets the user's own words (never the query rewritten for the web), in `query`; a `source/1` source
+  gets the whole turn (see Hooks).
 - A hit counts only when its title and passage hold at least 2 of those words (the one, for one-word
-  messages); at most 3 passages in all reach the model, fenced as content.
+  messages), unless the source ranks its own; at most 3 passages in all reach the model, fenced as content.
 - It works in local-only mode. With a cloud chat model, its passages wait for the user's Allow (per
   source and company, revocable on its page).
 
 Every other `search` command is a **web search** package (Tavily, SerpApi): it runs with the globe's web
 search, or alone with `@` and its name, never by itself and never in local-only mode.
+
+## Hooks: a package takes over a step
+
+Built (Lasso 0.27.0); the design and its reasons are in [`PACKAGE-HOOKS.md`](PACKAGE-HOOKS.md). A hook
+hands a package a whole step instead of a fixed slot: Lasso passes the turn in, the package answers a
+status, Lasso applies its limits afterwards. Both hooks run a `script`.
+
+**`source/1`** on a `search` command (`"hook": "source/1"`). On standard input, besides `query` and
+`settings`: `message` (as typed, date words and all), `previous` (`{message, reply}` of the last turn, or
+null), `previousSearched` (it gave passages last turn), `intent` (`search`, or `about` for "what's in my
+notes"), `searchFor` (a query the user picked from its offer), `today`, `timeZone`, `locale`. It answers:
+
+```json
+{"status": "found", "results": [{"title": "...", "url": "file://...", "snippet": "...", "date": "2026-11-14"}],
+ "searched": "frozendict", "ask": "frozendict", "note": "No notes dated last week."}
+```
+
+- `status`: `found`, `nothing`, `inventory` (its own file list, for `about`), `irrelevant` (not about it:
+  no step and no context when Lasso picked it) or `cant` (its `note` says why).
+- `searched`: the query it ran when not the user's words; the step says "for “frozendict”".
+- `ask`: a query to offer the **user** ("Did you mean “frozendict”?", one click searches it). Never sent
+  to the model.
+- `note`: one fact about the search (160 characters), fenced with its passages and counted in the budget.
+- `"ranks": true` on the command: its own judgement replaces Lasso's 2-word gate. The budget (3 passages,
+  1,200 characters), fencing and the Allow for cloud models still apply.
+- A follow-up reaches it: a `source/1` source that gave passages last turn is asked again when the next
+  message has words to search, and answers `irrelevant` if it isn't about it.
+
+**`describe/1`**: a command with only `id`, `title`, `hook` and `run`. Lasso runs it when the folder is
+chosen and at most daily; it answers `{"about": "...", "words": [...]}`: the What's in it line (unless the
+user wrote their own) and up to 100 picking words Lasso's picker uses and no model ever sees.
+
+The review shows both: "Reads your message and your previous question when it searches" and "Picks its
+own best results instead of Lasso's word match", tagged New when an update adds them.
+After an update, the package page offers **Go back** to the version before. Try a source on saved turns
+with `lasso-pkg replay <folder> turns.json --setting notes=<folder>`.
 
 ## Patches: changing Lasso's own content
 

@@ -339,6 +339,7 @@ Lasso ignores `$schema`; everything else unknown is an error.
 lasso-pkg new script my-package             # a starter: search, send, prompt, shortcut or script
 lasso-pkg validate my-package --catalog     # what Lasso and the catalog check
 lasso-pkg run my-package count --text "a b"  # a script's input and answer; http requests with --send
+lasso-pkg replay my-notes turns.json --setting notes=~/Notes  # a source on saved chat turns: what it got, what passed, what the model reads
 lasso-pkg pack my-package                   # my-package-1.0.0.lassopkg, one file to share
 ```
 
