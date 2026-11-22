@@ -27,7 +27,31 @@ enum AppActivation {
     static func bringForward(_ window: NSWindow) {
         window.makeKeyAndOrderFront(nil)
         if window.canBecomeMain { window.makeMain() }
+        guard !NSApp.isActive else { return }
+        // Lasso usually isn't the active app (it lives in the menu bar). Until activation completes,
+        // key and main requests don't stick, and when it does complete AppKit hands key and main to
+        // whichever ordinary window it picks (an open Settings window), not this one: so ask again then.
+        pending.append(WeakWindow(window))
+        if observer == nil {
+            observer = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                                              object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { settle() }
+            }
+        }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private final class WeakWindow { weak var window: NSWindow?; init(_ w: NSWindow) { window = w } }
+    private static var pending: [WeakWindow] = []
+    private static var observer: NSObjectProtocol?
+
+    /// Activation finished: the last window asked for, if it's still showing, gets key and main.
+    private static func settle() {
+        let window = pending.last?.window
+        pending = []
+        guard let window, window.isVisible else { return }
+        window.makeKeyAndOrderFront(nil)
+        if window.canBecomeMain { window.makeMain() }
     }
 }
 

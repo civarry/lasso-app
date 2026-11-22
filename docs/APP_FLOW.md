@@ -937,6 +937,11 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
     (`CodeRunner.forget`, they stayed for the whole session before); budgets for parsing a long reply,
     searching 12,000 messages and building the model's context. Regression tests live in
     `LassoTests/Regression`, one file per area.
+  - **Opening the chat or a card no longer hands focus to Settings.** Lasso is rarely the active app, so
+    its key/main requests were ignored until activation finished, and AppKit then gave key and main to
+    an open Settings window. `AppActivation.bringForward` asks again once `didBecomeActive` arrives
+    (the last window asked for, if still visible). `PanelActivationTests` had been failing locally for
+    this reason, read as a test-environment quirk; it fails without the fix and passes with it.
 - **The chat's MLX menu lists the models you have (0.29.1).** It read only the Hugging Face cache, so a
   model in `~/models` or LM Studio's folder (the one chosen in Settings) was missing, and an embedding
   model downloaded for memory (bge) was offered as a chat model. `ChatController.mlxModels` now joins the
