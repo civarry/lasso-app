@@ -418,6 +418,18 @@ enum MLXLocalModels {
         return nil
     }
 
+    /// Whether the folder's model writes text (a chat model), from its `config.json` architectures:
+    /// `…ForCausalLM`, `…ForConditionalGeneration`, `…LMHeadModel`. An embedding model (bge's
+    /// `BertModel`) can't chat. A config without architectures counts, so nothing usable is hidden.
+    static func isLanguageModel(_ folder: URL) -> Bool {
+        guard let data = try? Data(contentsOf: folder.appendingPathComponent("config.json")),
+              let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return true }
+        guard let architectures = config["architectures"] as? [String], !architectures.isEmpty else { return true }
+        return architectures.contains { name in
+            ["CausalLM", "ConditionalGeneration", "LMHeadModel"].contains { name.contains($0) }
+        }
+    }
+
     /// Every model folder in the search roots, as `org/name` (or `name` when there's no org folder).
     static func discovered(roots: [URL] = searchRoots) -> [(id: String, url: URL)] {
         let fm = FileManager.default
@@ -499,6 +511,18 @@ enum MLXCache {
             total += Int64(v?.totalFileAllocatedSize ?? v?.fileSize ?? 0)
         }
         return total
+    }
+
+    /// The downloaded model's files (its newest snapshot), where its `config.json` is.
+    static func snapshot(of entry: Entry) -> URL? {
+        let snapshots = entry.url.appendingPathComponent("snapshots", isDirectory: true)
+        guard let names = try? FileManager.default.contentsOfDirectory(at: snapshots, includingPropertiesForKeys: [.contentModificationDateKey])
+        else { return nil }
+        return names.max { a, b in
+            let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return da < db
+        }
     }
 
     static func remove(_ entry: Entry) throws {

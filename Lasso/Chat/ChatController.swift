@@ -699,9 +699,21 @@ final class ChatController {
     }
 
     /// Downloaded MLX models as (display, repo id).
+    /// MLX chat models on this Mac: downloaded ones (the Hugging Face cache), ones in plain folders
+    /// (~/models, LM Studio), and the one chosen in Settings, minus embedding models, which can't chat.
     var mlxModels: [(label: String, id: String)] {
-        MLXCache.installed().map { entry in
-            (entry.repoID.split(separator: "/").last.map(String.init) ?? entry.repoID, entry.repoID)
+        var ids: [String] = []
+        for entry in MLXCache.installed() where MLXCache.snapshot(of: entry).map(MLXLocalModels.isLanguageModel) ?? true {
+            ids.append(entry.repoID)
+        }
+        for local in MLXLocalModels.discovered() where MLXLocalModels.isLanguageModel(local.url) {
+            ids.append(local.id)
+        }
+        let chosen = intelligence.mlxModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let folder = MLXLocalModels.folder(for: chosen), MLXLocalModels.isLanguageModel(folder) { ids.append(chosen) }
+        var seen = Set<String>()
+        return ids.filter { seen.insert(MLXProvider.normalizedID($0).lowercased()).inserted }.map { id in
+            (id.split(separator: "/").last.map(String.init) ?? id, id)
         }
     }
 

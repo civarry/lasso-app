@@ -894,6 +894,11 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **The chat's MLX menu lists the models you have (0.29.1).** It read only the Hugging Face cache, so a
+  model in `~/models` or LM Studio's folder (the one chosen in Settings) was missing, and an embedding
+  model downloaded for memory (bge) was offered as a chat model. `ChatController.mlxModels` now joins the
+  cache, `MLXLocalModels.discovered()` and the chosen model, and drops any whose `config.json`
+  architectures aren't a text generator (`MLXLocalModels.isLanguageModel`).
 - **Pages in code blocks (0.29).** A code command's console answer can name a page (`"html"`: an
   .html or .svg file in its own folders, checked like `image`). The block shows it live in a WKWebView
   (`HTMLPreview.swift`), sized to its content (80 to 460 pt), with **Open larger** for a window
