@@ -973,6 +973,16 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
     changes and is never used for Anthropic; MLX chat models read their real window
     (`MLXProvider.chatContextTokens`, local folders too, 8,192 if unknown, not the embedding helper's
     512). The updater waits for a result card's answer, Ask AI and an MLX download (`Busy`).
+  - **QA round 7, app shell and Settings, 7 fixed** (`Regression/AppShellRegressionTests`): recording a
+    shortcut in Settings turned Esc into a global hotkey (it re-enabled `.cancelCapture`); now only
+    the shortcuts it paused come back. Dictation: a cancel during start (Esc, closing the chat, Send)
+    wins over the start's awaits, so the mic doesn't come on anyway, and a cancel while finishing
+    isn't overwritten (session tokens); cleanup keeps acronyms (ER, UM, HM), names said twice ("Bora
+    Bora") and "is is". Keychain: a key that isn't saved is looked up once per launch, not on every
+    draw. Settings no longer puts back a model switched from the chat header when any other setting
+    changes (untouched fields adopt the live value). Not yet tested: the dictation and Settings fixes
+    (need a microphone or the Settings view's state); and a key typed in Settings after the vault
+    prompt was declined is still dropped silently.
 - **The chat's MLX menu lists the models you have (0.29.1).** It read only the Hugging Face cache, so a
   model in `~/models` or LM Studio's folder (the one chosen in Settings) was missing, and an embedding
   model downloaded for memory (bge) was offered as a chat model. `ChatController.mlxModels` now joins the

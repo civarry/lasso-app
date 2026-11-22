@@ -32,6 +32,9 @@ enum Keychain {
     nonisolated(unsafe) private static var cache: [String: String]?   // guarded by `lock`
     /// The vault couldn't be read this launch (the prompt was cancelled): don't ask again on every key.
     nonisolated(unsafe) private static var refused = false   // guarded by `lock`
+    /// Accounts with no saved key, old or new: asked once per launch, not on every read (the chat
+    /// header reads one each time it draws, and each old-item lookup is a Keychain query).
+    nonisolated(unsafe) private static var missing: Set<String> = []   // guarded by `lock`
 
     private static func query(_ account: String) -> [String: Any] {
         _ = noPromptsUnderTests
@@ -91,8 +94,9 @@ enum Keychain {
             lock.lock(); defer { lock.unlock() }
             guard var values = vault() else { return (nil, false) }
             if let value = values[account] { return (value, false) }
+            if missing.contains(account) { return (nil, false) }
             // Saved by an older version as its own item: move it in, once.
-            guard let legacy = readLegacy(account) else { return (nil, false) }
+            guard let legacy = readLegacy(account) else { missing.insert(account); return (nil, false) }
             values[account] = legacy
             saveVault(values)
             SecItemDelete(query(account) as CFDictionary)
@@ -107,6 +111,7 @@ enum Keychain {
     static func set(_ value: String, for account: String) {
         guard !value.isEmpty else { delete(account); return }
         lock.lock(); defer { lock.unlock() }
+        missing.remove(account)
         guard var values = vault() else { return }
         values[account] = value
         saveVault(values)
@@ -143,7 +148,7 @@ enum Keychain {
 
     /// Forget the in-memory copy (tests, and after another process changed the vault).
     static func resetCache() {
-        lock.lock(); cache = nil; refused = false; lock.unlock()
+        lock.lock(); cache = nil; refused = false; missing = []; lock.unlock()
     }
 
     /// Saves the item with its access list open to any app. That alone doesn't stop the prompts (the

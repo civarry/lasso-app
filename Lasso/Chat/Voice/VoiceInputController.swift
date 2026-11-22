@@ -82,14 +82,21 @@ final class VoiceInputController {
         clearFailure?.cancel()
         endCleanup()
         state = .starting
+        // This start, so a cancel (Esc, closing the chat, Send) during the awaits below wins: a start
+        // that's no longer current tears down instead of turning the mic on.
+        let token = session
+        func superseded() -> Bool { state != .starting || session != token }
         guard await Self.microphoneAllowed() else {
+            guard !superseded() else { return }
             fail("Microphone access is off for Lasso. Turn it on in System Settings ▸ Privacy & Security ▸ Microphone.")
             return
         }
+        guard !superseded() else { return }
         beginSpan()
         DictationCleaner.prewarm()
         do {
             let live = try await AppleLiveTranscription.make(localeID: await Self.englishLocaleID())
+            guard !superseded() else { live.cancel(); return }
             let engine = AVAudioEngine()
             let input = engine.inputNode
             let format = input.outputFormat(forBus: 0)
@@ -105,6 +112,12 @@ final class VoiceInputController {
                 Task { @MainActor in
                     VoiceInputController.shared.show(finalized, volatile: volatile, session: session)
                 }
+            }
+            guard !superseded() else {
+                input.removeTap(onBus: 0)
+                live.cancel()
+                if self.live === live { self.live = nil; self.activity = nil }
+                return
             }
             engine.prepare()
             try engine.start()
@@ -128,8 +141,11 @@ final class VoiceInputController {
         let live = self.live
         self.live = nil
         state = .finishing
+        let token = session
         do {
             let text = try await Self.finish(live)
+            // Cancelled while finishing: the box is back to what it was; nothing more is written.
+            guard session == token, state == .finishing else { return }
             show(text, session: session)
             session += 1
             state = .idle
@@ -138,6 +154,7 @@ final class VoiceInputController {
                 cleanUp(raw, useModel: DictationCleaner.modelAvailable)
             }
         } catch {
+            guard session == token else { return }
             session += 1
             fail(error.localizedDescription)
         }
@@ -153,6 +170,8 @@ final class VoiceInputController {
             editor.replace(span, with: replaced, caret: nil, undoable: false)
         }
         editor.markVolatile(nil)
+        // A new session: a start or finish still in flight sees it isn't current any more.
+        session += 1
         state = .idle
     }
 

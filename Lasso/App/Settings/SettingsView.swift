@@ -2726,6 +2726,17 @@ struct SettingsView: View {
     }
 
     private func apply() {
+        // A model switched from the chat header since Settings loaded wins over the untouched field
+        // here: applying a toggle must not put the old model back.
+        func adopt<T: Equatable>(_ live: T, _ field: WritableKeyPath<Draft, T>) {
+            guard draft[keyPath: field] == saved[keyPath: field], live != saved[keyPath: field] else { return }
+            draft[keyPath: field] = live
+            saved[keyPath: field] = live
+        }
+        adopt(intelligence.preferred, \.provider)
+        adopt(intelligence.ollamaModel, \.ollamaModel)
+        adopt(intelligence.mlxModel, \.mlxModel)
+        adopt(loadSelection("intelligence.keys.selection.language") ?? .none, \.langSelection)
         // Local-only must mean local: a cloud engine / cloud image provider is committed as local.
         if draft.localOnly, !draft.provider.isLocalKind { draft.provider = .onDevice }
         if draft.localOnly, draft.visionEngine == .openAICompatible || draft.visionEngine == .anthropic {
