@@ -17,17 +17,32 @@
 
 <p align="center"><img src="screenshots/hero.png" alt="Drag a box around anything on screen and translate it in place"></p>
 
-**Jump to:** [What's new](#whats-new-in-028) · [What it does](#what-it-does) · [Chat](#chat) ·
+**Jump to:** [What's new](#whats-new-in-029) · [What it does](#what-it-does) · [Chat](#chat) ·
 [Agent](#agent) · [Packages](#packages) · [Privacy](#privacy) · [Install](#install) ·
 [Updates](#updates) · [AI models](#ai-models) · [Build it](#build-it-yourself)
 
-## What's new in 0.28
+## What's new in 0.29
+
+**Ask for something visual, see it live in chat.** With **Preview HTML** (Settings › Packages ›
+Browse), every html and svg code block in a reply gets a **Preview** button, the way chat apps show
+artifacts.
+
+- Ask for a chart, a diagram or a small tool: chat answers with one page, and Preview shows it working
+  in the block. **Open larger** gives it a window; **Code** switches back.
+- The page is walled in: no internet except chart and UI libraries from cdnjs.cloudflare.com (none at
+  all in local-only mode), no files, no popups.
+- **Run Python 1.3** shows a chart the code saves (`plt.savefig`) or a page it writes (plotly) the same
+  way. The turtle drawing is gone.
+
+<p align="center"><img src="screenshots/app/html-preview.png" width="460" alt="A chat reply with an html code block previewed as a live bar chart of steps this week"></p>
+
+<details>
+<summary>New in 0.28</summary>
 
 **Run the code in a reply, right where it is.** With **Run Python** (Settings › Packages › Browse), every
 Python code block in chat gets a **Run** button.
 
 - The block shows the run as it happens, then the output and how long it took; **Code** switches back.
-- Turtle code shows its drawing in the block.
 - A missing library (numpy…) gets **Install numpy**: it goes into a private environment only Run Python
   uses, then the code runs again. A failed run gets **Fix it**, which asks the chat model for a fix you
   can run.
@@ -35,6 +50,8 @@ Python code block in chat gets a **Run** button.
   for another language can be a package too.
 
 <p align="center"><img src="screenshots/app/code-run.png" width="460" alt="Python code blocks in chat with Run, a finished run's output, and an Install numpy button"></p>
+
+</details>
 
 <details>
 <summary>New in 0.27</summary>
@@ -253,7 +270,7 @@ A package can add, or change:
 - **Changes to Lasso itself:** the Summarize and Proofread prompts, action names, the toolbar's
   defaults, chat suggestions and extra chat instructions. Off undoes them.
 - **Shortcuts and sandboxed scripts** (new in 0.21) behind any of the above.
-- **Buttons on code blocks** in chat (new in 0.28), like Run Python's **Run**.
+- **Buttons on code blocks** in chat (new in 0.28), like Run Python's **Run**, and live pages in the block (0.29), like Preview HTML's **Preview**.
 - **Your own sources** like My notes, which can take over the whole search (new in 0.27): typos, other
   languages, follow-ups and dates are the package's job, so it improves without a Lasso update.
 

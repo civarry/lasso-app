@@ -35,10 +35,13 @@ enum PackageScript {
         case console(Console)
     }
 
-    /// What a code block's console shows: the text, an image the script made, and up to 3 buttons.
+    /// What a code block's console shows: the text, an image or a page the script made, and up to 3
+    /// buttons.
     struct Console: Sendable, Equatable {
         var text: String
         var image: URL?
+        /// A page (.html or .svg) the script made, shown walled in (HTMLPreview).
+        var html: URL? = nil
         var actions: [Action]
         var failed: Bool
 
@@ -53,6 +56,7 @@ enum PackageScript {
             var chat: String?
         }
         static let maxActions = 3
+        static let pages: Set<String> = ["html", "htm", "svg"]
     }
 
     /// What a `source/1` command answers (docs/PACKAGE-HOOKS.md). Lasso applies its limits afterwards.
@@ -212,6 +216,15 @@ enum PackageScript {
                                                        places: places, tmp: tmp, id: id) else { throw RunError.badOutput("image isn't a file.") }
                 image = url
             }
+            var html: URL?
+            if let path = object["html"] as? String {
+                guard case .file(let url) = try parse(Data(try JSONSerialization.data(withJSONObject: ["path": path])),
+                                                       places: places, tmp: tmp, id: id) else { throw RunError.badOutput("html isn't a file.") }
+                guard Console.pages.contains(url.pathExtension.lowercased()) else {
+                    throw RunError.badOutput("html must be a .html or .svg file.")
+                }
+                html = url
+            }
             let actions = (object["actions"] as? [[String: Any]] ?? []).prefix(Console.maxActions).compactMap { a -> Console.Action? in
                 guard let title = (a["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else { return nil }
                 let command = a["command"] as? String
@@ -221,7 +234,7 @@ enum PackageScript {
                                       input: (a["input"] as? [String: Any] ?? [:]).compactMapValues { "\($0)" },
                                       rerun: a["rerun"] as? Bool ?? false, chat: chat)
             }
-            return .console(Console(text: String(text.prefix(20_000)), image: image, actions: Array(actions),
+            return .console(Console(text: String(text.prefix(20_000)), image: image, html: html, actions: Array(actions),
                                     failed: object["failed"] as? Bool ?? false))
         }
         if let about = object["about"] as? String {

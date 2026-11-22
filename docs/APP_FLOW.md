@@ -739,6 +739,9 @@ flowchart LR
   end
   Req["requires: checked, never installed"] --> Short & Script
   Script -->|"text · file (→ ~/LassoWorkspace/id) · results"| Hits
+  CodeBtn["code block in a reply:<br/>the package's button (Run, Preview),<br/>only on the user's click"] --> Script
+  Script -->|"console: text · picture · page · ≤ 3 buttons"| Console["the block's console (CodeRunner)"]
+  Console -->|".html / .svg"| Walls["HTMLPreview: WKWebView walled in:<br/>no network but cdnjs (none local-only),<br/>its own folder, no popups, nothing kept"]
   Script -.->|"Full access (user's switch,<br/>off when a script changes)"| NoSandbox[no sandbox]
   subgraph Cat["Catalog (step 6)"]
     Index["index.json from raw.githubusercontent.com<br/>(Browse opened, ≥ 10 s since last; read at main's<br/>newest commit; never local-only)"]
@@ -891,6 +894,20 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Pages in code blocks (0.29).** A code command's console answer can name a page (`"html"`: an
+  .html or .svg file in its own folders, checked like `image`). The block shows it live in a WKWebView
+  (`HTMLPreview.swift`), sized to its content (80 to 460 pt), with **Open larger** for a window
+  (`HTMLPreviewWindow`: Show in Finder, Open in Browser unless local-only). The page is the model's code,
+  so it's walled in: the page is served from its folder under Lasso's own `lasso-page:` scheme
+  (`HTMLPreview.Folder`: nothing outside it, no `..`, no links out; never file://, whose pages have no origin
+  and get their script errors hidden); WebKit content rules block every load except that scheme,
+  data/blob/about URLs and `https://cdnjs.cloudflare.com/` (not even that in local-only mode);
+  navigation is cancelled (a clicked web link opens the browser, not in local-only mode); no popups; a
+  non-persistent data store; the only message it can send Lasso is its script's first error (shown under the page). Pages draw on white; scrolling passes to the chat while the page fits. If the rules can't compile, the page isn't shown.
+  `HTMLPreviewTests` loads a page against a real local server: with the walls nothing reaches it, without
+  them it does. A page-only answer hides the run's steps and timing; Copy copies the code. Packages:
+  Preview HTML 1.0 (Preview on html/svg blocks) and Run Python 1.3 (shows a .png or .html/.svg the code
+  saved; the headless turtle and /draw are gone).
 - **Code blocks: a package's Run button (0.28).** New `code` surface: a command with `languages` gets its
   button in the header of finished code blocks of those languages in chat replies (`CodeRunner`, the
   `codeBlockContext` environment set by `ChatView`, `CodeBlockView` in `MarkdownView.swift`). Clicking runs

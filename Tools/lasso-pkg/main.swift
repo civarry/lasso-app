@@ -10,7 +10,7 @@ struct LassoPkg {
       lasso-pkg new <search|send|prompt|shortcut|script> <folder>   a starter package
       lasso-pkg validate <folder or lasso.json>... [--catalog]     every rule Lasso checks
       lasso-pkg run <folder> <command> [--text T] [--table TSV] [--image file.png] [--query Q] [--arg name=value]...
-                    [--setting id=value]... [--action name=value]... [--reply R] [--send]
+                    [--setting id=value]... [--action name=value]... [--language L] [--reply R] [--send]
       lasso-pkg replay <folder> <turns.json> [--setting id=value]... [--data folder]
                     a source's search command on saved chat turns: what it got, what passed, what the model reads
       lasso-pkg pack <folder> [--out file.lassopkg]                 one file to share
@@ -207,7 +207,7 @@ struct LassoPkg {
                 stdin.merge(SourceTurn(message: query, query: words).fields()) { _, new in new }
             }
             if command.hook == .describe { stdin["hook"] = "describe/1" }
-            if command.surfaces.contains(.code) { stdin["language"] = command.languages.first ?? ""; stdin["reply"] = o.values["--reply"]?.last ?? text }
+            if command.surfaces.contains(.code) { stdin["language"] = o.values["--language"]?.last ?? command.languages.first ?? ""; stdin["reply"] = o.values["--reply"]?.last ?? text }
             let action = pairs("--action")
             if !action.isEmpty { stdin["action"] = action }
             if command.input.contains(.args) { stdin["args"] = args }
@@ -246,6 +246,7 @@ struct LassoPkg {
             case .console(let console):
                 print("\nconsole\(console.failed ? " (failed)" : ""):\n\(console.text)")
                 if let image = console.image { print("image: \(image.path)") }
+                if let page = console.html { print("page: \(page.path)") }
                 for action in console.actions {
                     print("button: \(action.title) → " + (action.chat != nil ? "sends a chat message" : "runs \(action.command ?? "")\(action.input.isEmpty ? "" : " \(action.input)")\(action.rerun ? ", then runs again" : "")"))
                 }
