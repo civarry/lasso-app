@@ -487,10 +487,10 @@ final class ChatController {
 
     /// Why `match` can't run here, or nil. In chat there's no source app or image, so `apps` and
     /// `hasImage: true` never hold (spec, "When").
-    func packageSlashProblem(_ match: PackageSlashMatch) -> String? {
+    func packageSlashProblem(_ match: PackageSlashMatch, text given: String? = nil) -> String? {
         let command = match.command
         if let reason = PackageRegistry.shared.unavailableReason(match.entry, command) { return reason }
-        let text = match.argument.isEmpty ? (lastReplyText ?? "") : match.argument
+        let text = given ?? (match.argument.isEmpty ? (lastReplyText ?? "") : match.argument)
         if command.input.contains(.text), text.isEmpty { return "Type the text after \(match.name)." }
         guard let when = command.when else { return nil }
         if when.hasImage == true || !when.apps.isEmpty { return "\(command.title) doesn't run in chat." }
@@ -500,16 +500,25 @@ final class ChatController {
         return nil
     }
 
-    func runPackageSlash(_ match: PackageSlashMatch, typed: String, carried: [ReplyVersion] = []) {
-        if let problem = packageSlashProblem(match) { composerNotice = problem; return }
+    /// `text` and `prepare` are Regenerate's: the text the command ran on, and removing the old exchange,
+    /// done only once the command is sure to run.
+    func runPackageSlash(_ match: PackageSlashMatch, typed: String, carried: [ReplyVersion] = [],
+                         text given: String? = nil, prepare: (() -> Void)? = nil) {
+        if let problem = packageSlashProblem(match, text: given) { composerNotice = problem; return }
         let command = match.command, entry = match.entry
-        let text = match.argument.isEmpty ? (lastReplyText ?? "") : match.argument
+        let text = given ?? (match.argument.isEmpty ? (lastReplyText ?? "") : match.argument)
+        let session = active
         Task { @MainActor in
             // `detects` needs the slower detector; checked here so a mismatch keeps the composer as typed.
             if let when = command.when, !when.detects.isEmpty,
                await PackageDetection.kinds(in: text).isDisjoint(with: when.detects) {
                 composerNotice = "\(command.title) doesn't apply to this text."
                 return
+            }
+            if let prepare {
+                // Stopped, switched away or started another reply meanwhile: leave the exchange alone.
+                guard active === session, !isStreaming else { return }
+                prepare()
             }
             startPackageReply(match, typed: typed, text: text, carried: carried)
         }
@@ -702,11 +711,11 @@ final class ChatController {
     /// Wipe ALL persisted chat history (Settings → privacy). Cancels every session, clears disk, and
     /// leaves one fresh empty conversation.
     func clearAllHistory() {
-        for s in sessions { s.cancelWork() }
+        let old = sessions
+        for s in old { s.cancelWork(); denyWaitingTools(in: s); CodeRunner.shared.forget(s.messages.map(\.id)) }
         let fresh = Conversation()
         sessions = [fresh]
         active = fresh
-        for s in sessions { denyWaitingTools(in: s); CodeRunner.shared.forget(s.messages.map(\.id)) }
         ConversationStore.enqueue { ConversationStore.clearAll() }
     }
 
@@ -731,7 +740,9 @@ final class ChatController {
         streamTask?.cancel()
         streamTask = nil
         isStreaming = false
-        if let last = messages.indices.last, messages[last].role == .assistant {
+        // The streaming reply, which isn't always the last message (a /help note can follow it).
+        if let last = messages.lastIndex(where: { $0.role == .assistant && $0.isStreaming && !$0.isLocalNote })
+            ?? messages.indices.last.flatMap({ messages[$0].role == .assistant ? $0 : nil }) {
             messages[last].isStreaming = false
             messages[last].approval = nil
             if let request = messages[last].toolApproval { answerToolApproval(request.id, allow: false) }
@@ -1055,6 +1066,7 @@ final class ChatController {
         } else if idx > 0, active.messages[idx - 1].role == .user {
             lo = idx - 1   // assistant reply → also drop the question it answered
         }
+        CodeRunner.shared.forget(active.messages[lo...hi].map(\.id))
         active.messages.removeSubrange(lo...hi)
         historyDidChange()
     }
@@ -1067,6 +1079,7 @@ final class ChatController {
         if active.messages[idx].role == .assistant, idx > 0, active.messages[idx - 1].role == .user {
             start = idx - 1   // begin at the question this reply belongs to
         }
+        CodeRunner.shared.forget(active.messages[start...].map(\.id))
         active.messages.removeSubrange(start..<active.messages.count)
         historyDidChange()
     }
@@ -1079,6 +1092,7 @@ final class ChatController {
               let idx = active.messages.firstIndex(where: { $0.id == id }),
               active.messages[idx].role == .user else { return }
         let m = active.messages[idx]
+        CodeRunner.shared.forget(active.messages[idx...].map(\.id))
         active.messages.removeSubrange(idx..<active.messages.count)
         resetDerivedMemory()
         sendKeepingDraft(text: m.text, attachments: m.attachments, files: m.files)
@@ -1094,6 +1108,7 @@ final class ChatController {
               active.messages[idx].role == .user else { return }
         let atts = active.messages[idx].attachments
         let files = active.messages[idx].files
+        CodeRunner.shared.forget(active.messages[idx...].map(\.id))
         active.messages.removeSubrange(idx..<active.messages.count)
         resetDerivedMemory()
         sendKeepingDraft(text: text, attachments: atts, files: files)
@@ -1115,7 +1130,22 @@ final class ChatController {
         if old.isError, kept.indices.contains(old.versions.isEmpty ? 0 : old.versionIndex) {
             kept.remove(at: old.versions.isEmpty ? 0 : old.versionIndex)
         }
+        let typed = userMsg.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if userMsg.attachments.isEmpty, userMsg.files.isEmpty, let match = packageSlash(typed) {
+            // A /command: checked before anything is removed, on the text it ran on then, so one that
+            // can't run now (a setting cleared, local-only on) leaves the exchange as it was.
+            let text = match.argument.isEmpty
+                ? (active.messages[..<uIdx].last { $0.role == .assistant && $0.isAnswer }?.text ?? "") : match.argument
+            let session = active
+            runPackageSlash(match, typed: typed, carried: kept, text: text) { [weak self] in
+                CodeRunner.shared.forget(session.messages[uIdx...].map(\.id))
+                session.messages.removeSubrange(uIdx..<session.messages.count)
+                if self?.active === session { self?.resetDerivedMemory() }
+            }
+            return
+        }
         active.carriedVersions = kept
+        CodeRunner.shared.forget(active.messages[uIdx...].map(\.id))
         active.messages.removeSubrange(uIdx..<active.messages.count)
         resetDerivedMemory()
         sendKeepingDraft(text: userMsg.text, attachments: userMsg.attachments, files: userMsg.files)
@@ -1696,7 +1726,7 @@ final class ChatController {
     /// Compact recent transcript (prior turns only — excludes the just-added user message + the empty
     /// assistant placeholder) used to resolve references when rewriting a search query.
     private func recentContext(maxTurns: Int = 6, maxChars: Int = 1200) -> String {
-        Self.searchContext(fromPrior: Array(active.messages.dropLast(2)),
+        Self.searchContext(fromPrior: Array(Self.beforeTurn(active.messages)),
                            maxTurns: maxTurns, maxChars: maxChars)
     }
 
@@ -2462,7 +2492,7 @@ final class ChatController {
         // Map the prior history (excluding the just-appended user-display + assistant-placeholder)
         // to the builder's history turns, using each message's persisted `promptText` so folded
         // image/evidence context carries. Assistant thoughts are stripped — they're UI affordances.
-        let history = Self.historyTurns(from: messages.dropLast(2))
+        let history = Self.historyTurns(from: Self.beforeTurn(messages))
 
         let out = contextBuilder.build(systemPrompt: Self.systemPrompt(formatting: formatPolicy),
                                        memory: memory,
@@ -3476,11 +3506,26 @@ final class ChatController {
         return (thought, answer.trimmingCharacters(in: .whitespacesAndNewlines), thinking)
     }
 
+    /// The messages before the turn being answered: without its question and reply, and without a /help
+    /// note posted while it streams (it lands after them, so "all but the last two" would keep the question).
+    static func beforeTurn(_ messages: [ChatMessage]) -> ArraySlice<ChatMessage> {
+        var end = messages.endIndex
+        while end > messages.startIndex, messages[end - 1].isLocalNote, messages[end - 1].role == .assistant { end -= 1 }
+        return messages[..<end].dropLast(2)
+    }
+
     /// Whether text ending here is inside a Markdown code fence or an inline code span: an odd number
     /// of ``` fences, or, outside fences, an odd number of backticks.
     nonisolated static func isInsideCode(_ prefix: Substring) -> Bool {
         let fences = prefix.components(separatedBy: "```").count - 1
         if fences % 2 == 1 { return true }
+        // ~~~ fences too, as the parser takes them: a ~~~ line opens, the next ~~~ line closes.
+        var tilde = false
+        for line in prefix.split(separator: "\n", omittingEmptySubsequences: false) {
+            let t = line.drop(while: { $0 == " " })
+            if t.prefix(while: { $0 == "~" }).count >= 3 { tilde.toggle() }
+        }
+        if tilde { return true }
         return prefix.replacingOccurrences(of: "```", with: "").filter { $0 == "`" }.count % 2 == 1
     }
 
@@ -3548,7 +3593,7 @@ final class ChatController {
         // dominant one's — "it"/"latest news" no longer lexically matches the previous thread.
         let rq = searchPlan?.query.trimmingCharacters(in: .whitespacesAndNewlines)
         let question = (rq?.isEmpty == false ? rq : nil) ?? currentUserText
-        let history = messages.dropLast(2)                       // drop the just-appended user+placeholder
+        let history = Self.beforeTurn(messages)                  // drop the just-appended user+placeholder
         guard !history.isEmpty else { return [] }
         let recentWindow = history.suffix(contextBuilder.budget.recentTurns)
         let recentIDs = Set(recentWindow.map(\.id))

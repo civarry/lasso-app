@@ -983,6 +983,16 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
     changes (untouched fields adopt the live value). Not yet tested: the dictation and Settings fixes
     (need a microphone or the Settings view's state); and a key typed in Settings after the vault
     prompt was declined is still dropped silently.
+  - **QA round 8, regressions from the earlier fixes, 10 fixed** (`Regression/ChatRound8RegressionTests`,
+    `MarkdownRound8RegressionTests`): Regenerate on a /command that can't run now keeps the exchange
+    (checked before anything is removed). Stop after a /help note mid-reply settles the real reply, and
+    the turn's history skips a note posted after it (`beforeTurn`). Reply versions carry their images
+    and thinking time. Saved chats keep `@` mentions, an Agent image's file path, and the pictures a
+    native-vision question sent (re-made from thumbnails, or a note that one was there). Delete, Delete
+    from here, Regenerate, Edit and Resend drop the removed replies' code runs; Clear history frees the
+    old chats, not the fresh one. Rendering: `$$` with text on its line is display math only when a later
+    line ends with `$$` (price tiers, bash's `$$`), and math never runs past a code fence; streaming
+    emphasis ignores asterisks inside `code`; a `<think>` inside a `~~~` fence stays code.
 - **The chat's MLX menu lists the models you have (0.29.1).** It read only the Hugging Face cache, so a
   model in `~/models` or LM Studio's folder (the one chosen in Settings) was missing, and an embedding
   model downloaded for memory (bge) was offered as a chat model. `ChatController.mlxModels` now joins the

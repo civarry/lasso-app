@@ -102,7 +102,8 @@ struct ChatMessage: Identifiable, @unchecked Sendable {
     /// This reply's answer as a version.
     var asVersion: ReplyVersion {
         ReplyVersion(text: text, reasoning: reasoning, sources: sources, isError: isError, caption: caption,
-                     viaAgent: viaAgent, steps: steps, sourceHits: sourceHits)
+                     viaAgent: viaAgent, steps: steps, sourceHits: sourceHits, attachments: attachments,
+                     reasoningSeconds: reasoningSeconds)
     }
 
     /// All versions with the shown one up to date.
@@ -129,6 +130,8 @@ struct ChatMessage: Identifiable, @unchecked Sendable {
         viaAgent = picked.viaAgent
         steps = picked.steps
         sourceHits = picked.sourceHits
+        attachments = picked.attachments
+        reasoningSeconds = picked.reasoningSeconds
     }
 }
 
@@ -143,14 +146,33 @@ struct ReplyVersion: Sendable, Codable {
     /// What it did (searched, looked in notes) and the passages it got, for this session only (not saved).
     var steps: [ActivityStep] = []
     var sourceHits: [SourceHit] = []
+    /// The images it showed (an Agent's chart). Saved as their thumbnails, like a message's.
+    var attachments: [Attachment] = []
+    var reasoningSeconds: Int?
 
     init(text: String, reasoning: String = "", sources: [WebSourcesProvider.Hit] = [], isError: Bool = false,
-         caption: String? = nil, viaAgent: Bool = false, steps: [ActivityStep] = [], sourceHits: [SourceHit] = []) {
+         caption: String? = nil, viaAgent: Bool = false, steps: [ActivityStep] = [], sourceHits: [SourceHit] = [],
+         attachments: [Attachment] = [], reasoningSeconds: Int? = nil) {
         self.text = text; self.reasoning = reasoning; self.sources = sources; self.isError = isError
         self.caption = caption; self.viaAgent = viaAgent; self.steps = steps; self.sourceHits = sourceHits
+        self.attachments = attachments; self.reasoningSeconds = reasoningSeconds
     }
 
-    enum CodingKeys: String, CodingKey { case text, reasoning, sources, isError, caption, viaAgent }
+    enum CodingKeys: String, CodingKey { case text, reasoning, sources, isError, caption, viaAgent, attachments, reasoningSeconds }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(text, forKey: .text)
+        try c.encode(reasoning, forKey: .reasoning)
+        try c.encode(sources, forKey: .sources)
+        try c.encode(isError, forKey: .isError)
+        try c.encodeIfPresent(caption, forKey: .caption)
+        try c.encode(viaAgent, forKey: .viaAgent)
+        try c.encodeIfPresent(reasoningSeconds, forKey: .reasoningSeconds)
+        if !attachments.isEmpty {
+            try c.encode(attachments.map(ConversationStore.AttachmentDTO.init), forKey: .attachments)
+        }
+    }
 
     /// Every field but the text may be missing (files saved by an earlier version).
     init(from decoder: Decoder) throws {
@@ -161,6 +183,9 @@ struct ReplyVersion: Sendable, Codable {
         isError = try c.decodeIfPresent(Bool.self, forKey: .isError) ?? false
         caption = try c.decodeIfPresent(String.self, forKey: .caption)
         viaAgent = try c.decodeIfPresent(Bool.self, forKey: .viaAgent) ?? false
+        reasoningSeconds = try c.decodeIfPresent(Int.self, forKey: .reasoningSeconds)
+        attachments = (try c.decodeIfPresent([ConversationStore.AttachmentDTO].self, forKey: .attachments) ?? [])
+            .compactMap(ConversationStore.attachment)
     }
 }
 

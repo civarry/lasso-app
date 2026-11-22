@@ -143,6 +143,12 @@ enum MarkdownParser {
 
     // MARK: Block scanning
 
+    /// A ``` or ~~~ fence line (trimmed).
+    static func isFenceLine(_ t: String) -> Bool {
+        guard let first = t.first, first == "`" || first == "~" else { return false }
+        return t.prefix(while: { $0 == first }).count >= 3
+    }
+
     static func parsePlain(_ text: String) -> [MarkdownBlock] {
         let lines = text.components(separatedBy: "\n")
         var blocks: [MarkdownBlock] = []
@@ -174,10 +180,29 @@ enum MarkdownParser {
                     closed = true
                     i += 1
                 } else {
-                    if !head.trimmingCharacters(in: .whitespaces).isEmpty { body.append(head) }
+                    // "$$ mid-range" (price tiers) or "$$ is the shell's PID" isn't math: with text on its
+                    // line, `$$` opens display math only when a later line ends with the closer before a
+                    // blank line. Nothing runs past a code fence either.
+                    let bare = head.trimmingCharacters(in: .whitespaces).isEmpty
+                    if delims.open == "$$", !bare {
+                        var j = i + 1, found = false
+                        while j < lines.count {
+                            let t = lines[j].trimmingCharacters(in: .whitespaces)
+                            if t.isEmpty || Self.isFenceLine(t) { break }
+                            if t.contains("$$") { found = t.hasSuffix("$$"); break }
+                            j += 1
+                        }
+                        if !found {
+                            paragraph.append(raw)
+                            i += 1
+                            continue
+                        }
+                    }
+                    if !bare { body.append(head) }
                     i += 1
                     while i < lines.count {
                         head = lines[i]
+                        if Self.isFenceLine(head.trimmingCharacters(in: .whitespaces)) { break }
                         if let end = head.range(of: delims.close) {
                             body.append(String(head[..<end.lowerBound]))
                             after = String(head[end.upperBound...])
@@ -618,18 +643,26 @@ enum StreamStabilizer {
         }
 
         var closers = ""
+        let text = outsideCode(work)
         if count(of: "`", in: work) % 2 == 1 { closers += "`" }
-        if count(of: "~~", in: work) % 2 == 1 { closers += "~~" }
-        if count(of: "**", in: work) % 2 == 1 { closers += "**" }
-        else if singleAsterisks(in: work) % 2 == 1 { closers += "*" }
+        if count(of: "~~", in: text) % 2 == 1 { closers += "~~" }
+        if count(of: "**", in: text) % 2 == 1 { closers += "**" }
+        else if singleAsterisks(in: text) % 2 == 1 { closers += "*" }
         return work + closers
     }
 
     private static func isBalanced(_ s: String) -> Bool {
-        count(of: "`", in: s) % 2 == 0
-            && count(of: "~~", in: s) % 2 == 0
-            && count(of: "**", in: s) % 2 == 0
-            && singleAsterisks(in: s) % 2 == 0
+        let text = outsideCode(s)
+        return count(of: "`", in: s) % 2 == 0
+            && count(of: "~~", in: text) % 2 == 0
+            && count(of: "**", in: text) % 2 == 0
+            && singleAsterisks(in: text) % 2 == 0
+    }
+
+    /// The line without its `code` spans (an unclosed one runs to the end): `**kwargs` in code isn't bold.
+    private static func outsideCode(_ s: String) -> String {
+        s.split(separator: "`", omittingEmptySubsequences: false).enumerated()
+            .filter { $0.offset % 2 == 0 }.map(\.element).joined(separator: " ")
     }
 
     private static func count(of needle: String, in text: String) -> Int {
