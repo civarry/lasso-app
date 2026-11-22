@@ -981,14 +981,22 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
     Bora") and "is is". Keychain: a key that isn't saved is looked up once per launch, not on every
     draw. Settings no longer puts back a model switched from the chat header when any other setting
     changes (untouched fields adopt the live value). Not yet tested: the dictation and Settings fixes
-    (need a microphone or the Settings view's state); and a key typed in Settings after the vault
-    prompt was declined is still dropped silently.
+    (need a microphone or the Settings view's state).
   - **QA round 7, a declined Keychain prompt, fixed** (`Regression/AppShellRegressionTests`): after the
     saved-keys prompt was cancelled, `Keychain.set` dropped every key typed later without a word. Now a
     save (and a delete) asks once more, since the user is there; if that's cancelled too it returns false,
     writes nothing (a refused vault is never replaced) and Settings and a package's key field say so in
     orange with Try again, keeping the typed value. Background reads still never ask again, and
     `getMigrating` keeps the old copy until the move saved. Not tested: the Settings messages (view state).
+  - **Its review, 9 more** (`Regression/KeychainReviewRegressionTests`): a field read while the keys were
+    closed shows "" and never saves that "" back (Settings and package rows reload once the vault opens,
+    `Keychain.didOpenAfterRefusal`); the Tavily/SerpApi migration keeps the old key and runs again until
+    it's saved, without prompting; uninstall removes every version's keys in one write and, if refused,
+    says so and removes them when the vault next opens (`Keychain.removeAll`, remembered in UserDefaults);
+    a model on another connection isn't switched while its key is unknown (no key sent to the wrong
+    server); vault writes change memory only once the item is written, and put the old contents back if
+    the write fails; Hermes doesn't cache an unknown key; a refused row doesn't re-ask on every pause. The
+    test hook has its own launch state per task, so a simulated refusal doesn't leak into other suites.
 - **The chat's MLX menu lists the models you have (0.29.1).** It read only the Hugging Face cache, so a
   model in `~/models` or LM Studio's folder (the one chosen in Settings) was missing, and an embedding
   model downloaded for memory (bge) was offered as a chat model. `ChatController.mlxModels` now joins the

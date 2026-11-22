@@ -1001,6 +1001,8 @@ struct PackagePage: View {
     private var catalog: PackageCatalog { .shared }
     @State private var goBackError: String?
     @State private var confirmRemove = false
+    /// Removed, but macOS kept the saved keys closed, so its key goes the next time they open.
+    @State private var keysWaiting = false
     @State private var confirmFullAccess = false
     @State private var confirmEvents = false
     /// Developer mode: which command the Test card runs.
@@ -1038,6 +1040,8 @@ struct PackagePage: View {
         }
         // So the page knows about an update without a trip to Browse.
         .task { if !localOnly, catalog.state != .loading, catalog.isStale { await catalog.refresh() } }
+        // On the page, not the header: the header is gone once the package is.
+        .modifier(KeysWaitingAlert(isPresented: $keysWaiting, done: removed))
     }
 
     /// A newer version in the catalog, on the package's own page: Update…, or what it needs first.
@@ -1163,9 +1167,13 @@ struct PackagePage: View {
             }
         }
         .confirmationDialog("Remove \(broken.id)?", isPresented: $confirmRemove, titleVisibility: .visible) {
-            Button("Remove", role: .destructive) { store.remove(broken.id); removed() }
+            Button("Remove", role: .destructive) { remove(broken.id) }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    private func remove(_ id: String) {
+        if store.remove(id) { removed() } else { keysWaiting = true }
     }
 
     private func header(_ package: LassoPackage, origin: PackageStore.Origin) -> some View {
@@ -1454,10 +1462,24 @@ struct PackagePage: View {
             }
         }
         .confirmationDialog("Remove \(package.name)?", isPresented: $confirmRemove, titleVisibility: .visible) {
-            Button("Remove", role: .destructive) { store.remove(package.id); removed() }
+            Button("Remove", role: .destructive) { remove(package.id) }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Its settings, keys and data are deleted from this Mac. Files it saved in ~/LassoWorkspace and this month's usage count are kept.")
+        }
+    }
+}
+
+/// After a removal whose key couldn't be deleted yet: says so, then leaves the page.
+private struct KeysWaitingAlert: ViewModifier {
+    @Binding var isPresented: Bool
+    let done: () -> Void
+
+    func body(content: Content) -> some View {
+        content.alert("Removed, but its key is still saved", isPresented: $isPresented) {
+            Button("OK", action: done)
+        } message: {
+            Text("macOS didn't allow Lasso to open its saved keys. The key is deleted the next time Lasso can open them.")
         }
     }
 }
@@ -1474,6 +1496,11 @@ private struct PackageSettingRow: View {
     @State private var save: Task<Void, Never>?
     /// The Keychain wouldn't save the typed secret (its prompt was cancelled); the text stays to retry.
     @State private var saveFailed = false
+    /// That text: not retried on every pause or on leaving the page while the vault stays closed, only
+    /// by Try again or an edit.
+    @State private var failedText: String?
+    /// What the field held when it was read (an untouched field reloads once the vault opens).
+    @State private var loaded = ""
     @Environment(\.openURL) private var openURL
     private var store: PackageStore { .shared }
 
@@ -1488,7 +1515,7 @@ private struct PackageSettingRow: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if saveFailed {
-                        Button("Try again") { commit() }
+                        Button("Try again") { commit(force: true) }
                             .buttonStyle(.link).font(SettingsFont.sub)
                     }
                     if let help = setting.help {
@@ -1503,8 +1530,14 @@ private struct PackageSettingRow: View {
             .padding(.vertical, SettingsMetrics.rowPaddingV)
             Divider()
         }
-        .onAppear { text = store.value(packageID, setting) }
+        .onAppear { text = store.value(packageID, setting); loaded = text }
         .onDisappear { commit() }
+        // Read while the saved keys wouldn't open, it showed "": now the real key, unless it was edited.
+        .onReceive(NotificationCenter.default.publisher(for: Keychain.didOpenAfterRefusal)) { _ in
+            guard setting.kind == .secret, text == loaded else { return }
+            text = store.value(packageID, setting)
+            loaded = text
+        }
     }
 
     private var caption: (text: String, warn: Bool)? {
@@ -1558,7 +1591,7 @@ private struct PackageSettingRow: View {
             TextField("", text: $text, prompt: Text(setting.kind == .server ? "http://localhost:8888" : ""))
                 .textFieldStyle(.roundedBorder)
                 .settingsFieldWidth()
-                .onSubmit(commit)
+                .onSubmit { commit() }
                 .onChange(of: text) { _, _ in later() }
         case .choice:
             Picker("", selection: Binding(get: { text }, set: { text = $0; commit() })) {
@@ -1578,11 +1611,19 @@ private struct PackageSettingRow: View {
         }
     }
 
-    private func commit() {
+    private func commit(force: Bool = false) {
         save?.cancel()
-        guard text != store.value(packageID, setting) else { saveFailed = false; return }
+        guard text != store.value(packageID, setting) else { saveFailed = false; failedText = nil; return }
         if setting.kind == .server, !text.isEmpty, caption?.warn == true { return }
-        saveFailed = !store.setValue(text, packageID, setting)
+        if setting.kind == .secret {
+            // Untouched and empty: it only looked empty because the key couldn't be read.
+            if text.isEmpty, text == loaded { return }
+            if !force, text == failedText, Keychain.isRefused { return }
+        }
+        let saved = store.setValue(text, packageID, setting)
+        saveFailed = !saved
+        failedText = saved ? nil : text
+        if saved { loaded = text }
         changed()
     }
 }

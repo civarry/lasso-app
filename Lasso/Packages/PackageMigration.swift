@@ -33,23 +33,38 @@ enum PackageMigration {
 
     static func run(store: PackageStore = .shared, defaults: UserDefaults = .standard, bundle: Bundle = .main,
                     readKey: (String) -> String? = { Keychain.getMigrating($0, legacyDefaultsKey: $0) },
-                    deleteKey: (String) -> Void = { Keychain.delete($0); UserDefaults.standard.removeObject(forKey: $0) }) {
+                    deleteKey: (String) -> Void = { Keychain.delete($0, retryIfRefused: false); UserDefaults.standard.removeObject(forKey: $0) }) {
         guard !defaults.bool(forKey: doneKey) else { return }
+        // At launch, in the background: never a prompt. A key the Keychain wouldn't take keeps its old
+        // copy, and the migration runs again next launch.
+        var finished = true
         for old in connectors {
-            guard let key = readKey(old.keyAccount), !key.isEmpty,
-                  !store.isInstalled(old.packageID),
-                  let data = BundledPackages.data(old.packageID, bundle: bundle) else { continue }
+            guard let key = readKey(old.keyAccount), !key.isEmpty else { continue }
+            let package: LassoPackage
             let wasOn = defaults.object(forKey: old.enabledKey) as? Bool ?? false
-            do {
-                let package = try store.install(data, origin: .bundled, enabled: wasOn)
-                if let setting = package.setting("key") { store.setValue(key, package.id, setting) }
-                deleteKey(old.keyAccount)
-                defaults.removeObject(forKey: old.enabledKey)
-                Log.app.notice("packages · moved the \(old.packageID, privacy: .public) connector to its package (on: \(wasOn, privacy: .public))")
-            } catch {
-                Log.app.error("packages · couldn't move \(old.packageID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            if let installed = store.installed.first(where: { $0.id == old.packageID }) {
+                // Installed by an earlier run whose key didn't save: fill in the key, if it's still empty.
+                guard installed.origin == .bundled, let setting = installed.package.setting("key"),
+                      store.value(installed.id, setting).isEmpty else { continue }
+                package = installed.package
+            } else {
+                guard let data = BundledPackages.data(old.packageID, bundle: bundle) else { continue }
+                do {
+                    package = try store.install(data, origin: .bundled, enabled: wasOn)
+                } catch {
+                    Log.app.error("packages · couldn't move \(old.packageID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    continue
+                }
             }
+            if let setting = package.setting("key"), !store.setValue(key, package.id, setting, retryIfRefused: false) {
+                Log.app.error("packages · the \(old.packageID, privacy: .public) key wasn't saved; kept the old one, trying next launch")
+                finished = false
+                continue
+            }
+            deleteKey(old.keyAccount)
+            defaults.removeObject(forKey: old.enabledKey)
+            Log.app.notice("packages · moved the \(old.packageID, privacy: .public) connector to its package (on: \(wasOn, privacy: .public))")
         }
-        defaults.set(true, forKey: doneKey)
+        if finished { defaults.set(true, forKey: doneKey) }
     }
 }

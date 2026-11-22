@@ -28,13 +28,23 @@ enum Keychain {
     static var vaultAccount: String { isTesting ? "lasso.vault.tests" : "lasso.vault" }
 
     private static let lock = NSRecursiveLock()
-    /// The vault's contents once read (nil: not read yet, or couldn't be read).
-    nonisolated(unsafe) private static var cache: [String: String]?   // guarded by `lock`
-    /// The vault couldn't be read this launch (the prompt was cancelled): don't ask again on every key.
-    nonisolated(unsafe) private static var refused = false   // guarded by `lock`
-    /// Accounts with no saved key, old or new: asked once per launch, not on every read (the chat
-    /// header reads one each time it draws, and each old-item lookup is a Keychain query).
-    nonisolated(unsafe) private static var missing: Set<String> = []   // guarded by `lock`
+
+    /// What this launch knows about the vault. Guarded by `lock`. Tests that simulate a refusal get one
+    /// of their own (`VaultReadsForTesting`), so a test running alongside still sees the real vault.
+    final class LaunchState: @unchecked Sendable {
+        /// The vault's contents once read (nil: not read yet, or couldn't be read).
+        var cache: [String: String]?
+        /// The vault couldn't be read (the prompt was cancelled): don't ask again on every key.
+        var refused = false
+        /// Accounts with no saved key, old or new: asked once per launch, not on every read (the chat
+        /// header reads one each time it draws, and each old-item lookup is a Keychain query).
+        var missing: Set<String> = []
+    }
+    private static let shared = LaunchState()
+
+    /// Posted (on the main thread) when the vault opens after a refusal this launch: fields that showed
+    /// a key as empty because it couldn't be read can read it now.
+    static let didOpenAfterRefusal = Notification.Name("Keychain.didOpenAfterRefusal")
 
     private static func query(_ account: String) -> [String: Any] {
         _ = noPromptsUnderTests
@@ -47,14 +57,37 @@ enum Keychain {
 
     #if DEBUG
     /// Tests: one test's vault reads, counted, the first `refusals` of them refused as if the user
-    /// cancelled the prompt. Task-local, so a test running alongside never sees them. Guarded by `lock`.
+    /// cancelled the prompt. Task-local, and with its own `LaunchState`, so a test running alongside
+    /// neither sees the refusals nor what they cause. Guarded by `lock`.
     final class VaultReadsForTesting: @unchecked Sendable {
         var refusals: Int
         var count = 0
-        init(refusals: Int) { self.refusals = refusals }
+        let state = LaunchState()
+        init(refusals: Int) {
+            self.refusals = refusals
+            Keychain.lock.lock(); Keychain.liveHooks.add(self); Keychain.lock.unlock()
+        }
     }
     @TaskLocal static var vaultReadsForTesting: VaultReadsForTesting?
+    nonisolated(unsafe) private static let liveHooks = NSHashTable<VaultReadsForTesting>.weakObjects()   // guarded by `lock`
     #endif
+
+    /// The state of the task asking: a test's own while it simulates a refusal, otherwise the launch's.
+    private static var state: LaunchState {
+        #if DEBUG
+        if let reads = vaultReadsForTesting { return reads.state }
+        #endif
+        return shared
+    }
+
+    /// Every copy of the vault in memory (one, outside tests).
+    private static var allStates: [LaunchState] {
+        #if DEBUG
+        return [shared] + liveHooks.allObjects.map(\.state)
+        #else
+        return [shared]
+        #endif
+    }
 
     /// Reads the vault item itself (one prompt after an update, at most).
     private static func readVault() -> VaultState {
@@ -83,73 +116,102 @@ enum Keychain {
     /// there to answer one more prompt.
     private static func vault(retryIfRefused: Bool = false) -> [String: String]? {
         lock.lock(); defer { lock.unlock() }
-        if let cache { return cache }
-        if refused, !retryIfRefused { return nil }
+        let state = self.state
+        if let cache = state.cache { return cache }
+        if state.refused, !retryIfRefused { return nil }
+        let wasRefused = state.refused
         switch readVault() {
-        case .loaded(let values): cache = values; refused = false
-        case .missing: cache = [:]; refused = false
+        case .loaded(let values): state.cache = values
+        case .missing: state.cache = [:]
         case .unreadable(let status):
             // A previous test build's vault: start a fresh one. (Not a cancelled prompt, which is how
             // tests simulate a refusal.)
             if isTesting, status != errSecUserCanceled {
                 SecItemDelete(query(vaultAccount) as CFDictionary)
-                cache = [:]
+                state.cache = [:]
             } else {
                 Log.app.error("keychain · the saved keys couldn't be read (\(status, privacy: .public))")
-                refused = true
+                state.refused = true
                 return nil
             }
         }
-        return cache
+        state.refused = false
+        removePendingRemovals()
+        if wasRefused {
+            DispatchQueue.main.async { NotificationCenter.default.post(name: didOpenAfterRefusal, object: nil) }
+        }
+        return state.cache
     }
 
-    @discardableResult
-    private static func saveVault(_ values: [String: String]) -> Bool {
+    private static func encode(_ values: [String: String]) -> String? {
+        (try? JSONEncoder().encode(values)).map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    /// Changes the saved keys: the vault item is written first, and only once that worked does any copy
+    /// in memory change. false (nothing changed) when the vault isn't open or the write failed; a failed
+    /// write puts the previous contents back, since `add` deletes before it adds.
+    private static func update(_ change: (inout [String: String]) -> Void) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        guard let data = try? JSONEncoder().encode(values) else { return false }
-        cache = values
-        return add(String(decoding: data, as: UTF8.self), for: vaultAccount)
+        guard let old = state.cache else { return false }
+        var values = old
+        change(&values)
+        if values == old { return true }
+        guard let data = encode(values), add(data, for: vaultAccount) else {
+            if let previous = encode(old) { add(previous, for: vaultAccount) }
+            Log.app.error("keychain · the saved keys couldn't be written")
+            return false
+        }
+        for other in allStates where other.cache != nil { change(&other.cache!) }
+        return true
     }
 
     /// The vault couldn't be read this launch (the prompt was cancelled): a nil from `get` then means
     /// "unknown", not "no key".
-    static var isRefused: Bool { lock.lock(); defer { lock.unlock() }; return refused && cache == nil }
+    static var isRefused: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return state.refused && state.cache == nil
+    }
 
     /// A saved key. Background reads never ask again after a refusal; `retryIfRefused` is for a read the
     /// user just asked for (choosing a model), which may ask once more.
     static func get(_ account: String, retryIfRefused: Bool = false) -> String? {
         let (value, moved): (String?, Bool) = {
             lock.lock(); defer { lock.unlock() }
-            guard var values = vault(retryIfRefused: retryIfRefused) else { return (nil, false) }
+            guard let values = vault(retryIfRefused: retryIfRefused) else { return (nil, false) }
             if let value = values[account] { return (value, false) }
-            if missing.contains(account) { return (nil, false) }
-            // Saved by an older version as its own item: move it in, once.
-            guard let legacy = readLegacy(account) else { missing.insert(account); return (nil, false) }
-            values[account] = legacy
-            saveVault(values)
+            if state.missing.contains(account) { return (nil, false) }
+            // Saved by an older version as its own item: move it in, once. The old item goes only once
+            // the vault holds it.
+            guard let legacy = readLegacy(account) else { state.missing.insert(account); return (nil, false) }
+            guard update({ $0[account] = legacy }) else { return (legacy, false) }
             SecItemDelete(query(account) as CFDictionary)
             return (legacy, true)
         }()
         // Never under the lock: a UserDefaults change posts a notification that can wait on the main
         // thread, and the main thread reads keys while drawing (a deadlock, seen in the test run).
         if moved { UserDefaults.standard.removeObject(forKey: openKey(account)) }
+        finishPendingRemovals()
         return value
     }
 
     /// Saves a key. false when it wasn't saved: the vault exists but macOS wouldn't open it (the prompt
-    /// was cancelled, also on the one retry). Nothing is written then, so the keys already saved stay.
-    /// `retryIfRefused`: the user is saving it, so after an earlier refusal this launch it asks once more.
-    /// Background writes pass false and never prompt again.
+    /// was cancelled, also on the one retry), or the write failed. Nothing is written then, so the keys
+    /// already saved stay. `retryIfRefused`: the user is saving it, so after an earlier refusal this
+    /// launch it asks once more. Background writes pass false and never prompt again.
     @discardableResult
     static func set(_ value: String, for account: String, retryIfRefused: Bool = true) -> Bool {
         guard !value.isEmpty else { return delete(account, retryIfRefused: retryIfRefused) }
-        lock.lock(); defer { lock.unlock() }
-        guard var values = vault(retryIfRefused: retryIfRefused) else { return false }
-        missing.remove(account)
-        values[account] = value
-        guard saveVault(values) else { return false }
-        SecItemDelete(query(account) as CFDictionary)
-        return true
+        let saved: Bool = {
+            lock.lock(); defer { lock.unlock() }
+            guard vault(retryIfRefused: retryIfRefused) != nil, update({ $0[account] = value }) else { return false }
+            state.missing.remove(account)
+            SecItemDelete(query(account) as CFDictionary)
+            return true
+        }()
+        // Saved again (a package reinstalled): no longer waiting to be removed. Outside the lock, as in `get`.
+        if saved { forgetPendingRemoval([account]) }
+        finishPendingRemovals()
+        return saved
     }
 
     /// Writes only when the value differs from `current` (Settings applies on every change). false when
@@ -162,21 +224,59 @@ enum Keychain {
     /// Removes a key. false when the vault couldn't be opened (as in `set`): the key may still be saved.
     @discardableResult
     static func delete(_ account: String, retryIfRefused: Bool = true) -> Bool {
+        removeAll([account], retryIfRefused: retryIfRefused, rememberIfRefused: false)
+    }
+
+    /// Removes these keys in one write (one prompt at most after a refusal). false when they couldn't be
+    /// removed now. `rememberIfRefused`: then they're removed the next time the vault opens, in this
+    /// launch or a later one (an uninstalled package's key mustn't come back with a reinstall).
+    @discardableResult
+    static func removeAll(_ accounts: [String], retryIfRefused: Bool = true, rememberIfRefused: Bool = true) -> Bool {
+        guard !accounts.isEmpty else { return true }
         lock.lock()
-        var ok = true
-        if var values = vault(retryIfRefused: retryIfRefused) {
-            if values[account] != nil {
-                values[account] = nil
-                ok = saveVault(values)
-            }
-        } else {
-            ok = false
-        }
-        SecItemDelete(query(account) as CFDictionary)
+        let removed = vault(retryIfRefused: retryIfRefused) != nil
+            && update { values in accounts.forEach { values[$0] = nil } }
+        for account in accounts { SecItemDelete(query(account) as CFDictionary) }
         lock.unlock()
         // Outside the lock, as in `get`.
-        UserDefaults.standard.removeObject(forKey: openKey(account))
-        return ok
+        for account in accounts { UserDefaults.standard.removeObject(forKey: openKey(account)) }
+        if removed {
+            forgetPendingRemoval(accounts)
+        } else if rememberIfRefused {
+            var pending = pendingRemovals
+            pending.formUnion(accounts)
+            UserDefaults.standard.set(pending.sorted(), forKey: pendingRemovalsKey)
+        }
+        finishPendingRemovals()
+        return removed
+    }
+
+    // MARK: Removals waiting for the vault to open
+
+    private static var pendingRemovalsKey: String { isTesting ? "keychain.pendingRemovals.tests" : "keychain.pendingRemovals" }
+    private static var pendingRemovals: Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: pendingRemovalsKey) ?? [])
+    }
+    /// Removed from the vault, still to be crossed off in UserDefaults (outside the lock). Guarded by `lock`.
+    nonisolated(unsafe) private static var removalsDone: Set<String> = []
+
+    /// Under the lock, the vault just read: what's waiting to be removed goes.
+    private static func removePendingRemovals() {
+        let pending = pendingRemovals
+        guard !pending.isEmpty else { return }
+        if update({ values in pending.forEach { values[$0] = nil } }) { removalsDone.formUnion(pending) }
+    }
+
+    private static func forgetPendingRemoval(_ accounts: [String]) {
+        let pending = pendingRemovals
+        guard !pending.isDisjoint(with: accounts) else { return }
+        UserDefaults.standard.set(pending.subtracting(accounts).sorted(), forKey: pendingRemovalsKey)
+    }
+
+    /// Outside the lock: crosses off the removals the vault has done.
+    private static func finishPendingRemovals() {
+        lock.lock(); let done = removalsDone; removalsDone = []; lock.unlock()
+        if !done.isEmpty { forgetPendingRemoval(Array(done)) }
     }
 
     /// A key an older version saved as its own item (this read may ask, once per key).
@@ -192,7 +292,9 @@ enum Keychain {
 
     /// Forget the in-memory copy (tests, and after another process changed the vault).
     static func resetCache() {
-        lock.lock(); cache = nil; refused = false; missing = []; lock.unlock()
+        lock.lock()
+        for s in [shared, state] { s.cache = nil; s.refused = false; s.missing = [] }
+        lock.unlock()
     }
 
     /// Saves the item with its access list open to any app. That alone doesn't stop the prompts (the

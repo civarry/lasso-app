@@ -52,7 +52,7 @@ enum HermesAgent {
         keyLock.lock(); defer { keyLock.unlock() }
         if let cachedKey { return cachedKey }
         let key = Keychain.get(keychainAccount) ?? ""
-        cachedKey = key
+        if !key.isEmpty || !Keychain.isRefused { cachedKey = key }   // "" while refused is unknown: read again later
         return key
     }
 
@@ -73,7 +73,7 @@ enum HermesAgent {
         keyLock.lock(); defer { keyLock.unlock() }
         if let cachedManagedKey { return cachedManagedKey }
         let key = Keychain.get(managedKeychainAccount) ?? ""
-        cachedManagedKey = key
+        if !key.isEmpty || !Keychain.isRefused { cachedManagedKey = key }   // as in `apiKey`
         return key
     }
 
