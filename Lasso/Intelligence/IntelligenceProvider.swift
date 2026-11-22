@@ -376,7 +376,16 @@ final class IntelligenceCoordinator {
         if let entry {
             openAIBaseURL = entry.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
             openAIConnectionKind = entry.kind
-            Keychain.set(Keychain.get(entry.keychainAccount) ?? "", for: "openai.apiKey")
+            // The user just picked it, so the saved keys may ask once more. Still unreadable: a nil key
+            // is unknown, not empty, and writing "" would remove the language key.
+            let key = Keychain.get(entry.keychainAccount, retryIfRefused: true)
+            if key != nil || !Keychain.isRefused {
+                if !Keychain.set(key ?? "", for: "openai.apiKey", retryIfRefused: false) {
+                    Log.app.error("keychain · couldn't save the language model's key")
+                }
+            } else {
+                Log.app.error("keychain · couldn't read the chosen connection's key")
+            }
         }
         openAIModel = model
         UserDefaults.standard.set(keyID.isEmpty ? "manual:\(model)" : "model:\(keyID)\t\(model)",

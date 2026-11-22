@@ -983,6 +983,12 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
     changes (untouched fields adopt the live value). Not yet tested: the dictation and Settings fixes
     (need a microphone or the Settings view's state); and a key typed in Settings after the vault
     prompt was declined is still dropped silently.
+  - **QA round 7, a declined Keychain prompt, fixed** (`Regression/AppShellRegressionTests`): after the
+    saved-keys prompt was cancelled, `Keychain.set` dropped every key typed later without a word. Now a
+    save (and a delete) asks once more, since the user is there; if that's cancelled too it returns false,
+    writes nothing (a refused vault is never replaced) and Settings and a package's key field say so in
+    orange with Try again, keeping the typed value. Background reads still never ask again, and
+    `getMigrating` keeps the old copy until the move saved. Not tested: the Settings messages (view state).
 - **The chat's MLX menu lists the models you have (0.29.1).** It read only the Hugging Face cache, so a
   model in `~/models` or LM Studio's folder (the one chosen in Settings) was missing, and an embedding
   model downloaded for memory (bge) was offered as a chat model. `ChatController.mlxModels` now joins the

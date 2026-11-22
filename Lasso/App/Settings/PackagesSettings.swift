@@ -1472,6 +1472,8 @@ private struct PackageSettingRow: View {
 
     @State private var text = ""
     @State private var save: Task<Void, Never>?
+    /// The Keychain wouldn't save the typed secret (its prompt was cancelled); the text stays to retry.
+    @State private var saveFailed = false
     @Environment(\.openURL) private var openURL
     private var store: PackageStore { .shared }
 
@@ -1484,6 +1486,10 @@ private struct PackageSettingRow: View {
                         Text(caption.text).font(SettingsFont.sub)
                             .foregroundStyle(caption.warn ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
                             .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if saveFailed {
+                        Button("Try again") { commit() }
+                            .buttonStyle(.link).font(SettingsFont.sub)
                     }
                     if let help = setting.help {
                         Button(setting.kind == .secret ? "Get a key" : "Help") { openURL(help) }
@@ -1502,7 +1508,8 @@ private struct PackageSettingRow: View {
     }
 
     private var caption: (text: String, warn: Bool)? {
-        switch setting.kind {
+        if saveFailed { return ("Couldn't save the key: macOS didn't allow Lasso to open its saved keys. Try again and choose Allow.", true) }
+        return switch setting.kind {
         case .secret where text.isEmpty: ("Required. Searches skip \(packageName) until it's added.", true)
         case .server:
             if text.isEmpty { ("Searches are sent here.", false) }
@@ -1573,9 +1580,9 @@ private struct PackageSettingRow: View {
 
     private func commit() {
         save?.cancel()
-        guard text != store.value(packageID, setting) else { return }
+        guard text != store.value(packageID, setting) else { saveFailed = false; return }
         if setting.kind == .server, !text.isEmpty, caption?.warn == true { return }
-        store.setValue(text, packageID, setting)
+        saveFailed = !store.setValue(text, packageID, setting)
         changed()
     }
 }

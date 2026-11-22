@@ -484,14 +484,17 @@ final class PackageStore {
         return defaults.string(forKey: settingKey(id, setting.id)) ?? setting.defaultValue ?? ""
     }
 
-    func setValue(_ value: String, _ id: String, _ setting: PackageSetting) {
+    /// false when a secret wasn't saved (the Keychain's saved-keys prompt was cancelled).
+    @discardableResult
+    func setValue(_ value: String, _ id: String, _ setting: PackageSetting) -> Bool {
+        var saved = true
         if setting.kind == .secret {
-            let account = secretAccount(id, setting.id)
-            if value.isEmpty { Keychain.delete(account) } else { Keychain.set(value, for: account) }
+            saved = Keychain.set(value, for: secretAccount(id, setting.id))   // empty deletes
         } else {
             defaults.set(value, forKey: settingKey(id, setting.id))
         }
         reload()
+        return saved
     }
 
     /// `settings.<id>` values for templates, and the secrets among them (for redaction).

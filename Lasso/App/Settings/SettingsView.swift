@@ -146,6 +146,12 @@ struct SettingsView: View {
     @State private var connectionsTestNote: String?
     @State private var discoveringKeyIDs: Set<String> = []
     @State private var savedRegistryKeyValues: [String: String] = [:]   // baseline for "unsaved changes" diff
+    /// Keys the Keychain wouldn't save (its saved-keys prompt was cancelled), by account: the value typed,
+    /// still in its field, saved by Try again or the next edit.
+    @State private var unsavedKeys: [String: String] = [:]
+    /// The saved keys couldn't be read when Settings opened, so its key fields start empty: an empty one
+    /// the user didn't touch is unknown, never a key to remove.
+    @State private var keysUnreadAtLoad = false
     @State private var showMigrationNotice = false
     @State private var ollamaStatus: OllamaEndpoint.Status?
     @State private var mlxDownload: MLXDownloadState = .idle
@@ -204,6 +210,7 @@ struct SettingsView: View {
                             .toolbar { backForward }
                     }
             }
+            .safeAreaInset(edge: .bottom, spacing: 0) { unsavedKeysNote }
         }
         .frame(width: 740)
         .frame(minHeight: 560, idealHeight: 640)
@@ -829,6 +836,27 @@ struct SettingsView: View {
             onChanged: { connectionsDidChange() },
             dismiss: { showConnections = false },
             primary: draftPrimaryRef)
+        .safeAreaInset(edge: .bottom, spacing: 0) { unsavedKeysNote }
+    }
+
+    /// Under the page (and the connections sheet, where keys are typed too) while a typed key isn't saved.
+    @ViewBuilder private var unsavedKeysNote: some View {
+        if !unsavedKeys.isEmpty {
+            VStack(spacing: 0) {
+                Divider()
+                HStack(spacing: 10) {
+                    Text("Couldn't save \(unsavedKeys.count == 1 ? "the key" : "\(unsavedKeys.count) keys"): macOS didn't allow Lasso to open its saved keys. Try again and choose Allow.")
+                        .font(SettingsFont.sub).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Try again") { retryUnsavedKeys() }
+                        .controlSize(.small)
+                }
+                .padding(.horizontal, SettingsMetrics.rowPaddingH)
+                .padding(.vertical, 10)
+            }
+            .background(.background)
+        }
     }
 
     // MARK: - The three model sections (one template, three instances)
@@ -2647,6 +2675,7 @@ struct SettingsView: View {
             d.connectorEnabled[connector.id] = connector.isEnabled
             if connector.keyAccount != nil { d.connectorKeys[connector.id] = connector.key() }
         }
+        keysUnreadAtLoad = Keychain.isRefused
         d.localOnly = UserDefaults.standard.bool(forKey: "privacy.localOnly")
         d.lensSearch = UserDefaults.standard.bool(forKey: LensSearchAction.enabledKey)
         d.pretranslate = UserDefaults.standard.object(forKey: "translation.pretranslate") as? Bool ?? true
@@ -2725,6 +2754,19 @@ struct SettingsView: View {
         }
     }
 
+    /// Saves one key; false when the Keychain wouldn't open the saved keys. (Hermes keeps its own copy.)
+    private static func writeKey(_ value: String, _ account: String) -> Bool {
+        account == HermesAgent.keychainAccount ? HermesAgent.setAPIKey(value) : Keychain.set(value, for: account)
+    }
+
+    /// Try again: one prompt, and the rest wait if it's cancelled again.
+    private func retryUnsavedKeys() {
+        for (account, value) in unsavedKeys.sorted(by: { $0.key < $1.key }) {
+            guard Self.writeKey(value, account) else { return }
+            unsavedKeys[account] = nil
+        }
+    }
+
     private func apply() {
         // A model switched from the chat header since Settings loaded wins over the untouched field
         // here: applying a toggle must not put the old model back.
@@ -2752,9 +2794,27 @@ struct SettingsView: View {
             Task { await OllamaEndpoint.autodetect() }   // re-resolve the effective server after a change
         }
         // Applied on every change now, so each secret is written only when it changed: a toggle must
-        // not rewrite every Keychain item.
+        // not rewrite every Keychain item. A key the Keychain won't take is kept in `unsavedKeys` (and its
+        // field) and shown; after one refusal the rest of this apply doesn't ask again.
+        var refusedNow = false
+        func store(_ value: String, _ account: String) {
+            // Already waiting with this value: Try again or an edit saves it, not every other change.
+            if refusedNow || (Keychain.isRefused && unsavedKeys[account] == value) {
+                unsavedKeys[account] = value
+            } else if Self.writeKey(value, account) {
+                unsavedKeys[account] = nil
+            } else {
+                refusedNow = true
+                unsavedKeys[account] = value
+            }
+        }
         func key(_ new: String, _ old: String, _ account: String) {
-            if new != old { Keychain.set(new, for: account) }
+            if new != old { store(new, account) }
+        }
+        /// The language/image/embedding key, copied from the chosen connection's.
+        func copied(_ value: String, _ account: String) {
+            if keysUnreadAtLoad, value.isEmpty { return }
+            if value != (Keychain.get(account) ?? "") { store(value, account) }
         }
         intelligence.visionModel = draft.visionModel
         intelligence.visionMLXModel = draft.visionMLXModel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2763,7 +2823,7 @@ struct SettingsView: View {
         key(draft.anthropicKey, saved.anthropicKey, "anthropic.apiKey")
         UserDefaults.standard.set(draft.hermesBaseURL.trimmingCharacters(in: .whitespacesAndNewlines),
                                   forKey: HermesAgent.baseURLKey)
-        if draft.hermesKey != saved.hermesKey { HermesAgent.setAPIKey(draft.hermesKey) }
+        key(draft.hermesKey, saved.hermesKey, HermesAgent.keychainAccount)
         UserDefaults.standard.set(draft.hermesLetDecide, forKey: HermesAgent.letHermesDecideKey)
         if draft.hermesUseOwn != HermesAgent.usesOwnHermes { HermesRuntime.shared.stop() }
         UserDefaults.standard.set(draft.hermesUseOwn, forKey: HermesAgent.useOwnHermesKey)
@@ -2811,7 +2871,7 @@ struct SettingsView: View {
                 // The connection's protocol travels with the flattened config, because that's what
                 // decides which transport `buildProvider()` constructs.
                 intelligence.openAIConnectionKind = key.kind
-                Keychain.set(registryKeyValues[key.id] ?? "", for: "openai.apiKey", ifChangedFrom: Keychain.get("openai.apiKey"))
+                copied(registryKeyValues[key.id] ?? "", "openai.apiKey")
             }
         }
         // Effective image config (resolving "same as language" against the language selection).
@@ -2820,7 +2880,7 @@ struct SettingsView: View {
             if let key = vis.key {
                 intelligence.visionOpenAIBaseURL = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
                 intelligence.visionOpenAIConnectionKind = key.kind
-                Keychain.set(registryKeyValues[key.id] ?? "", for: "vision.openai.apiKey", ifChangedFrom: Keychain.get("vision.openai.apiKey"))
+                copied(registryKeyValues[key.id] ?? "", "vision.openai.apiKey")
             }
         }
 
@@ -2863,7 +2923,7 @@ struct SettingsView: View {
             if let key = emb.key {
                 intelligence.embeddingOpenAIBaseURL = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
                 intelligence.embeddingOpenAIConnectionKind = key.kind
-                Keychain.set(registryKeyValues[key.id] ?? "", for: "embedding.openai.apiKey", ifChangedFrom: Keychain.get("embedding.openai.apiKey"))
+                copied(registryKeyValues[key.id] ?? "", "embedding.openai.apiKey")
             }
         }
         if embeddingChanged { ChatController.shared.embeddingConfigChanged() }

@@ -412,7 +412,7 @@ struct KeysRegistry: Codable, Equatable, Sendable {
             d.removeObject(forKey: "intelligence.openai.svc.\(s).context")
             d.removeObject(forKey: "intelligence.vision.openai.svc.\(s).model")
             d.removeObject(forKey: "intelligence.embedding.openai.svc.\(s).model")
-            Keychain.delete("openai.svc.\(s).key")
+            Keychain.delete("openai.svc.\(s).key", retryIfRefused: false)
         }
         for defaultsKey in [
             "intelligence.openai.service", "intelligence.openai.customBaseURL",
@@ -425,7 +425,7 @@ struct KeysRegistry: Codable, Equatable, Sendable {
             d.removeObject(forKey: defaultsKey)
         }
         for account in ["openai.apiKey", "vision.openai.apiKey", "embedding.openai.apiKey"] {
-            Keychain.delete(account)
+            Keychain.delete(account, retryIfRefused: false)
         }
     }
 

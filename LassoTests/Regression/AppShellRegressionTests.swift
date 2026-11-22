@@ -58,4 +58,76 @@ struct AppShellRegressionTests {
         let hit = time(present), miss = time(missing)
         #expect(miss < hit * 5 + 5, "300 reads: saved key \(hit) ms, missing key \(miss) ms")
     }
+
+    // 5-8. After an update macOS asks for the password once to open the saved keys. When that prompt
+    //    was cancelled, `vault()` stayed nil for the rest of the launch and `set` returned without a
+    //    word: a key typed in Settings showed as saved, was gone on the next launch, and the provider
+    //    said "no key". The refusal is simulated (`Keychain.vaultReadsForTesting`); the vault is the
+    //    tests' own (`lasso.vault.tests`), never this Mac's.
+
+    /// Runs `body` with the vault's first `refusals` reads refused, from a fresh launch's state.
+    private func afterRefusal<T>(_ refusals: Int, _ body: (Keychain.VaultReadsForTesting) -> T) -> T {
+        Keychain.resetCache()
+        defer { Keychain.resetCache() }
+        let reads = Keychain.VaultReadsForTesting(refusals: refusals)
+        return Keychain.$vaultReadsForTesting.withValue(reads) { body(reads) }
+    }
+
+    @Test func aKeySavedAfterARefusedPromptIsKept() {
+        let account = "qa8.saved.\(UUID().uuidString)"
+        defer { Keychain.delete(account) }
+        afterRefusal(1) { _ in
+            #expect(Keychain.get(account) == nil)   // a background read: the prompt is cancelled
+            _ = Keychain.set("sk-typed", for: account)
+        }
+        #expect(Keychain.get(account) == "sk-typed", "the key typed after a cancelled prompt was dropped")
+    }
+
+    @Test func savingAfterARefusalAsksOnceMoreAndSaves() {
+        let account = "qa8.retry.\(UUID().uuidString)"
+        defer { Keychain.delete(account) }
+        let reads = afterRefusal(1) { reads in
+            _ = Keychain.get(account)
+            #expect(Keychain.isRefused)
+            #expect(Keychain.set("sk-typed", for: account), "the save reported failure though the retry could read")
+            #expect(!Keychain.isRefused)
+            return reads.count
+        }
+        #expect(reads == 2, "the refused read plus exactly one retry, got \(reads)")
+        #expect(Keychain.get(account) == "sk-typed")
+    }
+
+    @Test func aSecondRefusalReportsFailureAndKeepsTheSavedKeys() {
+        let kept = "qa8.kept.\(UUID().uuidString)"
+        let typed = "qa8.typed.\(UUID().uuidString)"
+        Keychain.resetCache()
+        #expect(Keychain.set("sk-kept", for: kept), "precondition")
+        defer { Keychain.delete(kept); Keychain.delete(typed) }
+        afterRefusal(3) { reads in
+            _ = Keychain.get(kept)
+            #expect(!Keychain.set("sk-typed", for: typed), "set claimed success while the vault stayed closed")
+            #expect(reads.count == 2, "a save asks once more, not again and again")
+            #expect(!Keychain.delete(kept), "delete claimed success while the vault stayed closed")
+            #expect(reads.count == 3)
+        }
+        // Never a fresh vault over one that couldn't be read.
+        #expect(Keychain.get(kept) == "sk-kept", "a refused prompt wiped a saved key")
+        #expect(Keychain.get(typed) == nil)
+    }
+
+    @Test func aRefusedVaultIsNotReReadOnEveryBackgroundRead() {
+        let account = "qa8.background.\(UUID().uuidString)"
+        let legacyDefaultsKey = "qa8.legacy.\(UUID().uuidString)"
+        UserDefaults.standard.set("sk-legacy", forKey: legacyDefaultsKey)
+        defer { UserDefaults.standard.removeObject(forKey: legacyDefaultsKey); Keychain.delete(account) }
+        let reads = afterRefusal(100) { reads in
+            for _ in 0..<5 { #expect(Keychain.get(account) == nil) }
+            // A read that also moves an old copy in: it mustn't ask, nor drop the copy it couldn't move.
+            #expect(Keychain.getMigrating(account, legacyDefaultsKey: legacyDefaultsKey) == "sk-legacy")
+            return reads.count
+        }
+        #expect(reads == 1, "each background read asked again: \(reads) prompts")
+        #expect(UserDefaults.standard.string(forKey: legacyDefaultsKey) == "sk-legacy",
+                "the old copy was removed though the Keychain never saved it")
+    }
 }
