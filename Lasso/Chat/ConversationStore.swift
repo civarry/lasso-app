@@ -79,6 +79,9 @@ enum ConversationStore {
         /// A regenerated reply's answers and which one shows. Optional for older files.
         var versions: [ReplyVersion]? = nil
         var versionIndex: Int? = nil
+        /// Optional so older files decode: an error reply and Lasso's own notes stay what they are.
+        var isError: Bool? = nil
+        var isLocalNote: Bool? = nil
     }
 
     struct FileDTO: Codable {
@@ -227,7 +230,8 @@ extension ConversationStore {
                 },
                 viaAgent: m.viaAgent ? true : nil, caption: m.caption,
                 versions: m.versions.isEmpty ? nil : m.currentVersions,
-                versionIndex: m.versions.isEmpty ? nil : m.versionIndex)
+                versionIndex: m.versions.isEmpty ? nil : m.versionIndex,
+                isError: m.isError ? true : nil, isLocalNote: m.isLocalNote ? true : nil)
         }
         return ConversationDTO(
             schemaVersion: schemaVersion,
@@ -273,6 +277,8 @@ extension ConversationStore {
             msg.sources = md.sources
             msg.viaAgent = md.viaAgent ?? false
             msg.caption = md.caption
+            msg.isError = md.isError ?? false
+            msg.isLocalNote = md.isLocalNote ?? false
             if let versions = md.versions, versions.count > 1 {
                 msg.versions = versions
                 msg.versionIndex = min(max(md.versionIndex ?? 0, 0), versions.count - 1)

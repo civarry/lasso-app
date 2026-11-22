@@ -124,7 +124,9 @@ final class ChatController {
         guard sessions.contains(where: { $0 === c }) else { return }
         let entries = sessions.filter(\.hasMessages).map(ConversationStore.indexEntry)
         guard c.hasMessages else {
-            Task.detached(priority: .utility) { ConversationStore.writeIndex(entries) }
+            // Everything deleted: the saved file goes too, or the chat would load back in full.
+            let id = c.id
+            Task.detached(priority: .utility) { ConversationStore.delete(id: id); ConversationStore.writeIndex(entries) }
             return
         }
         let dto = ConversationStore.snapshot(c)
@@ -374,8 +376,13 @@ final class ChatController {
     }
 
     /// Read an image from the general pasteboard: raw image data, or a copied image file URL.
-    static func clipboardImage() -> CGImage? {
-        let pb = NSPasteboard.general
+    static func clipboardImage(_ pb: NSPasteboard = .general) -> CGImage? {
+        // Text copied from Pages, Word or Numbers also carries a PDF of itself: that's text to paste,
+        // not a picture. Only a copy with a real image (or a file) attaches.
+        let types = pb.types ?? []
+        let imageTypes: [NSPasteboard.PasteboardType] = [.png, .tiff, NSPasteboard.PasteboardType("public.jpeg"),
+                                                         NSPasteboard.PasteboardType("public.heic"), .fileURL]
+        if types.contains(.string), !types.contains(where: imageTypes.contains) { return nil }
         if let images = pb.readObjects(forClasses: [NSImage.self]) as? [NSImage],
            let first = images.first,
            let cg = first.cgImage(forProposedRect: nil, context: nil, hints: nil) {
@@ -475,7 +482,7 @@ final class ChatController {
 
     /// The last reply a command can run on, when nothing was typed after it.
     var lastReplyText: String? {
-        messages.last { $0.role == .assistant && !$0.isError && !$0.text.isEmpty }?.text
+        messages.last { $0.role == .assistant && $0.isAnswer }?.text
     }
 
     /// Why `match` can't run here, or nil. In chat there's no source app or image, so `apps` and
@@ -523,7 +530,8 @@ final class ChatController {
         }
         messages.append(reply)
         let replyID = reply.id
-        input = ""
+        // Clears the command the user typed; a draft put back by Regenerate (sendKeepingDraft) stays.
+        if input.trimmingCharacters(in: .whitespacesAndNewlines) == typed { input = "" }
         isStreaming = true
         active.turnToken = UUID()
         let session = active
@@ -581,7 +589,9 @@ final class ChatController {
     /// Append a local, non-model message (e.g. `/help` output). Never sent to a provider; persisted so it
     /// scrolls with the thread, but it isn't indexed (no turn runs) so it won't pollute retrieval.
     func postLocalMessage(_ text: String) {
-        active.messages.append(ChatMessage(role: .assistant, text: text))
+        var note = ChatMessage(role: .assistant, text: text)
+        note.isLocalNote = true
+        active.messages.append(note)
         persist(active)
     }
 
@@ -667,7 +677,15 @@ final class ChatController {
         active.messages.removeAll()
         active.input = ""
         active.pendingAttachments = []
+        active.pendingFiles = []
         active.seededContext = nil
+        active.autoTitle = nil
+        active.mentions = []
+        active.excludedOnce = []
+        active.recentTools = []
+        active.recentSources = []
+        active.searchFor = [:]
+        active.carriedVersions = []
         active.isStreaming = false
         // The conversation is now empty — drop its persisted file and refresh the index.
         ConversationStore.delete(id: active.id)
@@ -691,13 +709,13 @@ final class ChatController {
         if active.isStreaming { cancelStreaming() }
         sessions.append(s)
         active = s
+        persist(active)   // a seeded conversation (Ask AI / capture) already has content worth saving
         var overflow = sessions.count - Self.maxSessions
         guard overflow > 0 else { return }
         sessions.removeAll { session in
             guard overflow > 0, session.id != active.id else { return false }
             session.cancelWork(); overflow -= 1; return true
         }
-        persist(active)   // a seeded conversation (Ask AI / capture) already has content worth saving
     }
 
     func cancelStreaming() {
@@ -2489,6 +2507,13 @@ final class ChatController {
     static func historyTurns(from messages: ArraySlice<ChatMessage>) -> [ChatContextBuilder.HistoryTurn] {
         var turns: [ChatContextBuilder.HistoryTurn] = []
         for m in messages {
+            // Lasso's own notes (/help) aren't the model's words; an error or "(Stopped.)" isn't an answer,
+            // and the question it failed to answer goes with it.
+            if m.role == .assistant, m.isLocalNote { continue }
+            if m.role == .assistant, !m.isAnswer {
+                if let last = turns.indices.last, turns[last].role == .user { turns.removeLast() }
+                continue
+            }
             if m.role == .assistant, m.viaAgent {
                 let reply = Self.stripThoughtBlocks(from: m.text).trimmingCharacters(in: .whitespacesAndNewlines)
                 if let last = turns.indices.last, turns[last].role == .user, !reply.isEmpty {
@@ -3396,6 +3421,12 @@ final class ChatController {
             rest = rest[close.upperBound...]
         }
         while let open = rest.range(of: "<think>", options: [.caseInsensitive]) {
+            // A tag written inside code ("wraps it in a `<think>` block") is part of the answer.
+            if isInsideCode(Substring(answer + rest[..<open.lowerBound])) {
+                answer += rest[..<open.upperBound]
+                rest = rest[open.upperBound...]
+                continue
+            }
             answer += rest[..<open.lowerBound]
             let afterOpen = rest[open.upperBound...]
             if let close = afterOpen.range(of: "</think>", options: [.caseInsensitive]) {
@@ -3415,7 +3446,7 @@ final class ChatController {
 
     /// Whether text ending here is inside a Markdown code fence or an inline code span: an odd number
     /// of ``` fences, or, outside fences, an odd number of backticks.
-    private static func isInsideCode(_ prefix: Substring) -> Bool {
+    nonisolated static func isInsideCode(_ prefix: Substring) -> Bool {
         let fences = prefix.components(separatedBy: "```").count - 1
         if fences % 2 == 1 { return true }
         return prefix.replacingOccurrences(of: "```", with: "").filter { $0 == "`" }.count % 2 == 1

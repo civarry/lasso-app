@@ -84,6 +84,14 @@ struct ChatMessage: Identifiable, @unchecked Sendable {
     var viaAgent = false
     /// One line above a reply that a package wrote: "Study tools · Qwen3.5 · on this Mac".
     var caption: String?
+    /// Lasso's own text in the thread (/help, /about): never sent to the model or picked as "the last reply".
+    var isLocalNote = false
+
+    /// A reply that's a real answer: not an error, not empty, not Stop's placeholder, not Lasso's own note.
+    var isAnswer: Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !isError && !isLocalNote && !t.isEmpty && t != "(Stopped.)" && t != "(No response.)"
+    }
     /// Every answer this reply has had (Regenerate keeps the earlier ones, like other chat apps' ‹ 2/3 ›),
     /// with this one at `versionIndex`. Empty until it's regenerated. The shown answer's own fields are the
     /// truth for its slot; `versions[versionIndex]` is refreshed when switching or saving.

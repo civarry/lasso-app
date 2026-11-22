@@ -80,6 +80,8 @@ enum MarkdownParser {
     ///   the text does not jitter between shapes as it lands. Off for finished text, where every
     ///   character is final and withholding anything would silently drop content.
     static func parse(_ text: String, streaming: Bool = false) -> [MarkdownBlock] {
+        // Windows line endings: "\r\n" is one Character in Swift, so splitting on "\n" would miss it.
+        let text = text.replacingOccurrences(of: "\r\n", with: "\n")
         let blocks = parseBlocks(text, streaming: streaming)
         // Finished text: a fence that never closed (stopped, or cut off at the token limit) is all the
         // code there will be, so it's complete (Copy and Run show).
@@ -122,9 +124,13 @@ enum MarkdownParser {
         -> (range: Range<String.Index>, closeTag: String)? {
         thoughtTags
             .compactMap { open, close -> (Range<String.Index>, String)? in
-                guard let r = text.range(of: open, options: .caseInsensitive,
-                                         range: from..<text.endIndex) else { return nil }
-                return (r, close)
+                // A tag inside code (a fence or `inline`) is text about the tag, not reasoning.
+                var start = from
+                while let r = text.range(of: open, options: .caseInsensitive, range: start..<text.endIndex) {
+                    if !ChatController.isInsideCode(text[text.startIndex..<r.lowerBound]) { return (r, close) }
+                    start = r.upperBound
+                }
+                return nil
             }
             .min { $0.0.lowerBound < $1.0.lowerBound }
             .map { (range: $0.0, closeTag: $0.1) }
@@ -161,8 +167,10 @@ enum MarkdownParser {
                 var body: [String] = []
                 var head = String(line.dropFirst(delims.open.count))
                 var closed = false
+                var after = ""
                 if let end = head.range(of: delims.close) {
                     body.append(String(head[..<end.lowerBound]))
+                    after = String(head[end.upperBound...])
                     closed = true
                     i += 1
                 } else {
@@ -172,6 +180,7 @@ enum MarkdownParser {
                         head = lines[i]
                         if let end = head.range(of: delims.close) {
                             body.append(String(head[..<end.lowerBound]))
+                            after = String(head[end.upperBound...])
                             closed = true
                             i += 1
                             break
@@ -183,6 +192,9 @@ enum MarkdownParser {
                 _ = closed   // an unterminated block still renders what has arrived
                 let rendered = MathText.render(body.joined(separator: "\n"))
                 if !rendered.isEmpty { blocks.append(.math(rendered)) }
+                // "$$E = mc^2$$ where E is energy.": the rest of the line is text.
+                let rest = after.trimmingCharacters(in: .whitespaces)
+                if !rest.isEmpty { paragraph.append(rest) }
                 continue
             }
 
@@ -190,6 +202,8 @@ enum MarkdownParser {
             // The closing fence must use the same character, so a ``` inside a ~~~ block is content.
             if let fence = fenceMarker(line) {
                 flushParagraph()
+                // A fence indented under a list item: its lines carry that indent too, and it isn't code.
+                let indent = raw.prefix(while: { $0 == " " }).count
                 let info = line.dropFirst(fence.count).trimmingCharacters(in: .whitespaces)
                 let language = info.isEmpty
                     ? nil
@@ -205,7 +219,10 @@ enum MarkdownParser {
                         i += 1
                         break
                     }
-                    code.append(lines[i])
+                    var codeLine = Substring(lines[i])
+                    var strip = indent
+                    while strip > 0, codeLine.first == " " { codeLine = codeLine.dropFirst(); strip -= 1 }
+                    code.append(String(codeLine))
                     i += 1
                 }
                 blocks.append(.code(language: language,
@@ -493,8 +510,9 @@ enum MarkdownParser {
 
     private static func headingText(_ line: String, level: Int) -> String {
         var text = String(line.dropFirst(level)).trimmingCharacters(in: .whitespaces)
-        // Closed ATX form: "## Title ##".
-        while text.hasSuffix("#") { text.removeLast() }
+        // Closed ATX form: "## Title ##". Only a run after a space closes it, so "## Learning C#" keeps its #.
+        let run = text.reversed().prefix(while: { $0 == "#" }).count
+        if run > 0, run == text.count || text.dropLast(run).last == " " { text.removeLast(run) }
         return text.trimmingCharacters(in: .whitespaces)
     }
 }
@@ -629,9 +647,19 @@ enum StreamStabilizer {
     private static func singleAsterisks(in text: String) -> Int {
         var n = 0
         var run = 0
-        for c in text {
-            if c == "*" { run += 1 } else { n += run % 2; run = 0 }
+        var before: Character? = nil
+        let chars = Array(text)
+        for (i, c) in chars.enumerated() {
+            if c == "*" {
+                if run == 0 { before = i > 0 ? chars[i - 1] : nil }
+                run += 1
+                continue
+            }
+            // A lone * with space on both sides (a "* " bullet, "4 * 5") can't open or close emphasis.
+            if run % 2 == 1, (before == nil || before!.isWhitespace), c.isWhitespace { run -= 1 }
+            n += run % 2; run = 0
         }
+        if run % 2 == 1, before == nil || before!.isWhitespace { run -= 1 }
         return n + run % 2
     }
 }

@@ -915,6 +915,16 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
     a mention); a finished reply's unclosed fence counts as complete (Copy/Run show); code runs are keyed
     by block position and answer too; Regenerate/Resend/Edit keep the composer's draft and staged files
     (`sendKeepingDraft`); search is an overlay (an edit survives ⌘K) and ⌘. works anywhere in the panel.
+  - **QA round 2, 17 more** (`ChatRound2RegressionTests`, `MarkdownRound2RegressionTests`): the model's
+    history skips errors, "(Stopped.)" and Lasso's own notes (`ChatMessage.isAnswer`, `isLocalNote`, both
+    saved, with `isError`); a bare /command never runs on them (`lastReplyText`); deleting every message
+    deletes the file; /clear resets the title, staged files and source state; Ask AI chats save at once;
+    a staged file counts for New chat; Regenerate of a /command keeps the draft. Rendering: a `<think>`
+    inside code isn't reasoning (`splitReasoning`, `nextThoughtOpen`); `$`/`\(` inside `inline code`
+    aren't math; a fence under a list item drops the item's indent; streaming adds no stray `*` after
+    a bullet or "4 * 5"; text after `$$…$$` on its line is kept; "## Learning C#" keeps its #; CRLF text
+    parses; text copied from Pages/Word pastes as text, not its PDF picture. The edit box: Return sends,
+    Shift-Return newline, Esc cancels the edit.
 - **The chat's MLX menu lists the models you have (0.29.1).** It read only the Hugging Face cache, so a
   model in `~/models` or LM Studio's folder (the one chosen in Settings) was missing, and an embedding
   model downloaded for memory (bge) was offered as a chat model. `ChatController.mlxModels` now joins the

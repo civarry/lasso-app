@@ -1096,6 +1096,16 @@ struct MessageBubble: View {
                 .textFieldStyle(.plain)
                 .lineLimit(1...10)
                 .focused($editorFocused)
+                // Like the message box: Return sends, Shift-Return is a new line, Esc cancels the edit
+                // (not the whole chat, which the panel's Esc would close).
+                .onKeyPress(.escape) { editing = false; return .handled }
+                .onKeyPress(.return, phases: .down) { press in
+                    if press.modifiers.contains(.shift) || press.modifiers.contains(.option) { return .ignored }
+                    let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !text.isEmpty, !chat.active.isStreaming else { return .handled }
+                    chat.submitEdit(message.id, newText: draft); editing = false
+                    return .handled
+                }
                 .padding(8)
                 .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 1))

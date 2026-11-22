@@ -40,6 +40,17 @@ enum MathText {
     /// content looks like math. The `$` guard matters — "it costs $5 to $10 per run" is prose, and
     /// treating it as math would silently mangle the sentence.
     static func rewriteInline(_ text: String) -> String {
+        // `code` spans stay as written ("Set `$JAVA_HOME`", a regex with `\(`): only the text between
+        // them is rewritten.
+        let pieces = text.split(separator: "`", omittingEmptySubsequences: false)
+        guard pieces.count > 2 else { return rewriteMath(text) }
+        return pieces.enumerated().map { index, piece in
+            // Even pieces are outside backticks; an unclosed last span stays text too.
+            index % 2 == 0 && !(index == pieces.count - 1 && pieces.count % 2 == 0) ? rewriteMath(String(piece)) : String(piece)
+        }.joined(separator: "`")
+    }
+
+    private static func rewriteMath(_ text: String) -> String {
         var out = rewriteSpans(text, open: "\\(", close: "\\)") { _, _ in true }
         out = rewriteSpans(out, open: "$", close: "$", accept: isMathDollarSpan)
         return out
