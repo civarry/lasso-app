@@ -116,6 +116,7 @@ final class PackageHotkeys {
                 case .text(let t): .text(t)
                 case .url(let u): .text(u.absoluteString)
                 case .file(let u): .text(PackageOutput.shortPath(u))
+                case .console(let c): .text(c.text)
                 }
                 FloatingPanelController.shared.present(
                     AnyView(FloatingResultView(title: command.title, result: shown,

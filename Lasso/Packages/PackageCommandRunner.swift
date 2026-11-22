@@ -39,6 +39,8 @@ enum PackageCommandResult: Sendable {
     case url(URL)
     /// A file a script saved, in `~/LassoWorkspace/<package>/` (`file` and `image` output).
     case file(URL)
+    /// What a code block's console shows (a `code` command's script).
+    case console(PackageScript.Console)
 }
 
 /// Runs a package's non-search command (`prompt` or `http`). Search commands go through
@@ -66,8 +68,12 @@ enum PackageCommandRunner {
     /// Markers around text Lasso hands a model as content (what you lassoed, a reply, highlighted text).
     nonisolated static let fence = SourceCore.fence
 
+    /// `progress` gets the script's `progress:` lines (a code block's console shows them); without it,
+    /// they show in the status HUD. `extra` adds fields to a script's standard input.
     static func run(_ entry: PackageRegistry.Entry, _ command: PackageCommand, input: PackageInput,
-                    intelligence: IntelligenceCoordinator = .shared) async throws -> PackageCommandResult {
+                    intelligence: IntelligenceCoordinator = .shared, extra: [String: String] = [:],
+                    action: [String: String]? = nil,
+                    progress custom: (@Sendable (String) -> Void)? = nil) async throws -> PackageCommandResult {
         if command.input.contains(.text), (input.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw RunError.nothingToWorkOn
         }
@@ -84,14 +90,16 @@ enum PackageCommandRunner {
             return .text(text)
         case .script(let run):
             guard let places = entry.places else { throw PackageScript.RunError.missing(run.path) }
-            var request = PackageScript.Request(command: command.id, stdin: PackageScript.stdin(entry, command, input: input),
+            var fields: [String: Any] = extra
+            if let action { fields["action"] = action }
+            var request = PackageScript.Request(command: command.id, stdin: PackageScript.stdin(entry, command, input: input, extra: fields),
                                                 secrets: PackageScript.secrets(entry), run: run, unsandboxed: entry.fullAccess)
             if command.input.contains(.image), let png = input.image { request.inputFiles["capture.png"] = png }
             // "progress: …" lines show while it runs.
             let progress: @Sendable (String) -> Void = { line in
                 Task { @MainActor in StatusHUD.shared.show(icon: "", text: String(line.prefix(80)), spinner: true) }
             }
-            switch try await PackageScript.run(request, places: places, progress: command.output == .markdown ? nil : progress) {
+            switch try await PackageScript.run(request, places: places, progress: custom ?? (command.output == .markdown ? nil : progress)) {
             case .text(let text):
                 guard !text.isEmpty else { throw RunError.empty }
                 return .text(String(text.prefix(command.output == .markdown ? 4000 : 100_000)))
@@ -100,6 +108,7 @@ enum PackageCommandRunner {
             case .results(let list): return .text(list.compactMap { $0["title"] }.joined(separator: "\n"))
             case .source(let reply): return .text(reply.results.compactMap { $0["title"] }.joined(separator: "\n"))
             case .describe(let about, _): return .text(about)
+            case .console(let console): return .console(console)
             }
         case .prompt(let run):
             let (prompt, _) = promptText(run, values: values(entry, input), text: input.text)

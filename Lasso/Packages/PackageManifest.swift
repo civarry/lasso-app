@@ -50,7 +50,7 @@ struct PackageSetting: Sendable, Equatable {
 }
 
 struct PackageCommand: Sendable, Equatable {
-    enum Surface: String, Sendable, CaseIterable { case toolbar, send, slash, tool, search, hotkey, event }
+    enum Surface: String, Sendable, CaseIterable { case toolbar, send, slash, tool, search, hotkey, event, code }
     enum Input: String, Sendable, CaseIterable { case text, image, source, query, args, table, lines }
     /// What an `event` command runs on: after a capture is read, or when a chat reply is finished.
     enum Event: String, Sendable, CaseIterable { case capture, reply }
@@ -85,6 +85,8 @@ struct PackageCommand: Sendable, Equatable {
     var hook: Hook? = nil
     /// A `source/1` command that judges its own results' relevance, instead of Lasso's word gate.
     var ranks: Bool = false
+    /// For the `code` surface: the code block languages it's offered on ("python", "py").
+    var languages: [String] = []
 
     enum Hook: String, Sendable, CaseIterable {
         /// A search command that gets the user's message as typed, the previous turn and the date, and
@@ -491,7 +493,7 @@ private struct Reader {
 
     mutating func command(_ o: [String: Any], at path: String, hosts: [String], settings: [PackageSetting]) -> PackageCommand? {
         onlyKnown(o, ["id", "title", "symbol", "surfaces", "input", "when", "run", "output", "tool", "test", "howTo", "on",
-                      "hook", "ranks"], at: path)
+                      "hook", "ranks", "languages"], at: path)
         var hook: PackageCommand.Hook?
         if let raw = o["hook"] {
             if let name = raw as? String, let known = PackageCommand.Hook(rawValue: name) { hook = known }
@@ -531,7 +533,25 @@ private struct Reader {
                 }
                 surfaces.append(surface)
             }
-        } else { problem(join(path, "surfaces"), "Required: a list of where the command appears.") }
+        } else if let list = o["surfaces"] as? [Any], list.isEmpty {
+            // No surface: it runs only from a button in one of its own package's results (Install numpy).
+            if (o["run"] as? [String: Any])?["script"] == nil {
+                problem(join(path, "surfaces"), "Only a script command can have no surfaces: it runs from its package's own buttons.")
+            }
+        } else { problem(join(path, "surfaces"), "Required: a list of where the command appears, or [] for one its own buttons run.") }
+        // Code blocks: the languages it's offered on, and only there.
+        var languages: [String] = []
+        if surfaces.contains(.code) {
+            if surfaces.count > 1 { problem(join(path, "surfaces"), "A code command can't appear anywhere else.") }
+            if let list = o["languages"] as? [String], !list.isEmpty, list.count <= 10 {
+                languages = list.map { $0.lowercased() }
+                if let bad = languages.first(where: { !PackageValidator.matches($0, "[a-z0-9+#._-]{1,20}") }) {
+                    problem(join(path, "languages"), "\"\(bad)\" isn't a code block language (like python or js).")
+                }
+            } else { problem(join(path, "languages"), "Required with the \"code\" surface: the code block languages, like [\"python\", \"py\"].") }
+        } else if o["languages"] != nil {
+            problem(join(path, "languages"), "Only for commands with the \"code\" surface.")
+        }
         let isSearch = surfaces.contains(.search)
         if isSearch, surfaces.count > 1 { problem(join(path, "surfaces"), "A search command can't appear anywhere else.") }
         if hook == .source, !isSearch { problem(join(path, "hook"), "\"source/1\" is for search commands.") }
@@ -592,6 +612,10 @@ private struct Reader {
             if on.contains(.reply), let bad = inputs.first(where: { [.image, .lines, .table, .source].contains($0) }) {
                 problem(join(path, "input"), "A reply has only its text: \"\(bad.rawValue)\" comes from a capture.")
             }
+        }
+        if surfaces.contains(.code) {
+            if inputs != [.text] { problem(join(path, "input"), "A code command takes [\"text\"]: the code block.") }
+            if output != .markdown { problem(join(path, "output"), "A code command's output is \"markdown\": it shows in the code block.") }
         }
         if isSearch {
             if inputs != [.query] { problem(join(path, "input"), "A search command takes [\"query\"].") }
@@ -675,7 +699,7 @@ private struct Reader {
         guard let output else { return nil }
         return PackageCommand(id: id, title: title, symbol: symbol, surfaces: surfaces, input: inputs, output: output,
                               runner: runner, when: when, testQuery: testQuery, testText: testText,
-                              tool: tool, howTo: howTo, on: on, testArgs: testArgs, hook: hook, ranks: ranks)
+                              tool: tool, howTo: howTo, on: on, testArgs: testArgs, hook: hook, ranks: ranks, languages: languages)
     }
 
     mutating func tool(_ raw: Any, at path: String) -> PackageTool? {

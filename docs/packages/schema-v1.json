@@ -212,7 +212,7 @@
           },
           "surfaces": {
             "type": "array",
-            "minItems": 1,
+            "minItems": 0,
             "items": {
               "enum": [
                 "toolbar",
@@ -221,9 +221,11 @@
                 "tool",
                 "search",
                 "hotkey",
-                "event"
+                "event",
+                "code"
               ]
-            }
+            },
+            "description": "Where it appears; [] for a script its package's own buttons run (Lasso 0.28)"
           },
           "input": {
             "type": "array",
@@ -533,6 +535,16 @@
           "ranks": {
             "type": "boolean",
             "description": "With source/1: the command judges its results' relevance instead of Lasso's word gate"
+          },
+          "languages": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z0-9+#._-]{1,20}$"
+            },
+            "minItems": 1,
+            "maxItems": 10,
+            "description": "For the code surface: the code block languages it's offered on (Lasso 0.28)"
           }
         }
       }

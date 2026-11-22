@@ -83,6 +83,7 @@ struct PackageStatus: Equatable {
                 case .hotkey: add("Hotkey")
                 case .tool: add("Tool")
                 case .event: add("Runs by itself")
+                case .code: add("Code blocks")
                 default: break
                 }
             }
@@ -541,6 +542,7 @@ struct PackagePermissionsList: View {
     /// One sentence for where a command appears.
     static func doesLine(_ command: PackageCommand) -> String {
         if command.hook == .describe { return "\(command.title): tells Lasso what's in your folder, so it knows when to look there" }
+        if command.surfaces.isEmpty { return "\(command.title): runs when you click its button in one of its own results" }
         if command.surfaces.contains(.search) { return PackageStatus.roleLine(command) }
         var places: [String] = []
         for surface in command.surfaces {
@@ -554,6 +556,8 @@ struct PackagePermissionsList: View {
             case .event:
                 places.append("by itself on " + command.on.map { $0 == .capture ? "every capture" : "every chat reply" }.joined(separator: " and ")
                               + ", once you allow it")
+            case .code:
+                places.append("as a button on \(command.languages.first ?? "") code blocks in chat")
             case .tool:
                 places.append("as a tool the chat model and the Agent can use"
                     + (PackageToolCall.needsApproval(command) ? ", asking you first" : ""))

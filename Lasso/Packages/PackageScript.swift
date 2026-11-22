@@ -31,6 +31,28 @@ enum PackageScript {
         case source(SourceReply)
         /// A `describe/1` command's answer: the What's in it line and picking words.
         case describe(about: String, words: [String])
+        /// A code command's answer: what to show in the code block's console.
+        case console(Console)
+    }
+
+    /// What a code block's console shows: the text, an image the script made, and up to 3 buttons.
+    struct Console: Sendable, Equatable {
+        var text: String
+        var image: URL?
+        var actions: [Action]
+        var failed: Bool
+
+        /// A button under the console: run another of the package's commands (Install numpy, then run
+        /// again), or send a chat message (Fix it). Only the user's click runs it.
+        struct Action: Sendable, Equatable, Identifiable {
+            var id: String { title }
+            var title: String
+            var command: String?
+            var input: [String: String]
+            var rerun: Bool
+            var chat: String?
+        }
+        static let maxActions = 3
     }
 
     /// What a `source/1` command answers (docs/PACKAGE-HOOKS.md). Lasso applies its limits afterwards.
@@ -182,6 +204,25 @@ enum PackageScript {
             let list = (object["results"] as? [[String: Any]] ?? []).map { $0.compactMapValues { $0 as? String } }
             return .source(SourceReply(status: status, results: list, searched: clean("searched", SourceReply.maxSearched),
                                        ask: clean("ask", SourceReply.maxAsk), note: clean("note", SourceReply.maxNote)))
+        }
+        if let text = object["console"] as? String {
+            var image: URL?
+            if let path = object["image"] as? String {
+                guard case .file(let url) = try parse(Data(try JSONSerialization.data(withJSONObject: ["path": path])),
+                                                       places: places, tmp: tmp, id: id) else { throw RunError.badOutput("image isn't a file.") }
+                image = url
+            }
+            let actions = (object["actions"] as? [[String: Any]] ?? []).prefix(Console.maxActions).compactMap { a -> Console.Action? in
+                guard let title = (a["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else { return nil }
+                let command = a["command"] as? String
+                let chat = (a["chat"] as? String).map { String($0.prefix(4_000)) }
+                guard (command == nil) != (chat == nil) else { return nil }
+                return Console.Action(title: String(title.prefix(30)), command: command,
+                                      input: (a["input"] as? [String: Any] ?? [:]).compactMapValues { "\($0)" },
+                                      rerun: a["rerun"] as? Bool ?? false, chat: chat)
+            }
+            return .console(Console(text: String(text.prefix(20_000)), image: image, actions: Array(actions),
+                                    failed: object["failed"] as? Bool ?? false))
         }
         if let about = object["about"] as? String {
             let words = (object["words"] as? [String] ?? []).map { $0.lowercased() }.filter { !$0.isEmpty }

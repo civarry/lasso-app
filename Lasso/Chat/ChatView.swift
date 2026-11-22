@@ -1269,6 +1269,9 @@ struct MessageBubble: View {
                         // hover ⋯ menu below. The Activity disclosure is a separate view, unaffected.
                         MarkdownView(text: message.text, fontSize: fontSize, selectable: true,
                                      streaming: message.isStreaming)
+                            // A finished reply's code blocks get packages' buttons (Run).
+                            .environment(\.codeBlockContext, isUser || message.isStreaming ? nil
+                                         : CodeBlockContext(message: message.id, reply: message.text))
                             .foregroundStyle(message.isError ? Color.orange : Color.primary)
                             .fixedSize(horizontal: false, vertical: true)
                     }

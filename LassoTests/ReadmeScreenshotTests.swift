@@ -252,6 +252,33 @@ struct ReadmeScreenshotTests {
                         ScrollView { PackagePage(id: "notes-hooks", localOnly: false, removed: {}) }
                             .background(SettingsPalette.pageFill))
 
+        // 0.28: a Run button on code blocks (a package's `code` command), and the run in the block.
+        try store.install(Data("""
+            {"lasso": 1, "id": "python-runner", "version": "1.2.0", "name": "Run Python", "summary": "Runs Python from chat.", "author": "Lasso",
+             "commands": [{"id": "block", "title": "Run", "symbol": "play", "surfaces": ["code"], "languages": ["python"], "input": ["text"],
+                           "output": "markdown", "run": {"script": {"path": "scripts/run.py"}}},
+                          {"id": "install", "title": "Install packages", "surfaces": [], "input": ["text"], "output": "markdown",
+                           "run": {"script": {"path": "scripts/install.py", "network": true}}}]}
+            """.utf8), files: ["scripts/run.py": Data("#!/bin/sh\n".utf8), "scripts/install.py": Data("#!/bin/sh\n".utf8)], origin: .catalog)
+        let loopCode = "for i in range(5):\n    print(f\"Hello, iteration {i}\")"
+        let numpyCode = "import numpy as np\nprint(np.arange(5) * 2)"
+        let fresh = "print(sum(range(10)))"
+        let ranReply = ChatMessage(role: .assistant, text: "Here's a simple loop:\n\n```python\n\(loopCode)\n```")
+        let numpyReply = ChatMessage(role: .assistant, text: "With numpy:\n\n```python\n\(numpyCode)\n```")
+        let freshReply = ChatMessage(role: .assistant, text: "```python\n\(fresh)\n```")
+        func run(_ code: String, lines: [String], console: PackageScript.Console, elapsed: Double) -> CodeRunner.Run {
+            CodeRunner.Run(title: "Run", lines: lines, console: console, error: nil, running: false, started: Date(), elapsed: elapsed,
+                           packageID: "python-runner", commandID: "block", code: code, language: "python", reply: code)
+        }
+        CodeRunner.shared.runs[CodeRunner.key(ranReply.id, loopCode)] = run(loopCode, lines: ["Run started", "Initializing environment", "Running code"],
+            console: .init(text: (0..<5).map { "Hello, iteration \($0)" }.joined(separator: "\n"), image: nil, actions: [], failed: false), elapsed: 0.605)
+        CodeRunner.shared.runs[CodeRunner.key(numpyReply.id, numpyCode)] = run(numpyCode, lines: ["Run started", "Initializing environment", "Running code"],
+            console: .init(text: "ModuleNotFoundError: No module named 'numpy'\nnumpy isn't installed. Install it in a temporary environment that only Run Python uses?",
+                           image: nil, actions: [.init(title: "Install numpy", command: "install", input: ["packages": "numpy"], rerun: true, chat: nil)], failed: true), elapsed: 0.041)
+        sourcesChat.messages = [ChatMessage(role: .user, text: "can you run a simple for loop in python?"), ranReply, numpyReply, freshReply]
+        try await shoot("code-run", CGSize(width: 440, height: 760), ChatView().background(Color(white: 0.12)))
+        CodeRunner.shared.runs = [:]
+
         // Table to CSV: how to use it, said plainly.
         try store.install(Data("""
             {"lasso": 1, "id": "table-to-csv", "version": "1.1.0", "name": "Table to CSV", "summary": "Turns a table you lasso into a CSV file.",
