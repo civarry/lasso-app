@@ -150,6 +150,16 @@ struct ReadmeScreenshotTests {
         catalog.checked = Date()
         try await shoot("browse", CGSize(width: 520, height: 600),
                         PackageBrowseSheet(dismiss: {}, added: { _ in }).background(SettingsPalette.pageFill))
+        // 0.27.1: an update on the package's own page (Study tools 1.0.0 is installed, the catalog has 1.1.0).
+        try await shoot("package-update", CGSize(width: 520, height: 300),
+                        ScrollView { PackagePage(id: "study-tools", localOnly: false, removed: {}) }
+                            .background(SettingsPalette.pageFill))
+        // And one this Lasso can't run yet.
+        if let i = catalog.entries.firstIndex(where: { $0.id == "study-tools" }) { catalog.entries[i].minLasso = "9.0.0" }
+        try await shoot("package-update-needs-lasso", CGSize(width: 520, height: 300),
+                        ScrollView { PackagePage(id: "study-tools", localOnly: false, removed: {}) }
+                            .background(SettingsPalette.pageFill))
+        if let i = catalog.entries.firstIndex(where: { $0.id == "study-tools" }) { catalog.entries[i].minLasso = nil }
         // A source with its folder chosen: its page, and a chat that looked in it.
         let shotNotes = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appending(path: "Lasso README/Notes", directoryHint: .isDirectory)

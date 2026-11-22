@@ -32,6 +32,8 @@ safety rules (what reaches the model, what leaves your Mac).
   example" stays on the same subject) and reads dates ("what did we decide last week?").
 - **Steps say what reached the model:** "Looked in My notes · sent 2 passages".
 - **Go back:** after a package update, its page offers the version you had before.
+- **0.27.1: updates on the package's own page.** A package with a newer version says so in the list and
+  offers **Update…** on its page, or says which Lasso it needs first; no trip to Browse.
 - For package authors: the `source/1` and `describe/1` hooks, and `lasso-pkg replay` to try a source on
   saved chat turns ([guide](docs/PACKAGES.md#hooks-a-package-takes-over-a-step)).
 

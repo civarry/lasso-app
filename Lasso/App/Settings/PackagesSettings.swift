@@ -212,6 +212,8 @@ struct PackagesHub: View {
                                focus: catalog.requested)
         }
         .onAppear { if catalog.requested != nil { browsing = true }; store.watchDeveloperFolders() }
+        // So a row can say "Version 1.5.0 available" without a trip to Browse.
+        .task { if !localOnly, catalog.state != .loading, catalog.isStale { await catalog.refresh() } }
         .onChange(of: catalog.requested) { _, id in if id != nil { browsing = true } }
     }
 
@@ -243,8 +245,14 @@ struct PackagesHub: View {
     }
 
     private func row(_ item: PackageStore.Installed) -> some View {
-        PackageRow(icon: PackageIcon(package: item.package), name: item.package.name,
-                   status: PackageStatus.of(item, localOnly: localOnly),
+        var status = PackageStatus.of(item, localOnly: localOnly)
+        // An update the catalog has, said on the row too (opening it shows Update…).
+        if !status.needsAction, let entry = PackageCatalog.shared.updates([item]).first?.entry {
+            status.text = "Version \(entry.version) available · " + status.text
+            status.needsAction = true
+        }
+        return PackageRow(icon: PackageIcon(package: item.package), name: item.package.name,
+                   status: status,
                    isOn: Binding(get: { item.enabled }, set: { store.setEnabled(item.id, $0) }),
                    open: { openPackage(item.id) })
     }
@@ -979,6 +987,10 @@ struct PackagePage: View {
     let removed: () -> Void
 
     @State private var reviewing = false
+    @State private var updateReview: (data: Data, files: PackageFiles.Files)?
+    @State private var fetchingUpdate = false
+    @State private var updateProblem: String?
+    private var catalog: PackageCatalog { .shared }
     @State private var goBackError: String?
     @State private var confirmRemove = false
     @State private var confirmFullAccess = false
@@ -1010,6 +1022,51 @@ struct PackagePage: View {
         .sheet(isPresented: $reviewing) {
             AddPackageSheet(dismiss: { reviewing = false }, added: { _ in reviewing = false }, reviewing: id)
         }
+        .sheet(isPresented: Binding(get: { updateReview != nil }, set: { if !$0 { updateReview = nil } })) {
+            if let update = updateReview {
+                AddPackageSheet(dismiss: { updateReview = nil }, added: { _ in updateReview = nil }, reviewing: nil,
+                                preload: (update.data, .catalog), preloadFiles: update.files)
+            }
+        }
+        // So the page knows about an update without a trip to Browse.
+        .task { if !localOnly, catalog.state != .loading, catalog.isStale { await catalog.refresh() } }
+    }
+
+    /// A newer version in the catalog, on the package's own page: Update…, or what it needs first.
+    @ViewBuilder private func updateCard(_ item: PackageStore.Installed) -> some View {
+        if let entry = catalog.updates([item]).first?.entry {
+            SettingsCard(title: "", footnote: updateProblem) {
+                if catalog.isTooNew(entry) {
+                    SettingsRow("Version \(entry.version) is available", symbol: "arrow.down.circle",
+                                caption: "It needs Lasso \(entry.minLasso ?? "") or newer. Update Lasso first, then come back here.") {
+                        Button("Check for Lasso Updates") { AppUpdater.shared.checkForUpdates() }.buttonStyle(.bordered)
+                    }
+                } else {
+                    SettingsRow("Version \(entry.version) is available", symbol: "arrow.down.circle",
+                                caption: "You have \(item.package.version). You'll see what changed before it updates.") {
+                        if fetchingUpdate {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Button("Update…") { getUpdate(entry) }.buttonStyle(.borderedProminent)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func getUpdate(_ entry: PackageCatalog.Entry) {
+        fetchingUpdate = true
+        updateProblem = nil
+        Task {
+            defer { fetchingUpdate = false }
+            do {
+                let package = try await catalog.download(entry)
+                updateReview = (package.manifest, package.files)
+            } catch {
+                updateProblem = error.localizedDescription
+            }
+        }
     }
 
     /// The package's search command as a source, with its settings now.
@@ -1023,6 +1080,7 @@ struct PackagePage: View {
     @ViewBuilder private func content(_ item: PackageStore.Installed) -> some View {
         let package = item.package
         header(package, origin: item.origin)
+        if item.origin != .developer, !item.changedOnDisk { updateCard(item) }
         if !item.changedOnDisk { PackageHowToCard(package: package) }
         if item.changedOnDisk {
             SettingsCard(title: "") {
