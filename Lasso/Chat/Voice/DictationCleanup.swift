@@ -20,7 +20,7 @@ enum DictationCleanup {
     /// Words said twice on purpose ("very very", "had had", "no no"): never collapsed.
     static let intentionalRepeats: Set<String> = [
         "had", "that", "very", "really", "so", "no", "yes", "bye", "ha", "now", "please", "too", "far",
-        "many", "much", "more", "again", "over", "on", "out", "by", "go", "blah", "knock", "night",
+        "many", "much", "more", "again", "over", "on", "out", "by", "go", "blah", "knock", "night", "is",
     ]
 
     /// Removes hesitations and accidental adjacent repeats ("I I think", "the the build"), and tidies
@@ -28,13 +28,19 @@ enum DictationCleanup {
     static func tidy(_ text: String) -> String {
         var s = text
         // Hesitations, with the comma that usually follows ("Um, so" → "So").
-        s = replacing(#"(?i)\b(?:um+|uh+|uhm|erm?|hmm+|hm)\b,?[ \t]*"#, in: s) { match, ns in
+        // Lowercase or capitalised only: "ER", "UM", "HM" in capitals are acronyms, not hesitations.
+        s = replacing(#"\b(?:[Uu]m+|[Uu]h+|[Uu]hm|[Ee]rm?|[Hh]mm+|[Hh]m)\b,?[ \t]*"#, in: s) { match, ns in
             atSentenceStart(match.range.location, in: ns) ? "\u{1}" : ""
         }
         // Accidental repeats separated only by spaces ("the the" → "the"), skipping intentional ones.
         s = replacing(#"(?i)\b([\p{L}']+)(?:[ \t]+\1\b)+"#, in: s) { match, ns in
             let word = ns.substring(with: match.range(at: 1))
-            return intentionalRepeats.contains(key(word)) ? ns.substring(with: match.range) : word
+            let whole = ns.substring(with: match.range)
+            // Capitalised every time ("Bora Bora", "Baden Baden"): a name, said on purpose.
+            // (Not "I I think": one letter is the pronoun.)
+            let names = word.count > 1
+                && whole.split(whereSeparator: { $0 == " " || $0 == "\t" }).allSatisfy { $0.first?.isUppercase == true }
+            return intentionalRepeats.contains(key(word)) || names ? whole : word
         }
         // Spacing left behind: doubled spaces, a space before punctuation, a dangling leading comma.
         s = replacing(#"[ \t]{2,}"#, in: s) { _, _ in " " }

@@ -894,6 +894,141 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
 - A cloud-embedding connection **Test** button in Settings (today: the live `probeEmbedding` status row covers most of it).
 
 ## Change log
+- **Chat catches up with the big chat apps (0.30).** From a side-by-side with ChatGPT, Claude and Gemini:
+  - **Regenerate keeps the earlier answers.** `regenerate` carries the replaced answer
+    (`Conversation.carriedVersions`; an error reply is dropped) into the new reply's `ChatMessage.versions`;
+    the action row shows ‹ n/N › and `ChatController.showVersion` swaps the shown answer (the model's
+    history follows it; derived memory is reset). Saved in `MessageDTO.versions`/`versionIndex`
+    (optional, older files decode). Later turns of a middle reply are still dropped, and edits don't branch.
+  - **Search chats** (⌘K, or the conversations menu with 2+ chats): `ChatSearch.results` matches every
+    word, accent- and case-insensitive, titles first then message text with a snippet; `ChatSearchView`
+    replaces the chat area until a result is opened or Esc.
+  - **Stop with ⌘. or Esc** while a reply streams (Esc only when no / or @ list is open).
+  - **QA pass, 15 bugs fixed** (each with a regression test in `ChatFlowRegressionTests` /
+    `ChatUIRegressionTests`): search's snippet crashed on text that folds longer ("ß"); Regenerate's
+    earlier answers are taken at the top of `send` (no leak into a later reply; package replies keep them
+    too); versions carry `isError`, caption, Agent flag, steps and passages; Regenerate only on a reply to
+    the message right before it (`canRegenerate`, not /help); a closed chat is never saved again
+    (`persist` checks `sessions`); a stopped package command isn't an error and its task no longer clears
+    a newer turn's busy flag (`turnToken`); `finishStreaming`/`finishError` skip cancelled turns; Esc in
+    the chat closes the chat, not an open result card; "thanks @bob" sends (a word naming no source isn't
+    a mention); a finished reply's unclosed fence counts as complete (Copy/Run show); code runs are keyed
+    by block position and answer too; Regenerate/Resend/Edit keep the composer's draft and staged files
+    (`sendKeepingDraft`); search is an overlay (an edit survives ⌘K) and ⌘. works anywhere in the panel.
+  - **QA round 2, 17 more** (`ChatRound2RegressionTests`, `MarkdownRound2RegressionTests`): the model's
+    history skips errors, "(Stopped.)" and Lasso's own notes (`ChatMessage.isAnswer`, `isLocalNote`, both
+    saved, with `isError`); a bare /command never runs on them (`lastReplyText`); deleting every message
+    deletes the file; /clear resets the title, staged files and source state; Ask AI chats save at once;
+    a staged file counts for New chat; Regenerate of a /command keeps the draft. Rendering: a `<think>`
+    inside code isn't reasoning (`splitReasoning`, `nextThoughtOpen`); `$`/`\(` inside `inline code`
+    aren't math; a fence under a list item drops the item's indent; streaming adds no stray `*` after
+    a bullet or "4 * 5"; text after `$$…$$` on its line is kept; "## Learning C#" keeps its #; CRLF text
+    parses; text copied from Pages/Word pastes as text, not its PDF picture. The edit box: Return sends,
+    Shift-Return newline, Esc cancels the edit.
+  - **QA round 3, 7 more** (`ChatRound3RegressionTests`): saves and deletes of conversations run on one
+    serial queue (`ConversationStore.enqueue`), so a save queued before Close can't bring a closed chat
+    back; closing or clearing a chat denies its waiting tool cards at once (`denyWaitingTools`, not after
+    280 s); chat may call the over-budget tools it's offered (`PackageToolCall.call(agent:)`); the Agent's
+    history follows the same skip rule as the model's; an image-only Agent reply is an answer
+    ("(Showed an image.)"); only the newest image turn's images are re-sent, each counted
+    (`ChatContextBuilder.imageCost`); with your own Hermes, @-source passages always ask first.
+  - **Memory and speed checks** (`LassoTests/Memory`, `LassoTests/Performance`): a closed or stopped
+    conversation is freed; a closed, cleared or evicted chat's code-run outputs are dropped
+    (`CodeRunner.forget`, they stayed for the whole session before); budgets for parsing a long reply,
+    searching 12,000 messages and building the model's context. Regression tests live in
+    `LassoTests/Regression`, one file per area.
+  - **Opening the chat or a card no longer hands focus to Settings.** Lasso is rarely the active app, so
+    its key/main requests were ignored until activation finished, and AppKit then gave key and main to
+    an open Settings window. `AppActivation.bringForward` asks again once `didBecomeActive` arrives
+    (the last window asked for, if still visible). `PanelActivationTests` had been failing locally for
+    this reason, read as a test-environment quirk; it fails without the fix and passes with it.
+  - **QA round 4, capture side, 8 fixed** (`Regression/CaptureRegressionTests`): closing a result card
+    stops its work: `FloatingPanelController.close` drops the window's content (ordering out kept the
+    SwiftUI views and their `.task`s running: a Summarize stream, Identify's web search) and ends the
+    card's `CardLifetime`, which the stream reader is adopted into; the capture overlay drops its
+    content too. The pre-pass is one cancellable task per selection with a generation check (an older
+    OCR can't overwrite a newer selection, or reach a torn-down session); a second hotkey press before
+    the screen grab finishes can't start a second session (`isStarting`) or leak an Esc monitor; Esc
+    while an action runs shows no card and no "Error: cancelled"; a new selection leaves inline
+    translate; Lens checks its opt-in and local-only mode where the upload starts. Translate: Spanish
+    into English is no longer "already in English" (same-script languages are told apart), and
+    Traditional into Simplified Chinese translates when the text actually differs.
+  - **QA round 5, packages, 5 fixed** (`Regression/PackageSecurityRegressionTests`): two sandbox
+    escapes closed. A script's result could link to a program it wrote (`notes.command`), and a click
+    ran it in Terminal outside the sandbox: file links must be in a folder the user picked and not a
+    program (`PackageSearch.openableFile`). A console picture named `chart.command` opened in Terminal
+    from "Open in Preview": pictures must be named as pictures, and Open in Preview opens Preview
+    (`ImageViewer.openInPreviewApp`). A `.lassopkg` can't carry `.`/hidden names or case twins (one
+    could swap the reviewed manifest). Turn On after a review approves only the manifest the review
+    showed (`approveChange(reviewed:)`). Remove forgets every setting, secret and hotkey of every
+    version (current, approved, previous), so a later package with the id starts empty. Go back clears
+    an old error. `PanelActivationTests` skip, saying why, while the screen is locked.
+  - **QA round 6, models and providers, 8 fixed** (`Regression/IntelligenceRegressionTests`): an Ollama
+    "-cloud" model (relayed to ollama.com) or a remote Ollama server isn't "on this Mac": `isLocal` is
+    false, Auto never picks one, and local-only refuses it in the provider. Anthropic: an `error`
+    event mid-stream throws (so the fallback tries another model) instead of ending empty; the last
+    tool round still sends `tools` with `tool_choice: none`, and a model that keeps calling tools
+    fails clearly. Gemini gets every system turn (memory, retrieval). Context windows: only the
+    selected model's own `/models` entry counts; the detected value resets when the provider or model
+    changes and is never used for Anthropic; MLX chat models read their real window
+    (`MLXProvider.chatContextTokens`, local folders too, 8,192 if unknown, not the embedding helper's
+    512). The updater waits for a result card's answer, Ask AI and an MLX download (`Busy`).
+  - **QA round 7, app shell and Settings, 7 fixed** (`Regression/AppShellRegressionTests`): recording a
+    shortcut in Settings turned Esc into a global hotkey (it re-enabled `.cancelCapture`); now only
+    the shortcuts it paused come back. Dictation: a cancel during start (Esc, closing the chat, Send)
+    wins over the start's awaits, so the mic doesn't come on anyway, and a cancel while finishing
+    isn't overwritten (session tokens); cleanup keeps acronyms (ER, UM, HM), names said twice ("Bora
+    Bora") and "is is". Keychain: a key that isn't saved is looked up once per launch, not on every
+    draw. Settings no longer puts back a model switched from the chat header when any other setting
+    changes (untouched fields adopt the live value). Not yet tested: the dictation and Settings fixes
+    (need a microphone or the Settings view's state).
+  - **QA round 7, a declined Keychain prompt, fixed** (`Regression/AppShellRegressionTests`): after the
+    saved-keys prompt was cancelled, `Keychain.set` dropped every key typed later without a word. Now a
+    save (and a delete) asks once more, since the user is there; if that's cancelled too it returns false,
+    writes nothing (a refused vault is never replaced) and Settings and a package's key field say so in
+    orange with Try again, keeping the typed value. Background reads still never ask again, and
+    `getMigrating` keeps the old copy until the move saved. Not tested: the Settings messages (view state).
+  - **Its four reviews** (`Regression/KeychainReviewRegressionTests`, `Keychain2…`, `Keychain3…`,
+    `Keychain4ReviewRegressionTests`). Tested: a package key read while the keys were closed shows "" and
+    that "" is never saved back over the real key; the Tavily/SerpApi migration never prompts, keeps the
+    old key until it's saved, isn't marked done while the old key couldn't be read, and never reinstalls
+    a package the user removed; uninstall is all or nothing: every key saved under the package's id goes
+    first, by account prefix (`Keychain.removeAll(prefix:)`, so also one a version dropped two updates
+    ago, and never another package's whose id extends it), in one write (one prompt at most), and if it
+    can't, nothing is removed and it returns false; a package with no keys in any version it still has
+    uninstalls without asking while the keys are closed; installing never touches keys (another build sharing the vault keeps
+    its key); a key saved after a refused removal stays; the test hook has its own launch state per task,
+    so a simulated refusal doesn't leak into suites running alongside. Not tested (view state, or no
+    isolated UserDefaults): Settings and package rows reload once the vault opens
+    (`Keychain.didOpenAfterRefusal`); the package page's "Couldn't remove it" alert; a model on another
+    connection isn't switched while its key is unknown, and the chat and translation card say why; vault
+    writes change memory only once the item is written and put the old contents back if the write
+    fails; Hermes doesn't cache an unknown key; a refused package row doesn't re-ask on every pause.
+  - **QA round 8, regressions from the earlier fixes, 10 fixed** (`Regression/ChatRound8RegressionTests`,
+    `MarkdownRound8RegressionTests`): Regenerate on a /command that can't run now keeps the exchange
+    (checked before anything is removed). Stop after a /help note mid-reply settles the real reply, and
+    the turn's history skips a note posted after it (`beforeTurn`). Reply versions carry their images
+    and thinking time. Saved chats keep `@` mentions, an Agent image's file path, and the pictures a
+    native-vision question sent (re-made from thumbnails, or a note that one was there). Delete, Delete
+    from here, Regenerate, Edit and Resend drop the removed replies' code runs; Clear history frees the
+    old chats, not the fresh one. Rendering: `$$` with text on its line is display math only when a later
+    line ends with `$$` (price tiers, bash's `$$`), and math never runs past a code fence; streaming
+    emphasis ignores asterisks inside `code`; a `<think>` inside a `~~~` fence stays code.
+    A reviewer then found 6 problems in those fixes, now fixed (`Regression/Round8ReviewRegressionTests`):
+    Regenerate's /command finds its exchange again by id (a delete during the check crashed or
+    duplicated it); `isInsideCode` tracks one open fence at a time (a `~~~` line inside a ``` block hid
+    later thinking); `$$` math accepts a closer followed by text and stays math while streaming, and
+    only `$$$` is refused; italic around code still closes mid-stream.
+    A second review found 7 more (`Regression/Round8bReviewRegressionTests`): `isInsideCode` now reads
+    fences line by line like the parser (same character, closer at least as long, so a ``` inside
+    `~~~` or a four-backtick fence no longer leaks later thinking) and ignores backticks inside fenced
+    blocks; a `$$` inside `code` isn't a closer; mid-stream, only a LaTeX-looking `$$` head stays math;
+    streaming emphasis treats a star as an opener only with text after it ("char* buf").
+- **The chat's MLX menu lists the models you have (0.29.1).** It read only the Hugging Face cache, so a
+  model in `~/models` or LM Studio's folder (the one chosen in Settings) was missing, and an embedding
+  model downloaded for memory (bge) was offered as a chat model. `ChatController.mlxModels` now joins the
+  cache, `MLXLocalModels.discovered()` and the chosen model, and drops any whose `config.json`
+  architectures aren't a text generator (`MLXLocalModels.isLanguageModel`).
 - **Pages in code blocks (0.29).** A code command's console answer can name a page (`"html"`: an
   .html or .svg file in its own folders, checked like `image`). The block shows it live in a WKWebView
   (`HTMLPreview.swift`), sized to its content (80 to 460 pt), with **Open larger** for a window

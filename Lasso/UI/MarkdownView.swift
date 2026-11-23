@@ -16,8 +16,10 @@ struct MarkdownView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(MarkdownParser.parse(text, streaming: streaming).enumerated()), id: \.offset) { _, block in
-                MarkdownBlockView(block: block, fontSize: fontSize, selectable: selectable)
+            let blocks = MarkdownParser.parse(text, streaming: streaming)
+            ForEach(Array(blocks.enumerated()), id: \.offset) { offset, block in
+                MarkdownBlockView(block: block, fontSize: fontSize, selectable: selectable,
+                                  codeIndex: blocks[..<offset].filter(\.isCode).count)
             }
         }
         // Propagate selection to every text block (paragraphs, lists, tables, code) — not just code.
@@ -34,6 +36,8 @@ private struct MarkdownBlockView: View {
     let block: MarkdownBlock
     let fontSize: CGFloat
     let selectable: Bool
+    /// Which code block of the reply this is, so two identical blocks keep their own runs.
+    var codeIndex = 0
 
     var body: some View {
         switch block {
@@ -52,7 +56,7 @@ private struct MarkdownBlockView: View {
 
         case .code(let language, let content, let closed):
             CodeBlockView(language: language, content: content, complete: closed,
-                          fontSize: fontSize, selectable: selectable)
+                          fontSize: fontSize, selectable: selectable, index: codeIndex)
 
         case .table(let table):
             if table.isDegenerate {
@@ -242,6 +246,7 @@ private struct CodeBlockView: View {
     let complete: Bool
     let fontSize: CGFloat
     let selectable: Bool
+    var index = 0
     @State private var copied = false
     /// After Run, the block shows its console; Code switches back. Unset: the console when there's a run.
     @State private var showRun: Bool?
@@ -249,7 +254,7 @@ private struct CodeBlockView: View {
     @Environment(\.codeBlockContext) private var context
     private var runner: CodeRunner { .shared }
 
-    private var key: String? { context.map { CodeRunner.key($0.message, content) } }
+    private var key: String? { context.map { CodeRunner.key($0.message, content, index: index, version: $0.version) } }
     private var run: CodeRunner.Run? { key.flatMap { runner.run($0) } }
     private var commands: [(entry: PackageRegistry.Entry, command: PackageCommand)] {
         context != nil && complete ? runner.commands(for: language) : []
@@ -485,4 +490,8 @@ private struct ThoughtDisclosure: View {
         }
         .disclosureGroupStyle(.automatic)
     }
+}
+
+extension MarkdownBlock {
+    var isCode: Bool { if case .code = self { true } else { false } }
 }

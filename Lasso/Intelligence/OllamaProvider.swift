@@ -12,7 +12,15 @@ struct OllamaProvider: IntelligenceProvider {
 
     var name: String { "Ollama · \(model)" }
     let isAppleOnDevice = false
-    let isLocal = true
+    /// On this Mac only when the model runs here: an Ollama "-cloud" model is relayed to ollama.com,
+    /// and a remote Ollama server is someone else's machine.
+    var isLocal: Bool { !OllamaModels.isCloud(model) && KeysRegistry.isLocalURL(baseURL.absoluteString) }
+
+    /// Local-only mode refuses a model that leaves the Mac, here where the request is made.
+    private var localOnlyRefusal: Error? {
+        PrivacyMode.localOnly && !isLocal
+            ? IntelligenceError.unavailable("\(model) runs off this Mac, and local-only mode is on.") : nil
+    }
 
     init(model: String = "qwen3:4b",
          baseURL: URL = OllamaEndpoint.baseURL,
@@ -95,6 +103,7 @@ struct OllamaProvider: IntelligenceProvider {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
+                    if let refusal = self.localOnlyRefusal { throw refusal }
                     var wire = self.wireMessages(messages)
                     let toolsWire: [[String: Any]] = tools.map {
                         ["type": "function",
@@ -228,7 +237,8 @@ struct OllamaProvider: IntelligenceProvider {
     }
 
     private func stream(messages: [ChatRequest.Message]) -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
+        if let refusal = localOnlyRefusal { return AsyncThrowingStream { $0.finish(throwing: refusal) } }
+        return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     let request = try makeChatRequest(messages: messages)

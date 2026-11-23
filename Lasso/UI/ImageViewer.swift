@@ -98,7 +98,7 @@ private struct ImageViewerView: View {
     /// The original file if there is one; otherwise a copy written to a temporary folder.
     private func openInPreview() {
         if let file, FileManager.default.fileExists(atPath: file.path) {
-            NSWorkspace.shared.open(file)
+            Self.openInPreviewApp(file)
             return
         }
         let dir = FileManager.default.temporaryDirectory.appending(path: "Lasso Images", directoryHint: .isDirectory)
@@ -106,7 +106,14 @@ private struct ImageViewerView: View {
         let url = dir.appending(path: "Image \(Self.stamp()).png")
         guard let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]),
               (try? data.write(to: url)) != nil else { return }
-        NSWorkspace.shared.open(url)
+        Self.openInPreviewApp(url)
+    }
+
+    /// Opens the file in Preview itself. Never by the file's default app: a package's picture can be
+    /// named anything, and `chart.command` would open in Terminal and run.
+    static func openInPreviewApp(_ file: URL) {
+        guard let preview = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Preview") else { return }
+        NSWorkspace.shared.open([file], withApplicationAt: preview, configuration: NSWorkspace.OpenConfiguration())
     }
 
     private static func stamp() -> String {

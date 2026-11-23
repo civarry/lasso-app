@@ -52,14 +52,17 @@ enum HermesAgent {
         keyLock.lock(); defer { keyLock.unlock() }
         if let cachedKey { return cachedKey }
         let key = Keychain.get(keychainAccount) ?? ""
-        cachedKey = key
+        if !key.isEmpty || !Keychain.isRefused { cachedKey = key }   // "" while refused is unknown: read again later
         return key
     }
 
-    static func setAPIKey(_ key: String) {
+    /// false when the Keychain wouldn't save it (the saved-keys prompt was cancelled): the old key stays.
+    @discardableResult
+    static func setAPIKey(_ key: String) -> Bool {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        Keychain.set(trimmed, for: keychainAccount)
+        guard Keychain.set(trimmed, for: keychainAccount) else { return false }
         keyLock.lock(); cachedKey = trimmed; keyLock.unlock()
+        return true
     }
 
     /// The API key of Lasso's own Hermes (`HermesRuntime`), generated at setup.
@@ -70,12 +73,16 @@ enum HermesAgent {
         keyLock.lock(); defer { keyLock.unlock() }
         if let cachedManagedKey { return cachedManagedKey }
         let key = Keychain.get(managedKeychainAccount) ?? ""
-        cachedManagedKey = key
+        if !key.isEmpty || !Keychain.isRefused { cachedManagedKey = key }   // as in `apiKey`
         return key
     }
 
     static func setManagedKey(_ key: String) {
-        Keychain.set(key, for: managedKeychainAccount)
+        // Kept for this launch even if the Keychain refused it: the profile is written with it now, and
+        // the next launch finds no key and sets up a fresh one.
+        if !Keychain.set(key, for: managedKeychainAccount) {
+            Log.chat.error("hermes · couldn't save the managed key to the Keychain")
+        }
         keyLock.lock(); cachedManagedKey = key; keyLock.unlock()
     }
 

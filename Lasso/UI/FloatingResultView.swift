@@ -11,9 +11,9 @@ struct FloatingResultView: View {
 
     @AppStorage("ui.resultTextScale") private var textScale = 1.0
     @State private var streamed = ""
+    @Environment(\.cardLifetime) private var lifetime
     @State private var isStreaming = false
     @State private var streamError: String?
-    @State private var task: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -46,8 +46,9 @@ struct FloatingResultView: View {
         .padding(14)
         .frame(width: 460)
         .liquidGlassPanel()
-        .task { startStreamingIfNeeded() }
-        .onDisappear { task?.cancel() }
+        // Read inside the view's own task: SwiftUI cancels it when the card goes away (closing it drops
+        // the content), which ends the stream and the model call behind it.
+        .task { await streamIfNeeded() }
     }
 
     @ViewBuilder
@@ -95,19 +96,25 @@ struct FloatingResultView: View {
         }
     }
 
-    private func startStreamingIfNeeded() {
+    private func streamIfNeeded() async {
         guard case .stream(let stream) = result else { return }
         isStreaming = true
-        task = Task {
+        // Read in a task the card owns: closing the card ends it (`CardLifetime`), and so does SwiftUI
+        // cancelling this view's task.
+        let reader = Task { @MainActor in
+            Busy.begin()
+            defer { Busy.end() }
             do {
                 for try await delta in stream {
                     if Task.isCancelled { break }
                     streamed += delta
                 }
             } catch {
-                streamError = error.localizedDescription
+                if !Task.isCancelled { streamError = error.localizedDescription }
             }
             isStreaming = false
         }
+        lifetime?.adopt(reader)
+        await withTaskCancellationHandler { await reader.value } onCancel: { reader.cancel() }
     }
 }

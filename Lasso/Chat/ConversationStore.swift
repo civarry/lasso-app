@@ -16,6 +16,13 @@ import ImageIO
 enum ConversationStore {
     static let schemaVersion = 1
 
+    /// Every write and delete goes through one serial queue, in the order asked: a save queued just
+    /// before Close can't land after Close's delete and bring the chat back.
+    private static let io = DispatchQueue(label: "lasso.conversations.io", qos: .utility)
+    static func enqueue(_ work: @escaping @Sendable () -> Void) { io.async(execute: work) }
+    /// Waits for every queued write (tests, and quitting).
+    static func flush() { io.sync {} }
+
     // MARK: - Locations
 
     private static var root: URL {
@@ -76,6 +83,17 @@ enum ConversationStore {
         var viaAgent: Bool? = nil
         /// Optional so conversations saved before packages decode unchanged.
         var caption: String? = nil
+        /// A regenerated reply's answers and which one shows. Optional for older files.
+        var versions: [ReplyVersion]? = nil
+        var versionIndex: Int? = nil
+        /// Optional so older files decode: an error reply and Lasso's own notes stay what they are.
+        var isError: Bool? = nil
+        var isLocalNote: Bool? = nil
+        /// The sources a question was sent with (`@My notes`). Optional for older files.
+        var mentions: [String]? = nil
+        /// How many images a question sent to the model itself (native vision), re-made from the
+        /// thumbnails on load. Optional for older files.
+        var sentImages: Int? = nil
     }
 
     struct FileDTO: Codable {
@@ -92,6 +110,23 @@ enum ConversationStore {
         var caption: String?
         var ocr: String?
         var hasThumbnail: Bool
+        /// The file an Agent image came from (opened on click). Optional for older files.
+        var sourcePath: String? = nil
+
+        init(id: UUID, caption: String?, ocr: String?, hasThumbnail: Bool, sourcePath: String? = nil) {
+            self.id = id; self.caption = caption; self.ocr = ocr; self.hasThumbnail = hasThumbnail
+            self.sourcePath = sourcePath
+        }
+
+        init(_ a: Attachment) {
+            self.init(id: a.id, caption: a.caption, ocr: a.ocr, hasThumbnail: true, sourcePath: a.sourcePath)
+        }
+    }
+
+    /// An attachment back from its saved form, nil when its thumbnail is gone.
+    static func attachment(_ ad: AttachmentDTO) -> Attachment? {
+        guard ad.hasThumbnail, let img = loadThumbnail(ad.id) else { return nil }
+        return Attachment(id: ad.id, image: img, caption: ad.caption, ocr: ad.ocr, sourcePath: ad.sourcePath)
     }
 
     struct IndexEntry: Codable {
@@ -216,13 +251,16 @@ extension ConversationStore {
                 reasoning: m.reasoning,
                 reasoningSeconds: m.reasoningSeconds,
                 sources: m.sources,
-                attachments: m.attachments.map {
-                    AttachmentDTO(id: $0.id, caption: $0.caption, ocr: $0.ocr, hasThumbnail: true)
-                },
+                attachments: m.attachments.map(AttachmentDTO.init),
                 files: m.files.isEmpty ? nil : m.files.map {
                     FileDTO(id: $0.id, path: $0.path, name: $0.name, kind: $0.kind, typeName: $0.typeName, bytes: $0.bytes)
                 },
-                viaAgent: m.viaAgent ? true : nil, caption: m.caption)
+                viaAgent: m.viaAgent ? true : nil, caption: m.caption,
+                versions: m.versions.isEmpty ? nil : m.currentVersions,
+                versionIndex: m.versions.isEmpty ? nil : m.versionIndex,
+                isError: m.isError ? true : nil, isLocalNote: m.isLocalNote ? true : nil,
+                mentions: m.mentions.isEmpty ? nil : m.mentions,
+                sentImages: m.imageBase64s.isEmpty ? nil : m.imageBase64s.count)
         }
         return ConversationDTO(
             schemaVersion: schemaVersion,
@@ -240,7 +278,8 @@ extension ConversationStore {
 
     /// The attachment images to encode as thumbnails (writer skips ones already on disk).
     static func thumbnailJobs(_ c: Conversation) -> [ThumbnailJob] {
-        c.messages.flatMap { $0.attachments }.map { ThumbnailJob(id: $0.id, image: $0.image) }
+        c.messages.flatMap { m in m.attachments + m.versions.flatMap(\.attachments) }
+            .map { ThumbnailJob(id: $0.id, image: $0.image) }
     }
 
     /// Lightweight index entry for the switcher/search (no message bodies).
@@ -268,14 +307,30 @@ extension ConversationStore {
             msg.sources = md.sources
             msg.viaAgent = md.viaAgent ?? false
             msg.caption = md.caption
+            msg.isError = md.isError ?? false
+            msg.isLocalNote = md.isLocalNote ?? false
+            if let versions = md.versions, versions.count > 1 {
+                msg.versions = versions
+                msg.versionIndex = min(max(md.versionIndex ?? 0, 0), versions.count - 1)
+            }
             msg.files = (md.files ?? []).map {
                 FileAttachment(id: $0.id, path: $0.path, name: $0.name, kind: $0.kind, typeName: $0.typeName, bytes: $0.bytes)
             }
-            msg.attachments = md.attachments.compactMap { ad in
-                guard ad.hasThumbnail, let img = loadThumbnail(ad.id) else { return nil }
-                return Attachment(id: ad.id, image: img, caption: ad.caption, ocr: ad.ocr)
-            }
+            msg.mentions = md.mentions ?? []
+            msg.attachments = md.attachments.compactMap(attachment)
             return msg
+        }
+        // Pictures the model saw itself (native vision) aren't saved, only their thumbnails. Only the
+        // latest such turn's images are ever sent again, so only it is re-made; if its thumbnails are
+        // gone, the model is told an image was there rather than seeing a bare question.
+        if let i = dto.messages.lastIndex(where: { ($0.sentImages ?? 0) > 0 }) {
+            let images = c.messages[i].attachments.compactMap { ImageEncoder.jpegBase64($0.image) }
+            if images.isEmpty {
+                let asked = c.messages[i].promptText ?? c.messages[i].text
+                c.messages[i].promptText = asked + "\n\n[An image was attached here; it's no longer available.]"
+            } else {
+                c.messages[i].imageBase64s = images
+            }
         }
         return c
     }

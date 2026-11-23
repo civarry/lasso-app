@@ -7,8 +7,12 @@ import SwiftUI
 /// activating an app brings its *main* and key windows forward, and a panel couldn't be main, so
 /// Settings was. Reproduced in isolation; these check the mechanism deterministically: the panel that
 /// opens must itself be the main window.
+/// While the Mac is locked macOS refuses every activation, so these can't observe main-ness.
+private let screenLocked = (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool ?? false
+
 @MainActor
-@Suite(.serialized)
+@Suite(.serialized, .enabled(if: !screenLocked,
+                             "The screen is locked: no app can become active, so there's no main window to check"))
 struct PanelActivationTests {
     @Test func chatPanelBecomesTheMainWindow() async throws {
         let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),

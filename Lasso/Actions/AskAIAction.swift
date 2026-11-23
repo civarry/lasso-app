@@ -110,6 +110,8 @@ struct AskAIView: View {
         status = ""
         isStreaming = true
         task = Task {
+            Busy.begin()
+            defer { Busy.end() }
             // Safeguard: the on-device model botches free-form Markdown tables. If the user asks
             // for a table while Apple Intelligence is active, use guided generation instead of
             // wasting a broken streamed attempt. Ollama handles tables fine via the normal path.

@@ -57,6 +57,7 @@ enum PackageScript {
         }
         static let maxActions = 3
         static let pages: Set<String> = ["html", "htm", "svg"]
+        static let pictures: Set<String> = ["png", "jpg", "jpeg", "gif", "heic", "tif", "tiff", "pdf", "webp"]
     }
 
     /// What a `source/1` command answers (docs/PACKAGE-HOOKS.md). Lasso applies its limits afterwards.
@@ -214,6 +215,10 @@ enum PackageScript {
             if let path = object["image"] as? String {
                 guard case .file(let url) = try parse(Data(try JSONSerialization.data(withJSONObject: ["path": path])),
                                                        places: places, tmp: tmp, id: id) else { throw RunError.badOutput("image isn't a file.") }
+                // A picture, by name too: it's opened in Preview and shown in Finder.
+                guard Console.pictures.contains(url.pathExtension.lowercased()) else {
+                    throw RunError.badOutput("image must be a .png, .jpg, .gif, .heic, .tiff or .pdf file.")
+                }
                 image = url
             }
             var html: URL?

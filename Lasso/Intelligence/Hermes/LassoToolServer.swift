@@ -126,7 +126,7 @@ final class LassoToolServer: @unchecked Sendable {
             let arguments = params["arguments"] as? [String: Any] ?? [:]
             let sendable = SendableArguments(arguments)
             if HermesTurn.lassoTool(name) == nil, PackageRegistry.shared.tools().contains(where: { $0.name == name }) {
-                let result = await PackageToolCall.call(name, arguments: sendable.value) { request in
+                let result = await PackageToolCall.call(name, arguments: sendable.value, agent: true) { request in
                     await ChatController.shared.askForAgentTool(request)
                 }
                 return success(id: id, ["content": [["type": "text", "text": result.text]], "isError": result.isError])

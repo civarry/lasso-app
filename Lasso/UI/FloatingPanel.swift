@@ -12,6 +12,8 @@ class MainCapablePanel: NSPanel {
 
 final class FloatingPanel: MainCapablePanel {
     override func cancelOperation(_ sender: Any?) {
+        // The chat panel is a FloatingPanel too: its Esc closes the chat, not whatever result card is open.
+        if self === ChatPanelController.shared.panel { ChatPanelController.shared.close(); return }
         FloatingPanelController.shared.close()
     }
 }
@@ -25,7 +27,31 @@ enum AppActivation {
     static func bringForward(_ window: NSWindow) {
         window.makeKeyAndOrderFront(nil)
         if window.canBecomeMain { window.makeMain() }
+        guard !NSApp.isActive else { return }
+        // Lasso usually isn't the active app (it lives in the menu bar). Until activation completes,
+        // key and main requests don't stick, and when it does complete AppKit hands key and main to
+        // whichever ordinary window it picks (an open Settings window), not this one: so ask again then.
+        pending.append(WeakWindow(window))
+        if observer == nil {
+            observer = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                                              object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { settle() }
+            }
+        }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private final class WeakWindow { weak var window: NSWindow?; init(_ w: NSWindow) { window = w } }
+    private static var pending: [WeakWindow] = []
+    private static var observer: NSObjectProtocol?
+
+    /// Activation finished: the last window asked for, if it's still showing, gets key and main.
+    private static func settle() {
+        let window = pending.last?.window
+        pending = []
+        guard let window, window.isVisible else { return }
+        window.makeKeyAndOrderFront(nil)
+        if window.canBecomeMain { window.makeMain() }
     }
 }
 
@@ -37,6 +63,8 @@ enum AppActivation {
 final class FloatingPanelController: NSObject, NSWindowDelegate {
     static let shared = FloatingPanelController()
     private var panel: FloatingPanel?
+    /// The open card's work (a stream being read): ended by `close`, whatever SwiftUI does with views.
+    private var lifetime = CardLifetime()
     private var topLeft: NSPoint = .zero
     /// True when the current card remembers its position (non-anchored, e.g. Proofread on read-only
     /// text). Selection-anchored cards stay by the selection and don't persist.
@@ -58,7 +86,9 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         let root = SelfSizingContent(content: content) { [weak self] ideal in
             self?.resize(toContent: ideal)
         }
-        let hosting = NSHostingController(rootView: AnyView(root))
+        let lifetime = CardLifetime()
+        self.lifetime = lifetime
+        let hosting = NSHostingController(rootView: AnyView(root.environment(\.cardLifetime, lifetime)))
         hosting.sizingOptions = []
 
         let panel = FloatingPanel(
@@ -120,8 +150,12 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     }
 
     func close() {
+        lifetime.end()
         panel?.delegate = nil
         panel?.orderOut(nil)
+        // Ordering out keeps the SwiftUI views alive: their `.task`s (a stream, Identify's web search)
+        // would run on and `.onDisappear` never fire. Dropping the content tears them down.
+        panel?.contentViewController = nil
         panel = nil
     }
 
@@ -200,5 +234,35 @@ private struct SelfSizingContent: View {
         content
             .fixedSize(horizontal: false, vertical: true)
             .onGeometryChange(for: CGSize.self) { $0.size } action: { onIdealSize($0) }
+    }
+}
+
+/// What a result card is doing (reading a model's stream), so closing the card stops it right away.
+/// SwiftUI cancels a view's `.task` when the view goes, but not always promptly after the window's
+/// content is dropped; this doesn't depend on it.
+@MainActor
+final class CardLifetime {
+    private var tasks: [Task<Void, Never>] = []
+    private(set) var ended = false
+
+    func adopt(_ task: Task<Void, Never>) {
+        if ended { task.cancel() } else { tasks.append(task) }
+    }
+
+    func end() {
+        ended = true
+        tasks.forEach { $0.cancel() }
+        tasks = []
+    }
+}
+
+private struct CardLifetimeKey: EnvironmentKey {
+    static let defaultValue: CardLifetime? = nil
+}
+
+extension EnvironmentValues {
+    var cardLifetime: CardLifetime? {
+        get { self[CardLifetimeKey.self] }
+        set { self[CardLifetimeKey.self] = newValue }
     }
 }

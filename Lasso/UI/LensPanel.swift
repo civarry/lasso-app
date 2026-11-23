@@ -14,6 +14,9 @@ final class LensPanelController: NSObject, NSWindowDelegate {
 
     func present(image: CGImage, anchor: CGRect?) {
         close()
+        // Gate the upload where it happens: a card drawn before local-only mode was turned on (or the
+        // opt-in turned off) still has its Lens button.
+        guard UserDefaults.standard.bool(forKey: LensSearchAction.enabledKey), !PrivacyMode.localOnly else { return }
 
         // Wide enough that Google serves its full two-column desktop Lens layout (AI Overview beside
         // the source list) rather than the cramped single-column view. Still user-resizable.

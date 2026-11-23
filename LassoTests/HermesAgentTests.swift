@@ -139,8 +139,9 @@ struct HermesAgentTests {
                         ChatMessage(role: .assistant, text: "<think>hm</think>answer two"),
                         ChatMessage(role: .assistant, text: "(Stopped.)")]
         let history = ChatController.hermesHistory(from: messages[...])
-        #expect(history.map(\.role) == ["user", "user", "assistant"])
-        #expect(history.map(\.content) == ["Context: screen text\n\nfirst", "second", "answer two"])
+        // A failed reply goes with the question it didn't answer (no two user turns in a row).
+        #expect(history.map(\.role) == ["user", "assistant"])
+        #expect(history.map(\.content) == ["second", "answer two"])
 
         let capped = ChatController.hermesHistory(from: messages[...], maxMessages: 2)
         #expect(capped.map(\.content) == ["second", "answer two"])

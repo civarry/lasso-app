@@ -84,6 +84,109 @@ struct ChatMessage: Identifiable, @unchecked Sendable {
     var viaAgent = false
     /// One line above a reply that a package wrote: "Study tools · Qwen3.5 · on this Mac".
     var caption: String?
+    /// Lasso's own text in the thread (/help, /about): never sent to the model or picked as "the last reply".
+    var isLocalNote = false
+
+    /// A reply that's a real answer: not an error, not empty, not Stop's placeholder, not Lasso's own note.
+    var isAnswer: Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // An image-only reply (the Agent's MEDIA:) is an answer too.
+        return !isError && !isLocalNote && (!t.isEmpty || !attachments.isEmpty) && t != "(Stopped.)" && t != "(No response.)"
+    }
+    /// Every answer this reply has had (Regenerate keeps the earlier ones, like other chat apps' ‹ 2/3 ›),
+    /// with this one at `versionIndex`. Empty until it's regenerated. The shown answer's own fields are the
+    /// truth for its slot; `versions[versionIndex]` is refreshed when switching or saving.
+    var versions: [ReplyVersion] = []
+    var versionIndex = 0
+
+    /// This reply's answer as a version.
+    var asVersion: ReplyVersion {
+        ReplyVersion(text: text, reasoning: reasoning, sources: sources, isError: isError, caption: caption,
+                     viaAgent: viaAgent, steps: steps, sourceHits: sourceHits, attachments: attachments,
+                     reasoningSeconds: reasoningSeconds)
+    }
+
+    /// All versions with the shown one up to date.
+    var currentVersions: [ReplyVersion] {
+        guard !versions.isEmpty, versions.indices.contains(versionIndex) else { return versions }
+        var list = versions
+        list[versionIndex] = asVersion
+        return list
+    }
+
+    /// Show another answer (keeps the shown one in its slot).
+    mutating func showVersion(_ index: Int) {
+        var list = currentVersions
+        guard list.indices.contains(index), index != versionIndex else { return }
+        let picked = list[index]
+        list[versionIndex] = asVersion
+        versions = list
+        versionIndex = index
+        text = picked.text
+        reasoning = picked.reasoning
+        sources = picked.sources
+        isError = picked.isError
+        caption = picked.caption
+        viaAgent = picked.viaAgent
+        steps = picked.steps
+        sourceHits = picked.sourceHits
+        attachments = picked.attachments
+        reasoningSeconds = picked.reasoningSeconds
+    }
+}
+
+/// One answer of a reply that was regenerated.
+struct ReplyVersion: Sendable, Codable {
+    var text: String
+    var reasoning: String = ""
+    var sources: [WebSourcesProvider.Hit] = []
+    var isError = false
+    var caption: String?
+    var viaAgent = false
+    /// What it did (searched, looked in notes) and the passages it got, for this session only (not saved).
+    var steps: [ActivityStep] = []
+    var sourceHits: [SourceHit] = []
+    /// The images it showed (an Agent's chart). Saved as their thumbnails, like a message's.
+    var attachments: [Attachment] = []
+    var reasoningSeconds: Int?
+
+    init(text: String, reasoning: String = "", sources: [WebSourcesProvider.Hit] = [], isError: Bool = false,
+         caption: String? = nil, viaAgent: Bool = false, steps: [ActivityStep] = [], sourceHits: [SourceHit] = [],
+         attachments: [Attachment] = [], reasoningSeconds: Int? = nil) {
+        self.text = text; self.reasoning = reasoning; self.sources = sources; self.isError = isError
+        self.caption = caption; self.viaAgent = viaAgent; self.steps = steps; self.sourceHits = sourceHits
+        self.attachments = attachments; self.reasoningSeconds = reasoningSeconds
+    }
+
+    enum CodingKeys: String, CodingKey { case text, reasoning, sources, isError, caption, viaAgent, attachments, reasoningSeconds }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(text, forKey: .text)
+        try c.encode(reasoning, forKey: .reasoning)
+        try c.encode(sources, forKey: .sources)
+        try c.encode(isError, forKey: .isError)
+        try c.encodeIfPresent(caption, forKey: .caption)
+        try c.encode(viaAgent, forKey: .viaAgent)
+        try c.encodeIfPresent(reasoningSeconds, forKey: .reasoningSeconds)
+        if !attachments.isEmpty {
+            try c.encode(attachments.map(ConversationStore.AttachmentDTO.init), forKey: .attachments)
+        }
+    }
+
+    /// Every field but the text may be missing (files saved by an earlier version).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        text = try c.decode(String.self, forKey: .text)
+        reasoning = try c.decodeIfPresent(String.self, forKey: .reasoning) ?? ""
+        sources = try c.decodeIfPresent([WebSourcesProvider.Hit].self, forKey: .sources) ?? []
+        isError = try c.decodeIfPresent(Bool.self, forKey: .isError) ?? false
+        caption = try c.decodeIfPresent(String.self, forKey: .caption)
+        viaAgent = try c.decodeIfPresent(Bool.self, forKey: .viaAgent) ?? false
+        reasoningSeconds = try c.decodeIfPresent(Int.self, forKey: .reasoningSeconds)
+        attachments = (try c.decodeIfPresent([ConversationStore.AttachmentDTO].self, forKey: .attachments) ?? [])
+            .compactMap(ConversationStore.attachment)
+    }
 }
 
 /// One step in an assistant turn's background activity trace.

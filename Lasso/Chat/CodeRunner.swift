@@ -29,7 +29,10 @@ final class CodeRunner {
     /// By message and code block.
     var runs: [String: Run] = [:]
 
-    static func key(_ message: UUID, _ code: String) -> String { "\(message.uuidString)#\(code.hashValue)" }
+    /// A block's runs: its reply, which answer of it (‹ n/N ›), which code block, and the code.
+    static func key(_ message: UUID, _ code: String, index: Int = 0, version: Int = 0) -> String {
+        "\(message.uuidString)#\(version)#\(index)#\(code.hashValue)"
+    }
 
     /// The commands offered on a block of this language, from enabled packages.
     func commands(for language: String?) -> [(entry: PackageRegistry.Entry, command: PackageCommand)] {
@@ -40,6 +43,14 @@ final class CodeRunner {
     }
 
     func run(_ key: String) -> Run? { runs[key] }
+
+    /// Drops the runs of these replies (their chat was closed or cleared), so a long session doesn't
+    /// keep every output and picture it ever showed.
+    func forget(_ messages: [UUID]) {
+        let prefixes = Set(messages.map { "\($0.uuidString)#" })
+        guard !prefixes.isEmpty else { return }
+        runs = runs.filter { key, _ in !prefixes.contains { key.hasPrefix($0) } }
+    }
 
     func start(_ entry: PackageRegistry.Entry, _ command: PackageCommand, code: String, language: String,
                reply: String, key: String) {
@@ -113,6 +124,7 @@ final class CodeRunner {
 struct CodeBlockContext: Equatable {
     var message: UUID
     var reply: String
+    var version = 0
 }
 
 private struct CodeBlockContextKey: EnvironmentKey {

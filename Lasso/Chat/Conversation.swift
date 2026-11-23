@@ -62,6 +62,8 @@ final class Conversation: Identifiable {
     var mentions: [String] = []
     /// Sources the next turn leaves out ("Answer without it").
     var excludedOnce: Set<String> = []
+    /// The earlier answers of a reply being regenerated, for the new reply to keep (‹ 1/2 ›).
+    var carriedVersions: [ReplyVersion] = []
     /// Package tools used in the last turn: still offered next turn, so a follow-up works.
     var recentTools: Set<String> = []
     /// Sources (package ids) that gave passages last turn: a `source/1` source is a candidate again for
@@ -107,7 +109,7 @@ final class Conversation: Identifiable {
     var hasMessages: Bool { !messages.isEmpty }
     /// Whether there's anything to clear (drives New chat / can-clear affordances).
     var canClear: Bool {
-        !messages.isEmpty || !input.isEmpty || !pendingAttachments.isEmpty || seededContext != nil
+        !messages.isEmpty || !input.isEmpty || !pendingAttachments.isEmpty || !pendingFiles.isEmpty || seededContext != nil
     }
 
     /// Cancel any in-flight work — called before a session is dropped or switched away from.

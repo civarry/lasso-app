@@ -119,14 +119,19 @@ final class ChatController {
     /// Persist one conversation (its own file) and refresh the shared index. Skips empty conversations
     /// (nothing to save until they have content). Disk I/O runs off the main actor.
     private func persist(_ c: Conversation) {
+        // A closed conversation stays closed: a turn still finishing after Close must not write its file
+        // back (it would reappear after relaunch).
+        guard sessions.contains(where: { $0 === c }) else { return }
         let entries = sessions.filter(\.hasMessages).map(ConversationStore.indexEntry)
         guard c.hasMessages else {
-            Task.detached(priority: .utility) { ConversationStore.writeIndex(entries) }
+            // Everything deleted: the saved file goes too, or the chat would load back in full.
+            let id = c.id
+            ConversationStore.enqueue { ConversationStore.delete(id: id); ConversationStore.writeIndex(entries) }
             return
         }
         let dto = ConversationStore.snapshot(c)
         let thumbs = ConversationStore.thumbnailJobs(c)
-        Task.detached(priority: .utility) {
+        ConversationStore.enqueue {
             ConversationStore.writeConversation(dto, thumbnails: thumbs)
             ConversationStore.writeIndex(entries)
         }
@@ -371,8 +376,13 @@ final class ChatController {
     }
 
     /// Read an image from the general pasteboard: raw image data, or a copied image file URL.
-    static func clipboardImage() -> CGImage? {
-        let pb = NSPasteboard.general
+    static func clipboardImage(_ pb: NSPasteboard = .general) -> CGImage? {
+        // Text copied from Pages, Word or Numbers also carries a PDF of itself: that's text to paste,
+        // not a picture. Only a copy with a real image (or a file) attaches.
+        let types = pb.types ?? []
+        let imageTypes: [NSPasteboard.PasteboardType] = [.png, .tiff, NSPasteboard.PasteboardType("public.jpeg"),
+                                                         NSPasteboard.PasteboardType("public.heic"), .fileURL]
+        if types.contains(.string), !types.contains(where: imageTypes.contains) { return nil }
         if let images = pb.readObjects(forClasses: [NSImage.self]) as? [NSImage],
            let first = images.first,
            let cg = first.cgImage(forProposedRect: nil, context: nil, hints: nil) {
@@ -389,6 +399,36 @@ final class ChatController {
     var hasMessages: Bool { active.hasMessages }
     /// Whether the active conversation has anything to clear (drives the New chat affordance).
     var canClear: Bool { active.canClear }
+
+    /// Send `text` with these attachments without losing what the user was writing: Regenerate, Resend
+    /// and Edit go through the composer, so its draft and staged files are put back afterwards.
+    private func sendKeepingDraft(text: String, attachments: [Attachment], files: [FileAttachment]) {
+        let draft = active.input, staged = active.pendingAttachments, stagedFiles = active.pendingFiles
+        let session = active
+        session.input = text
+        session.pendingAttachments = attachments
+        session.pendingFiles = files
+        send()
+        session.input = draft
+        session.pendingAttachments = staged
+        session.pendingFiles = stagedFiles
+    }
+
+    /// A reply can be regenerated when it answers the message right before it: not Lasso's own notes
+    /// (/help, /about), which follow a reply and would otherwise replace the real exchange above them.
+    func canRegenerate(_ id: UUID) -> Bool {
+        guard let i = active.messages.firstIndex(where: { $0.id == id }), i > 0,
+              active.messages[i].role == .assistant else { return false }
+        return active.messages[i - 1].role == .user
+    }
+
+    /// Show another answer of a regenerated reply. The model's history follows what's shown.
+    func showVersion(_ id: UUID, _ index: Int) {
+        guard !active.isStreaming, let i = active.messages.firstIndex(where: { $0.id == id }) else { return }
+        active.messages[i].showVersion(index)
+        resetDerivedMemory()
+        persist(active)
+    }
 
     // MARK: - Session management
 
@@ -442,15 +482,15 @@ final class ChatController {
 
     /// The last reply a command can run on, when nothing was typed after it.
     var lastReplyText: String? {
-        messages.last { $0.role == .assistant && !$0.isError && !$0.text.isEmpty }?.text
+        messages.last { $0.role == .assistant && $0.isAnswer }?.text
     }
 
     /// Why `match` can't run here, or nil. In chat there's no source app or image, so `apps` and
     /// `hasImage: true` never hold (spec, "When").
-    func packageSlashProblem(_ match: PackageSlashMatch) -> String? {
+    func packageSlashProblem(_ match: PackageSlashMatch, text given: String? = nil) -> String? {
         let command = match.command
         if let reason = PackageRegistry.shared.unavailableReason(match.entry, command) { return reason }
-        let text = match.argument.isEmpty ? (lastReplyText ?? "") : match.argument
+        let text = given ?? (match.argument.isEmpty ? (lastReplyText ?? "") : match.argument)
         if command.input.contains(.text), text.isEmpty { return "Type the text after \(match.name)." }
         guard let when = command.when else { return nil }
         if when.hasImage == true || !when.apps.isEmpty { return "\(command.title) doesn't run in chat." }
@@ -460,10 +500,14 @@ final class ChatController {
         return nil
     }
 
-    func runPackageSlash(_ match: PackageSlashMatch, typed: String) {
-        if let problem = packageSlashProblem(match) { composerNotice = problem; return }
+    /// `text` and `prepare` are Regenerate's: the text the command ran on, and removing the old exchange,
+    /// done only once the command is sure to run.
+    func runPackageSlash(_ match: PackageSlashMatch, typed: String, carried: [ReplyVersion] = [],
+                         text given: String? = nil, prepare: (() -> Bool)? = nil) {
+        if let problem = packageSlashProblem(match, text: given) { composerNotice = problem; return }
         let command = match.command, entry = match.entry
-        let text = match.argument.isEmpty ? (lastReplyText ?? "") : match.argument
+        let text = given ?? (match.argument.isEmpty ? (lastReplyText ?? "") : match.argument)
+        let session = active
         Task { @MainActor in
             // `detects` needs the slower detector; checked here so a mismatch keeps the composer as typed.
             if let when = command.when, !when.detects.isEmpty,
@@ -471,11 +515,15 @@ final class ChatController {
                 composerNotice = "\(command.title) doesn't apply to this text."
                 return
             }
-            startPackageReply(match, typed: typed, text: text)
+            if let prepare {
+                // Stopped, switched away or started another reply meanwhile: leave the exchange alone.
+                guard active === session, !isStreaming, prepare() else { return }
+            }
+            startPackageReply(match, typed: typed, text: text, carried: carried)
         }
     }
 
-    private func startPackageReply(_ match: PackageSlashMatch, typed: String, text: String) {
+    private func startPackageReply(_ match: PackageSlashMatch, typed: String, text: String, carried: [ReplyVersion] = []) {
         let command = match.command, entry = match.entry
         composerNotice = nil
         var user = ChatMessage(role: .user, text: typed)
@@ -484,11 +532,18 @@ final class ChatController {
         messages.append(user)
         var reply = ChatMessage(role: .assistant, text: "", isStreaming: true)
         reply.caption = PackageOutput.attribution(entry, command)
+        if !carried.isEmpty {
+            reply.versions = carried + [ReplyVersion(text: "")]
+            reply.versionIndex = carried.count
+        }
         messages.append(reply)
         let replyID = reply.id
-        input = ""
+        // Clears the command the user typed; a draft put back by Regenerate (sendKeepingDraft) stays.
+        if input.trimmingCharacters(in: .whitespacesAndNewlines) == typed { input = "" }
         isStreaming = true
+        active.turnToken = UUID()
         let session = active
+        let token = session.turnToken
         func update(_ change: (inout ChatMessage) -> Void) {
             if let i = session.messages.firstIndex(where: { $0.id == replyID }) { change(&session.messages[i]) }
         }
@@ -496,7 +551,8 @@ final class ChatController {
         streamTask = Task { [weak self] in
             defer {
                 update { $0.isStreaming = false }
-                session.isStreaming = false
+                // A newer turn owns the busy flag once this one is stopped or replaced.
+                if session.turnToken == token { session.isStreaming = false }
                 self?.persist(session)
             }
             do {
@@ -531,6 +587,8 @@ final class ChatController {
                     update { $0.text = "\(command.title) returned nothing."; $0.isError = true }
                 }
             } catch {
+                // Stopped: cancelStreaming already says so; the cancellation isn't a failure.
+                guard !Task.isCancelled else { return }
                 update { $0.text = PackageOutput.failure(error, entry, command); $0.isError = true }
             }
         }
@@ -539,7 +597,9 @@ final class ChatController {
     /// Append a local, non-model message (e.g. `/help` output). Never sent to a provider; persisted so it
     /// scrolls with the thread, but it isn't indexed (no turn runs) so it won't pollute retrieval.
     func postLocalMessage(_ text: String) {
-        active.messages.append(ChatMessage(role: .assistant, text: text))
+        var note = ChatMessage(role: .assistant, text: text)
+        note.isLocalNote = true
+        active.messages.append(note)
         persist(active)
     }
 
@@ -564,10 +624,14 @@ final class ChatController {
     /// recent remaining; closing the last conversation leaves a fresh empty one.
     func close(_ id: UUID) {
         guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
+        denyWaitingTools(in: sessions[idx])
+        CodeRunner.shared.forget(sessions[idx].messages.map(\.id))
         sessions[idx].cancelWork()
         let wasActive = sessions[idx].id == active.id
         sessions.remove(at: idx)
-        ConversationStore.delete(id: id)   // drop its file; index is rewritten below
+        // Drop its file after any save already queued for it (the same serial queue), or that save
+        // would bring it back.
+        ConversationStore.enqueue { ConversationStore.delete(id: id) }
         if sessions.isEmpty {
             let fresh = Conversation()
             sessions = [fresh]
@@ -618,6 +682,8 @@ final class ChatController {
 
     /// Reset the ACTIVE conversation in place (`/clear`) — scoped to the current chat, not the others.
     func clearActive() {
+        denyWaitingTools(in: active)
+        CodeRunner.shared.forget(active.messages.map(\.id))
         active.cancelWork()
         active.memoryIndex.reset()
         active.memory = ConversationMemory()
@@ -625,21 +691,31 @@ final class ChatController {
         active.messages.removeAll()
         active.input = ""
         active.pendingAttachments = []
+        active.pendingFiles = []
         active.seededContext = nil
+        active.autoTitle = nil
+        active.mentions = []
+        active.excludedOnce = []
+        active.recentTools = []
+        active.recentSources = []
+        active.searchFor = [:]
+        active.carriedVersions = []
         active.isStreaming = false
         // The conversation is now empty — drop its persisted file and refresh the index.
-        ConversationStore.delete(id: active.id)
+        let clearedID = active.id
+        ConversationStore.enqueue { ConversationStore.delete(id: clearedID) }
         persist(active)
     }
 
     /// Wipe ALL persisted chat history (Settings → privacy). Cancels every session, clears disk, and
     /// leaves one fresh empty conversation.
     func clearAllHistory() {
-        for s in sessions { s.cancelWork() }
+        let old = sessions
+        for s in old { s.cancelWork(); denyWaitingTools(in: s); CodeRunner.shared.forget(s.messages.map(\.id)) }
         let fresh = Conversation()
         sessions = [fresh]
         active = fresh
-        Task.detached(priority: .utility) { ConversationStore.clearAll() }
+        ConversationStore.enqueue { ConversationStore.clearAll() }
     }
 
     /// Append a session, make it active, and enforce the cap (drop the oldest non-active sessions).
@@ -649,20 +725,23 @@ final class ChatController {
         if active.isStreaming { cancelStreaming() }
         sessions.append(s)
         active = s
+        persist(active)   // a seeded conversation (Ask AI / capture) already has content worth saving
         var overflow = sessions.count - Self.maxSessions
         guard overflow > 0 else { return }
         sessions.removeAll { session in
             guard overflow > 0, session.id != active.id else { return false }
+            CodeRunner.shared.forget(session.messages.map(\.id))
             session.cancelWork(); overflow -= 1; return true
         }
-        persist(active)   // a seeded conversation (Ask AI / capture) already has content worth saving
     }
 
     func cancelStreaming() {
         streamTask?.cancel()
         streamTask = nil
         isStreaming = false
-        if let last = messages.indices.last, messages[last].role == .assistant {
+        // The streaming reply, which isn't always the last message (a /help note can follow it).
+        if let last = messages.lastIndex(where: { $0.role == .assistant && $0.isStreaming && !$0.isLocalNote })
+            ?? messages.indices.last.flatMap({ messages[$0].role == .assistant ? $0 : nil }) {
             messages[last].isStreaming = false
             messages[last].approval = nil
             if let request = messages[last].toolApproval { answerToolApproval(request.id, allow: false) }
@@ -699,9 +778,21 @@ final class ChatController {
     }
 
     /// Downloaded MLX models as (display, repo id).
+    /// MLX chat models on this Mac: downloaded ones (the Hugging Face cache), ones in plain folders
+    /// (~/models, LM Studio), and the one chosen in Settings, minus embedding models, which can't chat.
     var mlxModels: [(label: String, id: String)] {
-        MLXCache.installed().map { entry in
-            (entry.repoID.split(separator: "/").last.map(String.init) ?? entry.repoID, entry.repoID)
+        var ids: [String] = []
+        for entry in MLXCache.installed() where MLXCache.snapshot(of: entry).map(MLXLocalModels.isLanguageModel) ?? true {
+            ids.append(entry.repoID)
+        }
+        for local in MLXLocalModels.discovered() where MLXLocalModels.isLanguageModel(local.url) {
+            ids.append(local.id)
+        }
+        let chosen = intelligence.mlxModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let folder = MLXLocalModels.folder(for: chosen), MLXLocalModels.isLanguageModel(folder) { ids.append(chosen) }
+        var seen = Set<String>()
+        return ids.filter { seen.insert(MLXProvider.normalizedID($0).lowercased()).inserted }.map { id in
+            (id.split(separator: "/").last.map(String.init) ?? id, id)
         }
     }
 
@@ -747,9 +838,28 @@ final class ChatController {
 
     /// Switch to a model served by a specific connection — global, persists, matches Settings.
     func selectRegistryModel(keyID: String, model: String) {
-        intelligence.selectRegistryModel(keyID: keyID, model: model)
+        switched(intelligence.selectRegistryModel(keyID: keyID, model: model))
+    }
+
+    /// The routed-around bar's Switch: the same notice when it can't.
+    func switchToSubstitute() {
+        guard intelligence.routedAround?.substitute?.ref != nil else { return }
+        switched(intelligence.switchToSubstitute())
+    }
+
+    private func switched(_ ok: Bool) {
+        guard ok else { composerNotice = Self.switchFailedNotice; return }
+        if Self.switchFailedNotices.contains(composerNotice ?? "") { composerNotice = nil }
         Task { await refreshCapabilities() }
     }
+
+    /// Why a model switch didn't happen (`selectRegistryModel` returned false): the saved keys stayed
+    /// closed, or they were open and the key couldn't be written.
+    static var switchFailedNotice: String {
+        Keychain.isRefused ? switchFailedNotices[0] : switchFailedNotices[1]
+    }
+    private static let switchFailedNotices = ["Couldn't switch: macOS didn't let Lasso open its saved keys.",
+                                              "Couldn't switch: the key couldn't be saved."]
     func isCurrentRegistryModel(keyID: String, model: String) -> Bool {
         intelligence.isCurrentRegistryModel(keyID: keyID, model: model)
     }
@@ -974,6 +1084,7 @@ final class ChatController {
         } else if idx > 0, active.messages[idx - 1].role == .user {
             lo = idx - 1   // assistant reply → also drop the question it answered
         }
+        CodeRunner.shared.forget(active.messages[lo...hi].map(\.id))
         active.messages.removeSubrange(lo...hi)
         historyDidChange()
     }
@@ -986,6 +1097,7 @@ final class ChatController {
         if active.messages[idx].role == .assistant, idx > 0, active.messages[idx - 1].role == .user {
             start = idx - 1   // begin at the question this reply belongs to
         }
+        CodeRunner.shared.forget(active.messages[start...].map(\.id))
         active.messages.removeSubrange(start..<active.messages.count)
         historyDidChange()
     }
@@ -998,12 +1110,10 @@ final class ChatController {
               let idx = active.messages.firstIndex(where: { $0.id == id }),
               active.messages[idx].role == .user else { return }
         let m = active.messages[idx]
+        CodeRunner.shared.forget(active.messages[idx...].map(\.id))
         active.messages.removeSubrange(idx..<active.messages.count)
         resetDerivedMemory()
-        active.input = m.text
-        active.pendingAttachments = m.attachments
-        active.pendingFiles = m.files
-        send()
+        sendKeepingDraft(text: m.text, attachments: m.attachments, files: m.files)
     }
 
     /// Commit an inline edit of a user message (called on **Send**, not when Edit is clicked — so Cancel
@@ -1016,12 +1126,10 @@ final class ChatController {
               active.messages[idx].role == .user else { return }
         let atts = active.messages[idx].attachments
         let files = active.messages[idx].files
+        CodeRunner.shared.forget(active.messages[idx...].map(\.id))
         active.messages.removeSubrange(idx..<active.messages.count)
         resetDerivedMemory()
-        active.input = text
-        active.pendingAttachments = atts
-        active.pendingFiles = files
-        send()
+        sendKeepingDraft(text: text, attachments: atts, files: files)
     }
 
     /// Regenerate an assistant reply: drop this turn **and everything after** (they answered the old
@@ -1030,14 +1138,39 @@ final class ChatController {
     func regenerate(_ id: UUID) {
         guard !active.isStreaming, let aIdx = active.messages.firstIndex(where: { $0.id == id }),
               active.messages[aIdx].role == .assistant,
+              canRegenerate(id),
               let uIdx = active.messages[..<aIdx].lastIndex(where: { $0.role == .user }) else { return }
         let userMsg = active.messages[uIdx]
+        let old = active.messages[aIdx]
+        // Keep the answer being replaced: the new reply shows ‹ n/n › to go back to it.
+        // An error isn't an answer worth going back to: only the answers before it are kept.
+        var kept = old.versions.isEmpty ? [old.asVersion] : old.currentVersions
+        if old.isError, kept.indices.contains(old.versions.isEmpty ? 0 : old.versionIndex) {
+            kept.remove(at: old.versions.isEmpty ? 0 : old.versionIndex)
+        }
+        let typed = userMsg.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if userMsg.attachments.isEmpty, userMsg.files.isEmpty, let match = packageSlash(typed) {
+            // A /command: checked before anything is removed, on the text it ran on then, so one that
+            // can't run now (a setting cleared, local-only on) leaves the exchange as it was.
+            let text = match.argument.isEmpty
+                ? (active.messages[..<uIdx].last { $0.role == .assistant && $0.isAnswer }?.text ?? "") : match.argument
+            let session = active
+            let questionID = userMsg.id
+            runPackageSlash(match, typed: typed, carried: kept, text: text) { [weak self] in
+                // Found again by id: a delete during the check moves (or removes) the exchange.
+                guard let start = session.messages.firstIndex(where: { $0.id == questionID }) else { return false }
+                CodeRunner.shared.forget(session.messages[start...].map(\.id))
+                session.messages.removeSubrange(start..<session.messages.count)
+                if self?.active === session { self?.resetDerivedMemory() }
+                return true
+            }
+            return
+        }
+        active.carriedVersions = kept
+        CodeRunner.shared.forget(active.messages[uIdx...].map(\.id))
         active.messages.removeSubrange(uIdx..<active.messages.count)
         resetDerivedMemory()
-        active.input = userMsg.text
-        active.pendingAttachments = userMsg.attachments
-        active.pendingFiles = userMsg.files
-        send()
+        sendKeepingDraft(text: userMsg.text, attachments: userMsg.attachments, files: userMsg.files)
     }
 
     /// Drop **both** derived memories after a history edit — the semantic index *and* the running
@@ -1062,6 +1195,10 @@ final class ChatController {
 
     func send(text: String? = nil, extraContext: String? = nil, webSearch: Bool? = nil) {
         if let text { input = text }
+        // Earlier answers from a Regenerate belong to this send's reply only: taken now, so a send that
+        // returns early or goes to a package can't leave them for an unrelated later reply.
+        let carried = active.carriedVersions
+        active.carriedVersions = []
         var typed = input.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Slash commands typed in the composer act on the session, not the model. `/clear` resets to
@@ -1074,7 +1211,7 @@ final class ChatController {
         // A package's /command runs that command, not a model turn.
         if let match = packageSlash(typed), pendingAttachments.isEmpty, pendingFiles.isEmpty {
             guard !isStreaming else { return }
-            runPackageSlash(match, typed: typed)
+            runPackageSlash(match, typed: typed, carried: carried)
             return
         }
 
@@ -1101,7 +1238,11 @@ final class ChatController {
         userMessage.mentions = mentioned.compactMap { id in PackageRegistry.shared.sources().first { $0.id == id }?.name }
         messages.append(userMessage)
         let userID = userMessage.id
-        let assistant = ChatMessage(role: .assistant, text: "", isStreaming: true)
+        var assistant = ChatMessage(role: .assistant, text: "", isStreaming: true)
+        if !carried.isEmpty {
+            assistant.versions = carried + [ReplyVersion(text: "")]
+            assistant.versionIndex = carried.count
+        }
         messages.append(assistant)
         let assistantID = assistant.id
 
@@ -1607,7 +1748,7 @@ final class ChatController {
     /// Compact recent transcript (prior turns only — excludes the just-added user message + the empty
     /// assistant placeholder) used to resolve references when rewriting a search query.
     private func recentContext(maxTurns: Int = 6, maxChars: Int = 1200) -> String {
-        Self.searchContext(fromPrior: Array(active.messages.dropLast(2)),
+        Self.searchContext(fromPrior: Array(Self.beforeTurn(active.messages)),
                            maxTurns: maxTurns, maxChars: maxChars)
     }
 
@@ -2373,7 +2514,7 @@ final class ChatController {
         // Map the prior history (excluding the just-appended user-display + assistant-placeholder)
         // to the builder's history turns, using each message's persisted `promptText` so folded
         // image/evidence context carries. Assistant thoughts are stripped — they're UI affordances.
-        let history = Self.historyTurns(from: messages.dropLast(2))
+        let history = Self.historyTurns(from: Self.beforeTurn(messages))
 
         let out = contextBuilder.build(systemPrompt: Self.systemPrompt(formatting: formatPolicy),
                                        memory: memory,
@@ -2427,8 +2568,16 @@ final class ChatController {
     static func historyTurns(from messages: ArraySlice<ChatMessage>) -> [ChatContextBuilder.HistoryTurn] {
         var turns: [ChatContextBuilder.HistoryTurn] = []
         for m in messages {
+            // Lasso's own notes (/help) aren't the model's words; an error or "(Stopped.)" isn't an answer,
+            // and the question it failed to answer goes with it.
+            if m.role == .assistant, m.isLocalNote { continue }
+            if m.role == .assistant, !m.isAnswer {
+                if let last = turns.indices.last, turns[last].role == .user { turns.removeLast() }
+                continue
+            }
             if m.role == .assistant, m.viaAgent {
-                let reply = Self.stripThoughtBlocks(from: m.text).trimmingCharacters(in: .whitespacesAndNewlines)
+                var reply = Self.stripThoughtBlocks(from: m.text).trimmingCharacters(in: .whitespacesAndNewlines)
+                if reply.isEmpty, !m.attachments.isEmpty { reply = "(Showed an image.)" }
                 if let last = turns.indices.last, turns[last].role == .user, !reply.isEmpty {
                     turns[last] = .init(role: .user, text: turns[last].text + agentNote(reply),
                                         imageBase64s: turns[last].imageBase64s)
@@ -2786,7 +2935,8 @@ final class ChatController {
         // anything else).
         if !mentioned.isEmpty {
             let looked = await lookInSources(typed: typed, mentioned: mentioned, excluded: excluded, session: session,
-                                             assistantID: assistantID, automatic: false)
+                                             assistantID: assistantID, automatic: false,
+                                             ownHermes: HermesAgent.usesOwnHermes)
             // Say what the source is, so "my notes" isn't taken for Apple Notes or anything else.
             let sources = PackageRegistry.shared.sources().filter { mentioned.contains($0.id) }
             let where_ = sources.map { source in
@@ -2943,10 +3093,20 @@ final class ChatController {
                               maxMessages: Int = 40, maxChars: Int = 60_000) -> [(role: String, content: String)] {
         var out: [(role: String, content: String)] = []
         var total = 0
-        for m in messages.reversed() where !m.isError {
-            let text = m.role == .assistant ? stripThoughtBlocks(from: m.text) : (m.promptText ?? m.text)
+        // The same rule as `historyTurns`: Lasso's notes are skipped, and a reply that isn't an answer goes
+        // with the question it failed to answer (no two user turns in a row).
+        var dropQuestion = false
+        for m in messages.reversed() {
+            if m.role == .assistant, m.isLocalNote { continue }
+            if m.role == .assistant, !m.isAnswer { dropQuestion = true; continue }
+            if m.role == .user, dropQuestion { dropQuestion = false; continue }
+            dropQuestion = false
+            var text = m.role == .assistant ? stripThoughtBlocks(from: m.text) : (m.promptText ?? m.text)
+            if m.role == .assistant, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !m.attachments.isEmpty {
+                text = "(Showed an image.)"
+            }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, trimmed != "(Stopped.)" else { continue }
+            guard !trimmed.isEmpty else { continue }
             guard out.count < maxMessages, total + trimmed.count <= maxChars else { break }
             total += trimmed.count
             out.append((m.role == .user ? "user" : "assistant", trimmed))
@@ -2988,7 +3148,8 @@ final class ChatController {
     /// ones Lasso picks itself. Each shows as a step; passages for a cloud model wait for the user's
     /// Allow. Returns the fenced passages for the model, and whether they're going to a cloud model.
     func lookInSources(typed: String, mentioned: [String], excluded: Set<String>, session: Conversation,
-                               assistantID: UUID, automatic: Bool = true) async -> (evidence: String?, cloudBound: Bool) {
+                               assistantID: UUID, automatic: Bool = true,
+                               ownHermes: Bool = false) async -> (evidence: String?, cloudBound: Bool) {
         func edit(_ mutate: (inout ChatMessage) -> Void) {
             if let i = session.messages.firstIndex(where: { $0.id == assistantID }) { mutate(&session.messages[i]) }
         }
@@ -3044,7 +3205,10 @@ final class ChatController {
             return try await SourceSearch.run(source, turn)
         }
         var kept = hits
-        let recipient = intelligence.textRecipient
+        // Your own Hermes thinks with a model Lasso can't see (set in Hermes, maybe on another Mac), so
+        // passages for it always ask, as they would for a cloud model.
+        let hermesHost = URL(string: HermesAgent.baseURLString)?.host ?? "Hermes"
+        let recipient = ownHermes ? (key: "hermes:\(hermesHost)", name: "your Hermes (\(hermesHost))") : intelligence.textRecipient
         // Before anything goes to a cloud model: the user's Allow, per source and provider.
         if let recipient {
             for outcome in outcomes {
@@ -3233,6 +3397,13 @@ final class ChatController {
         return allowed
     }
 
+    /// A chat that's closed or cleared can't answer its cards: every tool waiting on one is denied now
+    /// (not after the 280 s timeout), and an Agent reply in it stops being the one asked.
+    func denyWaitingTools(in session: Conversation) {
+        for m in session.messages { if let request = m.toolApproval { answerToolApproval(request.id, allow: false) } }
+        if agentReply?.session === session { agentReply = nil }
+    }
+
     /// The user's answer on the card (or a stop or timeout, as a no).
     func answerToolApproval(_ requestID: UUID, allow: Bool) {
         guard let waiter = toolApprovalWaiters.removeValue(forKey: requestID) else { return }
@@ -3334,6 +3505,12 @@ final class ChatController {
             rest = rest[close.upperBound...]
         }
         while let open = rest.range(of: "<think>", options: [.caseInsensitive]) {
+            // A tag written inside code ("wraps it in a `<think>` block") is part of the answer.
+            if isInsideCode(Substring(answer + rest[..<open.lowerBound])) {
+                answer += rest[..<open.upperBound]
+                rest = rest[open.upperBound...]
+                continue
+            }
             answer += rest[..<open.lowerBound]
             let afterOpen = rest[open.upperBound...]
             if let close = afterOpen.range(of: "</think>", options: [.caseInsensitive]) {
@@ -3351,15 +3528,45 @@ final class ChatController {
         return (thought, answer.trimmingCharacters(in: .whitespacesAndNewlines), thinking)
     }
 
+    /// The messages before the turn being answered: without its question and reply, and without a /help
+    /// note posted while it streams (it lands after them, so "all but the last two" would keep the question).
+    static func beforeTurn(_ messages: [ChatMessage]) -> ArraySlice<ChatMessage> {
+        var end = messages.endIndex
+        while end > messages.startIndex, messages[end - 1].isLocalNote, messages[end - 1].role == .assistant { end -= 1 }
+        return messages[..<end].dropLast(2)
+    }
+
     /// Whether text ending here is inside a Markdown code fence or an inline code span: an odd number
     /// of ``` fences, or, outside fences, an odd number of backticks.
-    private static func isInsideCode(_ prefix: Substring) -> Bool {
-        let fences = prefix.components(separatedBy: "```").count - 1
-        if fences % 2 == 1 { return true }
-        return prefix.replacingOccurrences(of: "```", with: "").filter { $0 == "`" }.count % 2 == 1
+    nonisolated static func isInsideCode(_ prefix: Substring) -> Bool {
+        // Fences line by line, as the parser reads them: one open at a time, closed by a line of the same
+        // character at least as long. Backticks inside a fenced block aren't inline code.
+        var open: (char: Character, length: Int)?
+        var ticks = 0
+        for line in prefix.split(separator: "\n", omittingEmptySubsequences: false) {
+            let t = line.drop(while: { $0 == " " })
+            if let first = t.first, first == "`" || first == "~" {
+                let run = t.prefix(while: { $0 == first }).count
+                let rest = t.dropFirst(run)
+                if run >= 3 {
+                    if let fence = open {
+                        if fence.char == first, run >= fence.length, rest.allSatisfy(\.isWhitespace) { open = nil }
+                        continue
+                    }
+                    // "```x```" on one line is inline code, not a fence.
+                    if !(first == "`" && rest.contains("`")) { open = (first, run); continue }
+                }
+            }
+            if open != nil { continue }
+            ticks += line.replacingOccurrences(of: "```", with: "").filter { $0 == "`" }.count
+        }
+        return open != nil || ticks % 2 == 1
     }
 
     private func finishStreaming(_ id: UUID) {
+        // Stopped or replaced by a newer turn: Stop already settled this reply, and the busy flag and
+        // the "every reply" packages belong to whatever runs now.
+        guard !Task.isCancelled else { return }
         update(id) {
             $0.isStreaming = false
             if $0.text.isEmpty {
@@ -3420,7 +3627,7 @@ final class ChatController {
         // dominant one's — "it"/"latest news" no longer lexically matches the previous thread.
         let rq = searchPlan?.query.trimmingCharacters(in: .whitespacesAndNewlines)
         let question = (rq?.isEmpty == false ? rq : nil) ?? currentUserText
-        let history = messages.dropLast(2)                       // drop the just-appended user+placeholder
+        let history = Self.beforeTurn(messages)                  // drop the just-appended user+placeholder
         guard !history.isEmpty else { return [] }
         let recentWindow = history.suffix(contextBuilder.budget.recentTurns)
         let recentIDs = Set(recentWindow.map(\.id))
@@ -3443,6 +3650,7 @@ final class ChatController {
     }
 
     private func finishError(_ id: UUID, _ message: String) {
+        guard !Task.isCancelled else { return }
         update(id) { $0.text = message; $0.isError = true; $0.isStreaming = false }
         isStreaming = false
     }

@@ -80,6 +80,19 @@ enum MarkdownParser {
     ///   the text does not jitter between shapes as it lands. Off for finished text, where every
     ///   character is final and withholding anything would silently drop content.
     static func parse(_ text: String, streaming: Bool = false) -> [MarkdownBlock] {
+        // Windows line endings: "\r\n" is one Character in Swift, so splitting on "\n" would miss it.
+        let text = text.replacingOccurrences(of: "\r\n", with: "\n")
+        let blocks = parseBlocks(text, streaming: streaming)
+        // Finished text: a fence that never closed (stopped, or cut off at the token limit) is all the
+        // code there will be, so it's complete (Copy and Run show).
+        guard !streaming else { return blocks }
+        return blocks.map { block in
+            if case .code(let language, let content, false) = block { return .code(language: language, content: content, closed: true) }
+            return block
+        }
+    }
+
+    private static func parseBlocks(_ text: String, streaming: Bool) -> [MarkdownBlock] {
         let source = streaming ? StreamStabilizer.stabilize(text) : text
         var blocks: [MarkdownBlock] = []
         var cursor = source.startIndex
@@ -98,7 +111,7 @@ enum MarkdownParser {
             }
         }
 
-        blocks.append(contentsOf: parsePlain(String(source[cursor..<source.endIndex])))
+        blocks.append(contentsOf: parsePlain(String(source[cursor..<source.endIndex]), streaming: streaming))
         if streaming, case .table(var last)? = blocks.last {
             last.isOpen = true
             blocks[blocks.count - 1] = .table(last)
@@ -111,9 +124,13 @@ enum MarkdownParser {
         -> (range: Range<String.Index>, closeTag: String)? {
         thoughtTags
             .compactMap { open, close -> (Range<String.Index>, String)? in
-                guard let r = text.range(of: open, options: .caseInsensitive,
-                                         range: from..<text.endIndex) else { return nil }
-                return (r, close)
+                // A tag inside code (a fence or `inline`) is text about the tag, not reasoning.
+                var start = from
+                while let r = text.range(of: open, options: .caseInsensitive, range: start..<text.endIndex) {
+                    if !ChatController.isInsideCode(text[text.startIndex..<r.lowerBound]) { return (r, close) }
+                    start = r.upperBound
+                }
+                return nil
             }
             .min { $0.0.lowerBound < $1.0.lowerBound }
             .map { (range: $0.0, closeTag: $0.1) }
@@ -126,7 +143,27 @@ enum MarkdownParser {
 
     // MARK: Block scanning
 
-    static func parsePlain(_ text: String) -> [MarkdownBlock] {
+    /// Whether a line has a `$$` that isn't part of a longer run of dollars (`$$$ fine dining`).
+    static func hasLoneDoubleDollar(_ t: String) -> Bool {
+        let chars = Array(t)
+        var i = 0
+        while i < chars.count {
+            guard chars[i] == "$" else { i += 1; continue }
+            var run = 0
+            while i + run < chars.count, chars[i + run] == "$" { run += 1 }
+            if run == 2 { return true }
+            i += run
+        }
+        return false
+    }
+
+    /// A ``` or ~~~ fence line (trimmed).
+    static func isFenceLine(_ t: String) -> Bool {
+        guard let first = t.first, first == "`" || first == "~" else { return false }
+        return t.prefix(while: { $0 == first }).count >= 3
+    }
+
+    static func parsePlain(_ text: String, streaming: Bool = false) -> [MarkdownBlock] {
         let lines = text.components(separatedBy: "\n")
         var blocks: [MarkdownBlock] = []
         var paragraph: [String] = []
@@ -150,17 +187,45 @@ enum MarkdownParser {
                 var body: [String] = []
                 var head = String(line.dropFirst(delims.open.count))
                 var closed = false
+                var after = ""
                 if let end = head.range(of: delims.close) {
                     body.append(String(head[..<end.lowerBound]))
+                    after = String(head[end.upperBound...])
                     closed = true
                     i += 1
                 } else {
-                    if !head.trimmingCharacters(in: .whitespaces).isEmpty { body.append(head) }
+                    // "$$ mid-range" (price tiers) or "$$ is the shell's PID" isn't math: with text on its
+                    // line, `$$` opens display math only when a later line closes it with a `$$` that isn't
+                    // part of `$$$`, before a blank line or a fence. While streaming, math whose closer
+                    // hasn't arrived yet stays math (no snap from raw LaTeX to an equation).
+                    let bare = head.trimmingCharacters(in: .whitespaces).isEmpty
+                    if delims.open == "$$", !bare {
+                        var j = i + 1, found = false, reachedEnd = true
+                        if line.hasPrefix("$$$") { reachedEnd = false }
+                        while reachedEnd, j < lines.count {
+                            let t = lines[j].trimmingCharacters(in: .whitespaces)
+                            if t.isEmpty || Self.isFenceLine(t) { reachedEnd = false; break }
+                            let prose = t.split(separator: "`", omittingEmptySubsequences: false).enumerated()
+                                .filter { $0.offset % 2 == 0 }.map(\.element).joined(separator: " ")
+                            if prose.contains("$$") { found = Self.hasLoneDoubleDollar(prose); reachedEnd = false; break }
+                            j += 1
+                        }
+                        // Mid-stream, only a head that reads as LaTeX stays math until its closer arrives.
+                        let latex = head.contains { "\\^_{=".contains($0) }
+                        if !found, !(streaming && reachedEnd && latex) {
+                            paragraph.append(raw)
+                            i += 1
+                            continue
+                        }
+                    }
+                    if !bare { body.append(head) }
                     i += 1
                     while i < lines.count {
                         head = lines[i]
+                        if Self.isFenceLine(head.trimmingCharacters(in: .whitespaces)) { break }
                         if let end = head.range(of: delims.close) {
                             body.append(String(head[..<end.lowerBound]))
+                            after = String(head[end.upperBound...])
                             closed = true
                             i += 1
                             break
@@ -172,6 +237,9 @@ enum MarkdownParser {
                 _ = closed   // an unterminated block still renders what has arrived
                 let rendered = MathText.render(body.joined(separator: "\n"))
                 if !rendered.isEmpty { blocks.append(.math(rendered)) }
+                // "$$E = mc^2$$ where E is energy.": the rest of the line is text.
+                let rest = after.trimmingCharacters(in: .whitespaces)
+                if !rest.isEmpty { paragraph.append(rest) }
                 continue
             }
 
@@ -179,6 +247,8 @@ enum MarkdownParser {
             // The closing fence must use the same character, so a ``` inside a ~~~ block is content.
             if let fence = fenceMarker(line) {
                 flushParagraph()
+                // A fence indented under a list item: its lines carry that indent too, and it isn't code.
+                let indent = raw.prefix(while: { $0 == " " }).count
                 let info = line.dropFirst(fence.count).trimmingCharacters(in: .whitespaces)
                 let language = info.isEmpty
                     ? nil
@@ -194,7 +264,10 @@ enum MarkdownParser {
                         i += 1
                         break
                     }
-                    code.append(lines[i])
+                    var codeLine = Substring(lines[i])
+                    var strip = indent
+                    while strip > 0, codeLine.first == " " { codeLine = codeLine.dropFirst(); strip -= 1 }
+                    code.append(String(codeLine))
                     i += 1
                 }
                 blocks.append(.code(language: language,
@@ -482,8 +555,9 @@ enum MarkdownParser {
 
     private static func headingText(_ line: String, level: Int) -> String {
         var text = String(line.dropFirst(level)).trimmingCharacters(in: .whitespaces)
-        // Closed ATX form: "## Title ##".
-        while text.hasSuffix("#") { text.removeLast() }
+        // Closed ATX form: "## Title ##". Only a run after a space closes it, so "## Learning C#" keeps its #.
+        let run = text.reversed().prefix(while: { $0 == "#" }).count
+        if run > 0, run == text.count || text.dropLast(run).last == " " { text.removeLast(run) }
         return text.trimmingCharacters(in: .whitespaces)
     }
 }
@@ -590,17 +664,26 @@ enum StreamStabilizer {
 
         var closers = ""
         if count(of: "`", in: work) % 2 == 1 { closers += "`" }
-        if count(of: "~~", in: work) % 2 == 1 { closers += "~~" }
-        if count(of: "**", in: work) % 2 == 1 { closers += "**" }
-        else if singleAsterisks(in: work) % 2 == 1 { closers += "*" }
+        // Counted with the code span closed: "*`make" is italic around code, not a trailing star.
+        let text = outsideCode(work + closers)
+        if count(of: "~~", in: text) % 2 == 1 { closers += "~~" }
+        if count(of: "**", in: text) % 2 == 1 { closers += "**" }
+        else if singleAsterisks(in: text) % 2 == 1 { closers += "*" }
         return work + closers
     }
 
     private static func isBalanced(_ s: String) -> Bool {
-        count(of: "`", in: s) % 2 == 0
-            && count(of: "~~", in: s) % 2 == 0
-            && count(of: "**", in: s) % 2 == 0
-            && singleAsterisks(in: s) % 2 == 0
+        let text = outsideCode(s)
+        return count(of: "`", in: s) % 2 == 0
+            && count(of: "~~", in: text) % 2 == 0
+            && count(of: "**", in: text) % 2 == 0
+            && singleAsterisks(in: text) % 2 == 0
+    }
+
+    /// The line without its `code` spans (an unclosed one runs to the end): `**kwargs` in code isn't bold.
+    private static func outsideCode(_ s: String) -> String {
+        s.split(separator: "`", omittingEmptySubsequences: false).enumerated()
+            .filter { $0.offset % 2 == 0 }.map(\.element).joined(separator: "x")
     }
 
     private static func count(of needle: String, in text: String) -> Int {
@@ -616,11 +699,24 @@ enum StreamStabilizer {
 
     /// Asterisks that aren't part of a `**` pair — the single-emphasis delimiters.
     private static func singleAsterisks(in text: String) -> Int {
-        var n = 0
-        var run = 0
-        for c in text {
-            if c == "*" { run += 1 } else { n += run % 2; run = 0 }
+        // Only a star that can open (text after it) opens, and only one that can close (text before
+        // it) closes: "4 * 5", a "* " bullet, and C's "char* buf" are neither an opener nor left open.
+        var open = false
+        let chars = Array(text)
+        var i = 0
+        while i < chars.count {
+            guard chars[i] == "*" else { i += 1; continue }
+            var run = 0
+            while i + run < chars.count, chars[i + run] == "*" { run += 1 }
+            if run % 2 == 1 {
+                let before: Character? = i > 0 ? chars[i - 1] : nil
+                let after: Character? = i + run < chars.count ? chars[i + run] : nil
+                let canClose = before.map { !$0.isWhitespace } ?? false
+                let canOpen = after.map { !$0.isWhitespace } ?? false
+                if open, canClose { open = false } else if canOpen { open = true }
+            }
+            i += run
         }
-        return n + run % 2
+        return open ? 1 : 0
     }
 }

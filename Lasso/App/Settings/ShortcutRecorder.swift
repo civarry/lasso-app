@@ -123,6 +123,9 @@ final class ShortcutRecording {
         return (NSEvent.SpecialKey.f1.rawValue...NSEvent.SpecialKey.f20.rawValue).contains(key.rawValue)
     }
 
+    /// The shortcuts paused while recording, turned back on (and only they) when it ends.
+    private var paused: [KeyboardShortcuts.Name] = []
+
     func begin(for name: KeyboardShortcuts.Name,
                staged: @escaping (KeyboardShortcuts.Name) -> KeyboardShortcuts.Shortcut?,
                clearOther: @escaping (KeyboardShortcuts.Name) -> Void,
@@ -132,7 +135,10 @@ final class ShortcutRecording {
         self.staged = staged
         self.clearOther = clearOther
         self.onFinish = onFinish
-        KeyboardShortcuts.disable(Array(ActionShortcuts.titlesByName.keys))
+        // Only the shortcuts that are on now, and never Esc's: `.cancelCapture` is on only during a
+        // capture, and turning it back on afterwards made Esc a global hotkey that swallowed every Esc.
+        paused = ActionShortcuts.titlesByName.keys.filter { $0 != .cancelCapture && KeyboardShortcuts.isEnabled(for: $0) }
+        KeyboardShortcuts.disable(paused)
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
             guard let self else { return event }
             MainActor.assumeIsolated { self.handle(event, for: name) }
@@ -196,6 +202,7 @@ final class ShortcutRecording {
         onFinish = nil
         staged = nil
         clearOther = nil
-        KeyboardShortcuts.enable(Array(ActionShortcuts.titlesByName.keys))
+        KeyboardShortcuts.enable(paused)
+        paused = []
     }
 }

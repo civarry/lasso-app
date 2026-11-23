@@ -87,8 +87,10 @@ struct PackageInputsEventsTests {
         #expect(PackageEvents.commands(for: .reply, registry: registry).count == 1)
         #expect(PackageEvents.commands(for: .capture, registry: registry).isEmpty)
         PackageEvents.fire(.reply, input: PackageInput(text: "second"), registry: registry)
-        for _ in 0..<100 where !FileManager.default.fileExists(atPath: log.path) { try await Task.sleep(for: .milliseconds(50)) }
-        #expect((try? String(contentsOf: log, encoding: .utf8))?.contains("second") == true)
+        // Waits for the text, not the file: the shell creates the file before `cat` writes into it.
+        func logged(_ word: String) -> Bool { (try? String(contentsOf: log, encoding: .utf8))?.contains(word) == true }
+        for _ in 0..<200 where !logged("second") { try await Task.sleep(for: .milliseconds(50)) }
+        #expect(logged("second"))
 
         // An update that changes the script turns it off again.
         try store.install(Data(Self.manifest(command, id: "reply-log", version: "1.0.1").utf8),

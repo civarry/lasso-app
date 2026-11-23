@@ -176,10 +176,13 @@ enum PackageToolCall {
 
     /// Runs `name` with the model's `arguments`. `ask` shows the approval and returns the user's answer;
     /// it's called only for commands that act (`needsApproval`), before anything runs.
+    /// `agent`: the Agent's call, which sees only tools inside the 1,500-character budget. Chat is
+    /// offered over-budget tools too (`chatTools`), so it may call them.
     static func call(_ name: String, arguments raw: [String: Any],
-                     registry: PackageRegistry = .shared,
+                     registry: PackageRegistry = .shared, agent: Bool = false,
                      ask: @MainActor (PackageToolRequest) async -> Bool) async -> Result {
-        guard let tool = registry.offeredTools().first(where: { $0.name == name }) else {
+        let callable = agent ? registry.offeredTools() : registry.tools().filter { $0.offered || $0.overBudget }
+        guard let tool = callable.first(where: { $0.name == name }) else {
             return Result(text: "No tool named \(name).", isError: true)
         }
         let (entry, command) = (tool.entry, tool.command)

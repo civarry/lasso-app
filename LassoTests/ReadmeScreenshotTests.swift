@@ -293,6 +293,28 @@ struct ReadmeScreenshotTests {
         try await shoot("code-run", CGSize(width: 440, height: 760), ChatView().background(Color(white: 0.12)))
         CodeRunner.shared.runs = [:]
 
+        // 0.30: Regenerate keeps the earlier answer (‹ 2/2 ›).
+        var versioned = ChatMessage(role: .assistant, text: "**Adobo** is meat simmered in vinegar, soy sauce, garlic, bay leaves and peppercorns until tender, then browned in its own sauce.")
+        versioned.versions = [ReplyVersion(text: "Adobo is a Filipino stew of vinegar and soy sauce."), ReplyVersion(text: "")]
+        versioned.versionIndex = 1
+        sourcesChat.messages = [ChatMessage(role: .user, text: "what is adobo?"), versioned]
+        try await shoot("reply-versions", CGSize(width: 420, height: 300), ChatView().background(Color(white: 0.12)))
+
+        // 0.30: Search chats (⌘K).
+        func shotChat(_ title: String, _ texts: [String]) -> Conversation {
+            let c = Conversation()
+            c.autoTitle = title
+            c.messages = texts.enumerated().map { ChatMessage(role: $0.offset % 2 == 0 ? .user : .assistant, text: $0.element) }
+            return c
+        }
+        let shotChats = [
+            shotChat("Adobo recipe", ["how do I cook adobo?", "Brown the chicken first."]),
+            shotChat("Weekend groceries", ["what do I need for the weekend?", "Rice, eggs, chicken for adobo, and bay leaves."]),
+            shotChat("Python sets", ["is frozendict hashable?", "Yes."]),
+        ]
+        try await shoot("chat-search", CGSize(width: 420, height: 300),
+                        ChatSearchView(close: {}, conversations: shotChats, query: "adobo").background(Color(white: 0.12)))
+
         // 0.29: a package's page in its code block (Preview HTML), walled in. The chart library comes
         // from cdnjs, the one place a page may load from.
         try store.install(Data("""

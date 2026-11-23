@@ -8,6 +8,12 @@ import Testing
 @MainActor
 struct LassoToolServerTests {
     @Test func answersTheHandshakeAndListsTheTools() async throws {
+        // Lasso's own tools only: an empty package store, not this Mac's packages (whose tools would list too).
+        let name = "lasso-toolserver-\(UUID().uuidString.prefix(6))"
+        let real = PackageStore.shared
+        PackageStore.shared = PackageStore(root: FileManager.default.temporaryDirectory.appending(path: name, directoryHint: .isDirectory),
+                                           defaults: UserDefaults(suiteName: name)!)
+        defer { PackageStore.shared = real; real.reload() }
         let hello = try #require(await LassoToolServer.handle(["jsonrpc": "2.0", "id": 1, "method": "initialize",
                                                                "params": ["protocolVersion": "2025-03-26"]]))
         let result = try #require(hello["result"] as? [String: Any])

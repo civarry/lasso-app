@@ -28,7 +28,7 @@ struct KeychainTests {
 
     @Test func manyKeysAreOneItem() {
         let keys = (0..<5).map { "\(account).\($0)" }
-        defer { keys.forEach(Keychain.delete) }
+        defer { keys.forEach { Keychain.delete($0) } }
         for (i, key) in keys.enumerated() { Keychain.set("sk-\(i)", for: key) }
         #expect(items(keys) == [Keychain.vaultAccount], "each key became its own item, so each would ask after an update")
         // Read back from the Keychain, not the in-memory copy.

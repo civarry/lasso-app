@@ -14,6 +14,7 @@ struct ChatView: View {
     @State private var isDropTarget = false
     /// The conversation is scrolled to the bottom (so new text is followed).
     @State private var followsLatest = true
+    @State private var searching = false
     @State private var slashSelection = 0
     @State private var mentionSelection = 0
     @Environment(\.openWindow) private var openWindow
@@ -26,9 +27,24 @@ struct ChatView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            routedAroundBar
-            conversation
-            composer
+            // The search covers the chat instead of replacing it, so an edit in progress survives it.
+            ZStack {
+                VStack(spacing: 0) {
+                    routedAroundBar
+                    conversation
+                    composer
+                }
+                if searching {
+                    ChatSearchView { searching = false; inputFocused = true }
+                        .background(.ultraThinMaterial)
+                }
+            }
+        }
+        .background {
+            Button("") { searching.toggle() }.keyboardShortcut("k", modifiers: .command).hidden()
+            // ⌘. stops a reply from anywhere in the panel, the search included.
+            Button("") { if chat.isStreaming { chat.cancelStreaming() } }
+                .keyboardShortcut(".", modifiers: .command).hidden()
         }
         .frame(width: window.size.width, height: window.size.height)
         .background(.ultraThinMaterial)
@@ -102,7 +118,7 @@ struct ChatView: View {
                     .lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 6)
                 if routed.substitute?.ref != nil {
-                    Button("Switch") { intelligence.switchToSubstitute() }
+                    Button("Switch") { chat.switchToSubstitute() }
                         .buttonStyle(.link).font(.caption)
                         .help("Make \(Self.shortModel(routed.substituteName)) your model")
                 }
@@ -134,6 +150,9 @@ struct ChatView: View {
                 .disabled(s.isActive || chat.active.isStreaming)
             }
             if !chat.sessionSummaries.isEmpty { Divider() }
+            if chat.sessionSummaries.count > 1 {
+                Button { searching = true } label: { Label("Search chats…  ⌘K", systemImage: "magnifyingglass") }
+            }
             Button { chat.newChat(); inputFocused = true } label: {
                 Label("New conversation", systemImage: "square.and.pencil")
             }
@@ -480,7 +499,7 @@ struct ChatView: View {
 
                 if chat.isStreaming {
                     Button { chat.cancelStreaming() } label: { Image(systemName: "stop.fill") }
-                        .buttonStyle(IconButtonStyle()).help("Stop")
+                        .buttonStyle(IconButtonStyle()).help("Stop (⌘. or Esc)")
                 } else {
                     Button { Task { await voice.sendEndingDictation() } } label: {
                         Image(systemName: "arrow.up")
@@ -539,6 +558,8 @@ struct ChatView: View {
     /// Return, Tab and Esc drive it; otherwise Return sends.
     private func composerKey(_ key: ComposerTextView.Key) -> Bool {
         if key == .escape, voice.isActive { voice.cancel(); return true }
+        // Esc stops a reply that's coming in (when no list is open to close first).
+        if key == .escape, chat.isStreaming, slashMatches.isEmpty, mentionMatches == nil { chat.cancelStreaming(); return true }
         if !slashMatches.isEmpty {
             switch key {
             case .down:
@@ -566,7 +587,7 @@ struct ChatView: View {
             }
             return true
         }
-        if let mentions = mentionMatches {
+        if let mentions = mentionMatches, !(mentions.isEmpty && key == .submit) {
             let pickable = mentions.filter { mentionProblem($0) == nil }
             switch key {
             case .down: mentionSelection = min(mentionSelection + 1, max(mentions.count - 1, 0))
@@ -612,7 +633,9 @@ struct ChatView: View {
         guard let token = mentionToken else { return nil }
         let q = token.lowercased().trimmingCharacters(in: .whitespaces)
         let all = PackageRegistry.shared.sources(localOnly: false)
-        return all.filter { q.isEmpty || $0.name.lowercased().hasPrefix(q) || $0.name.lowercased().contains(q) }
+        let found = all.filter { q.isEmpty || $0.name.lowercased().hasPrefix(q) || $0.name.lowercased().contains(q) }
+        // "thanks @bob": a word that names no source is just text, so Return still sends.
+        return found.isEmpty && !q.isEmpty ? nil : found
     }
 
     /// Why a source can't be picked now (local-only for a Web one, a folder that's gone).
@@ -1073,6 +1096,16 @@ struct MessageBubble: View {
                 .textFieldStyle(.plain)
                 .lineLimit(1...10)
                 .focused($editorFocused)
+                // Like the message box: Return sends, Shift-Return is a new line, Esc cancels the edit
+                // (not the whole chat, which the panel's Esc would close).
+                .onKeyPress(.escape) { editing = false; return .handled }
+                .onKeyPress(.return, phases: .down) { press in
+                    if press.modifiers.contains(.shift) || press.modifiers.contains(.option) { return .ignored }
+                    let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !text.isEmpty, !chat.active.isStreaming else { return .handled }
+                    chat.submitEdit(message.id, newText: draft); editing = false
+                    return .handled
+                }
                 .padding(8)
                 .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 1))
@@ -1137,6 +1170,22 @@ struct MessageBubble: View {
     /// actions confirm.
     private var actionsRow: some View {
         HStack(spacing: 12) {
+            if !isUser, message.versions.count > 1 {
+                // Earlier answers, kept by Regenerate.
+                HStack(spacing: 0) {
+                    Button { chat.showVersion(message.id, message.versionIndex - 1) } label: {
+                        Image(systemName: "chevron.left").padding(.horizontal, 5).padding(.vertical, 3).contentShape(Rectangle())
+                    }
+                    .disabled(message.versionIndex == 0)
+                    .help("Previous answer")
+                    Text("\(message.versionIndex + 1)/\(message.versions.count)").monospacedDigit()
+                    Button { chat.showVersion(message.id, message.versionIndex + 1) } label: {
+                        Image(systemName: "chevron.right").padding(.horizontal, 5).padding(.vertical, 3).contentShape(Rectangle())
+                    }
+                    .disabled(message.versionIndex == message.versions.count - 1)
+                    .help("Next answer")
+                }
+            }
             Button {
                 Pasteboard.copy(message.text)
                 copied = true
@@ -1166,8 +1215,10 @@ struct MessageBubble: View {
                         } label: { Label("Send to", systemImage: "paperplane") }
                         Divider()
                     }
-                    Button { chat.regenerate(message.id) } label: {
-                        Label("Regenerate", systemImage: "arrow.triangle.2.circlepath")
+                    if chat.canRegenerate(message.id) {
+                        Button { chat.regenerate(message.id) } label: {
+                            Label("Regenerate", systemImage: "arrow.triangle.2.circlepath")
+                        }
                     }
                 }
                 if hasTurnsAfter {
@@ -1187,7 +1238,8 @@ struct MessageBubble: View {
         .buttonStyle(.plain)
         .padding(.top, 1)
         .disabled(chat.active.isStreaming)
-        .confirmationDialog("Delete this message?", isPresented: $confirmDelete, titleVisibility: .visible) {
+        .confirmationDialog(message.versions.count > 1 ? "Delete this message and its \(message.versions.count) answers?" : "Delete this message?",
+                            isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) { chat.deleteMessage(message.id) }
             Button("Cancel", role: .cancel) {}
         }
@@ -1279,7 +1331,7 @@ struct MessageBubble: View {
                                      streaming: message.isStreaming)
                             // A finished reply's code blocks get packages' buttons (Run).
                             .environment(\.codeBlockContext, isUser || message.isStreaming ? nil
-                                         : CodeBlockContext(message: message.id, reply: message.text))
+                                         : CodeBlockContext(message: message.id, reply: message.text, version: message.versionIndex))
                             .foregroundStyle(message.isError ? Color.orange : Color.primary)
                             .fixedSize(horizontal: false, vertical: true)
                     }

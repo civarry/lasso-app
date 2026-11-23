@@ -161,6 +161,21 @@ struct MLXProvider: IntelligenceProvider {
         return n.map { max(16, min($0, 8192)) } ?? 512
     }
 
+    /// A chat model's context window (tokens), from its config.json in the Hugging Face cache or a plain
+    /// folder (~/models, LM Studio). Unlike `maxSequenceLength` (for embedding inputs) this isn't capped
+    /// at 8192, and an unknown model counts as 8192, not 512.
+    static func chatContextTokens(_ id: String) -> Int {
+        var cfg = downloadedConfig(id)
+        if cfg == nil, let folder = MLXLocalModels.folder(for: id),
+           let data = try? Data(contentsOf: folder.appendingPathComponent("config.json")) {
+            cfg = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        }
+        let text = cfg?["text_config"] as? [String: Any]
+        let n = (cfg?["max_position_embeddings"] as? Int) ?? (text?["max_position_embeddings"] as? Int)
+            ?? (cfg?["n_positions"] as? Int) ?? (cfg?["max_seq_length"] as? Int)
+        return n.map { max(2_048, $0) } ?? 8_192
+    }
+
     private static func downloadedConfig(_ id: String) -> [String: Any]? {
         let snapshots = MLXCache.directory(for: id).appendingPathComponent("snapshots", isDirectory: true)
         guard let dirs = try? FileManager.default.contentsOfDirectory(
@@ -241,6 +256,10 @@ struct MLXProvider: IntelligenceProvider {
                 "Local-only mode is on, so the MLX model can't be downloaded (the fetch leaves your "
                 + "Mac). Turn Local-only off to download it once; inference stays on-device after that.")
         }
+        // A download in progress keeps an update from relaunching Lasso under it.
+        let busy = !isDownloaded(modelID)
+        if busy { await Busy.begin() }
+        defer { if busy { Task { @MainActor in Busy.end() } } }
         _ = try await MLXModelCache.shared.container(for: modelID) { p in
             progress(p.fractionCompleted)
         }
@@ -418,6 +437,18 @@ enum MLXLocalModels {
         return nil
     }
 
+    /// Whether the folder's model writes text (a chat model), from its `config.json` architectures:
+    /// `…ForCausalLM`, `…ForConditionalGeneration`, `…LMHeadModel`. An embedding model (bge's
+    /// `BertModel`) can't chat. A config without architectures counts, so nothing usable is hidden.
+    static func isLanguageModel(_ folder: URL) -> Bool {
+        guard let data = try? Data(contentsOf: folder.appendingPathComponent("config.json")),
+              let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return true }
+        guard let architectures = config["architectures"] as? [String], !architectures.isEmpty else { return true }
+        return architectures.contains { name in
+            ["CausalLM", "ConditionalGeneration", "LMHeadModel"].contains { name.contains($0) }
+        }
+    }
+
     /// Every model folder in the search roots, as `org/name` (or `name` when there's no org folder).
     static func discovered(roots: [URL] = searchRoots) -> [(id: String, url: URL)] {
         let fm = FileManager.default
@@ -499,6 +530,18 @@ enum MLXCache {
             total += Int64(v?.totalFileAllocatedSize ?? v?.fileSize ?? 0)
         }
         return total
+    }
+
+    /// The downloaded model's files (its newest snapshot), where its `config.json` is.
+    static func snapshot(of entry: Entry) -> URL? {
+        let snapshots = entry.url.appendingPathComponent("snapshots", isDirectory: true)
+        guard let names = try? FileManager.default.contentsOfDirectory(at: snapshots, includingPropertiesForKeys: [.contentModificationDateKey])
+        else { return nil }
+        return names.max { a, b in
+            let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return da < db
+        }
     }
 
     static func remove(_ entry: Entry) throws {
