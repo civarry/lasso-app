@@ -32,6 +32,10 @@
 - **Stop a reply** with **⌘.** or **Esc**.
 - The MLX model menu lists the models in `~/models` and LM Studio's folder, and no longer offers
   embedding models (like bge), which can't chat.
+- **About 90 bug fixes** from eight QA rounds, each with a test that keeps it fixed. Among them:
+  - Chat: crashes, saved chats losing mentions and images, and the model getting the wrong history.
+  - Capture cards, packages (two sandbox escapes closed), and providers.
+  - A key typed after you cancel the Keychain prompt is no longer lost without a word.
 
 <p align="center"><img src="screenshots/app/reply-versions.png" width="420" alt="A regenerated reply with 2/2 to switch between its answers"></p>
 <p align="center"><img src="screenshots/app/chat-search.png" width="420" alt="Search chats showing a title match and a chat that mentions adobo"></p>
