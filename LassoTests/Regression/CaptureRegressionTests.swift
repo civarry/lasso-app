@@ -32,32 +32,18 @@ struct CaptureRegressionTests {
     // MARK: Result card lifecycle
 
     @Test func closingAResultCardStopsItsStream() async throws {
-        // Counts what the card actually reads (an unbuffered pull), so "it started" means the card read.
+        // Counts what the card actually reads: an unfolding stream makes a piece only when the card asks
+        // for one, so "it started" means the card read (a producer task pulled on its own, which passed
+        // on a CI machine where the card never read at all). The card's cancel ends the pending sleep.
         final class Flag: @unchecked Sendable { var terminated = false; var pulled = 0 }
         let flag = Flag()
-        struct Pulls: AsyncSequence {
-            typealias Element = String
-            let flag: Flag
-            struct Iterator: AsyncIteratorProtocol {
-                let flag: Flag
-                var n = 0
-                mutating func next() async throws -> String? {
-                    guard !Task.isCancelled, n < 100 else { flag.terminated = true; return nil }
-                    n += 1
-                    do { try await Task.sleep(for: .milliseconds(50)) } catch { flag.terminated = true; return nil }
-                    flag.pulled += 1
-                    return "x"
-                }
-            }
-            func makeAsyncIterator() -> Iterator { Iterator(flag: flag) }
-        }
-        let stream = AsyncThrowingStream<String, Error>(bufferingPolicy: .bufferingNewest(1)) { continuation in
-            let producer = Task {
-                do { for try await piece in Pulls(flag: flag) { continuation.yield(piece) } } catch {}
-                continuation.finish()
-            }
-            continuation.onTermination = { _ in producer.cancel(); flag.terminated = true }
-        }
+        let stream = AsyncThrowingStream<String, Error>(unfolding: {
+            guard flag.pulled < 100 else { return nil }
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { flag.terminated = true; return nil }
+            if Task.isCancelled { flag.terminated = true; return nil }
+            flag.pulled += 1
+            return "x"
+        })
         FloatingPanelController.shared.present(
             AnyView(FloatingResultView(title: "Summarize", result: .stream(stream))),
             anchor: CGRect(x: 200, y: 400, width: 100, height: 50))
