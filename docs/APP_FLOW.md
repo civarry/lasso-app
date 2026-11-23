@@ -988,18 +988,20 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
     writes nothing (a refused vault is never replaced) and Settings and a package's key field say so in
     orange with Try again, keeping the typed value. Background reads still never ask again, and
     `getMigrating` keeps the old copy until the move saved. Not tested: the Settings messages (view state).
-  - **Its two reviews** (`Regression/KeychainReviewRegressionTests`, `Keychain2ReviewRegressionTests`).
-    Tested: a package key read while the keys were closed shows "" and that "" is never saved back over
-    the real key; the Tavily/SerpApi migration never prompts, keeps the old key until it's saved, isn't
-    marked done while the old key couldn't be read, and never reinstalls a package the user removed;
-    uninstall removes every version's keys in one write (one prompt at most); the test hook has its own
-    launch state per task, so a simulated refusal doesn't leak into suites running alongside. Not tested
-    (view state, or no isolated UserDefaults): Settings and package rows reload once the vault opens
-    (`Keychain.didOpenAfterRefusal`); the uninstall alert when its key couldn't be removed (a fresh
-    install of that id clears it); a model on another connection isn't switched while its key is unknown,
-    and the chat says so; vault writes change memory only once the item is written and put the old
-    contents back if the write fails; Hermes doesn't cache an unknown key; a refused package row doesn't
-    re-ask on every pause; a refused removal leaves older versions' own items alone.
+  - **Its three reviews** (`Regression/KeychainReviewRegressionTests`, `Keychain2ReviewRegressionTests`,
+    `Keychain3ReviewRegressionTests`). Tested: a package key read while the keys were closed shows "" and
+    that "" is never saved back over the real key; the Tavily/SerpApi migration never prompts, keeps the
+    old key until it's saved, isn't marked done while the old key couldn't be read, and never reinstalls
+    a package the user removed; uninstall is all or nothing: every version's keys go first in one write
+    (one prompt at most), and if they can't, nothing is removed and it returns false, so no later package
+    with the id finds an old key; installing never touches keys (another build sharing the vault keeps
+    its key); a key saved after a refused removal stays; the test hook has its own launch state per task,
+    so a simulated refusal doesn't leak into suites running alongside. Not tested (view state, or no
+    isolated UserDefaults): Settings and package rows reload once the vault opens
+    (`Keychain.didOpenAfterRefusal`); the package page's "Couldn't remove it" alert; a model on another
+    connection isn't switched while its key is unknown, and the chat and translation card say why; vault
+    writes change memory only once the item is written and put the old contents back if the write
+    fails; Hermes doesn't cache an unknown key; a refused package row doesn't re-ask on every pause.
 - **The chat's MLX menu lists the models you have (0.29.1).** It read only the Hugging Face cache, so a
   model in `~/models` or LM Studio's folder (the one chosen in Settings) was missing, and an embedding
   model downloaded for memory (bge) was offered as a chat model. `ChatController.mlxModels` now joins the

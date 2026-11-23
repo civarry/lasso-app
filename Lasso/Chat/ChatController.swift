@@ -828,14 +828,28 @@ final class ChatController {
 
     /// Switch to a model served by a specific connection — global, persists, matches Settings.
     func selectRegistryModel(keyID: String, model: String) {
-        guard intelligence.selectRegistryModel(keyID: keyID, model: model) else {
-            composerNotice = Self.switchRefusedNotice
-            return
-        }
-        if composerNotice == Self.switchRefusedNotice { composerNotice = nil }
+        switched(intelligence.selectRegistryModel(keyID: keyID, model: model))
+    }
+
+    /// The routed-around bar's Switch: the same notice when it can't.
+    func switchToSubstitute() {
+        guard intelligence.routedAround?.substitute?.ref != nil else { return }
+        switched(intelligence.switchToSubstitute())
+    }
+
+    private func switched(_ ok: Bool) {
+        guard ok else { composerNotice = Self.switchFailedNotice; return }
+        if Self.switchFailedNotices.contains(composerNotice ?? "") { composerNotice = nil }
         Task { await refreshCapabilities() }
     }
-    static let switchRefusedNotice = "Couldn't switch: macOS didn't let Lasso open its saved keys."
+
+    /// Why a model switch didn't happen (`selectRegistryModel` returned false): the saved keys stayed
+    /// closed, or they were open and the key couldn't be written.
+    static var switchFailedNotice: String {
+        Keychain.isRefused ? switchFailedNotices[0] : switchFailedNotices[1]
+    }
+    private static let switchFailedNotices = ["Couldn't switch: macOS didn't let Lasso open its saved keys.",
+                                              "Couldn't switch: the key couldn't be saved."]
     func isCurrentRegistryModel(keyID: String, model: String) -> Bool {
         intelligence.isCurrentRegistryModel(keyID: keyID, model: model)
     }

@@ -35,6 +35,11 @@ struct Keychain3ReviewTests {
     //     "Installing it again starts without it", but the likeliest reinstall is in the same launch,
     //     where the vault is still refused: the clear does nothing, silently. The next launch the vault
     //     opens and the reinstalled package (possibly a different author's, same id) has the old key.
+    //     Rewritten after this review: the fresh-install clear is gone (C2 shows it deleted another
+    //     build's key) and uninstall is all or nothing instead, so a refused uninstall no longer leaves a
+    //     half-removed package to reinstall. The requirement is unchanged: no package ever gets a key an
+    //     uninstall left behind. Checked as the user meets it: the refused uninstall says so and changes
+    //     nothing, and once the vault opens it goes through and a reinstall starts empty.
     @Test func aReinstallInTheSameRefusedLaunchStillStartsEmpty() throws {
         let (defaults, _) = suite()
         let root = tempRoot()
@@ -44,15 +49,29 @@ struct Keychain3ReviewTests {
         defer { Keychain.delete(account); try? FileManager.default.removeItem(at: root); PackageStore.shared.reload() }
 
         let package = try launch(refusals: 0) { _ in try store.install(manifest(id: id), origin: .file) }
-        #expect(launch(refusals: 0) { _ in store.setValue("sk-old", id, package.setting("key")!) }, "precondition")
+        let setting = try #require(package.setting("key"))
+        #expect(launch(refusals: 0) { _ in store.setValue("sk-old", id, setting) }, "precondition")
+        let folder = root.appending(path: id, directoryHint: .isDirectory)
 
-        try launch(refusals: 100) { _ in
+        launch(refusals: 100) { _ in
             _ = Keychain.get("qa3.any")   // the launch's background read: prompt cancelled
-            #expect(!store.remove(id), "precondition: the uninstall says its key couldn't be deleted")
-            _ = try store.install(manifest(id: id), origin: .file)   // the user installs it again
+            // (a) The uninstall says it didn't happen.
+            #expect(!store.remove(id), "a refused uninstall claimed it was done")
         }
-        let seen = launch(refusals: 0) { _ in Keychain.get(account) }
-        #expect(seen == nil, "a reinstall after a refused uninstall got the old key back (\(seen ?? "nil")) once the vault opened")
+        // (b) Nothing half-removed: still installed, files and record together, key still there.
+        #expect(store.isInstalled(id), "a refused uninstall removed the package anyway")
+        #expect(FileManager.default.fileExists(atPath: folder.path), "its files went though the uninstall stopped")
+        #expect(launch(refusals: 0) { _ in Keychain.get(account) } == "sk-old", "its key went though the uninstall stopped")
+
+        // (c) Once the vault opens the uninstall goes through, and a reinstall starts empty.
+        Keychain.resetCache()
+        try launch(refusals: 0) { _ in
+            #expect(store.remove(id), "the uninstall failed with the vault open")
+            #expect(!store.isInstalled(id) && !FileManager.default.fileExists(atPath: folder.path))
+            let again = try store.install(manifest(id: id), origin: .file)
+            #expect(store.value(id, try #require(again.setting("key"))) == "",
+                    "a reinstall after the uninstall got the old key back")
+        }
     }
 
     // C2. The fresh-install clear keys off `records[id] == nil`, but records live in UserDefaults and

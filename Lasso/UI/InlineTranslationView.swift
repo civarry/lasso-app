@@ -44,8 +44,8 @@ struct InlineTranslationView: View {
     @State private var pass1Done = false
     @State private var pass1Started = Date()
     @State private var pass1Duration: TimeInterval?
-    /// "Translate with" couldn't switch the model (the saved keys wouldn't open): said in the menu.
-    @State private var switchRefused = false
+    /// Why "Translate with" couldn't switch the model: shown on the card, in place of "needs a model".
+    @State private var switchFailure: String?
     /// Bumped on every restart, so a session cancelled by a language change can't advance the new queue.
     @State private var generation = 0
     @State private var modelPass: ModelPass = .idle
@@ -442,7 +442,7 @@ struct InlineTranslationView: View {
         let intelligence = IntelligenceCoordinator.shared
         let canSwitch = LLMTranslation.Mode.current != .off && !PrivacyMode.localOnly
         return Menu {
-            Text(switchRefused ? ChatController.switchRefusedNotice : modelUnavailableReason ?? "")
+            Text(switchFailure ?? modelUnavailableReason ?? "")
             if canSwitch {
                 let groups = intelligence.registryGroups()
                 if !groups.isEmpty {
@@ -451,8 +451,12 @@ struct InlineTranslationView: View {
                         Menu("Translate with \(group.name)") {
                             ForEach(group.models) { model in
                                 Button(model.name) {
-                                    switchRefused = !intelligence.selectRegistryModel(keyID: group.keyID, model: model.name)
-                                    if !switchRefused { startModelPass() }
+                                    if intelligence.selectRegistryModel(keyID: group.keyID, model: model.name) {
+                                        switchFailure = nil
+                                        startModelPass()
+                                    } else {
+                                        switchFailure = ChatController.switchFailedNotice
+                                    }
                                 }
                             }
                         }
@@ -467,7 +471,7 @@ struct InlineTranslationView: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text(LLMTranslation.Mode.current == .off ? "\(appleMissing) needs AI" : "\(appleMissing) needs a model")
+                Text(switchFailure ?? (LLMTranslation.Mode.current == .off ? "\(appleMissing) needs AI" : "\(appleMissing) needs a model"))
                     .fontWeight(.medium)
                 Image(systemName: "chevron.up.chevron.down").font(.caption2)
             }
@@ -475,7 +479,7 @@ struct InlineTranslationView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help("Apple Translation doesn't cover \(appleMissing). \(modelUnavailableReason ?? "")")
+        .help(switchFailure ?? "Apple Translation doesn't cover \(appleMissing). \(modelUnavailableReason ?? "")")
     }
 
     private var swapSource: Locale.Language? {

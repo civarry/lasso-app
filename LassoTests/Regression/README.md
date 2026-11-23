@@ -8,8 +8,8 @@ Every bug that's fixed gets a test here that fails without the fix, so it can't 
   context, save ordering), `Markdown` (rendering, reasoning tags, math, paste), `Capture` (result
   cards closing, translate detection), `PackageSecurity` (sandbox escapes, install/approve/remove), `Intelligence` (providers,
   streams, context windows, what counts as local), `AppShell` (shortcuts, dictation cleanup, Keychain),
-  `KeychainReview` and `Keychain2Review` (a declined saved-keys prompt: package keys, migration,
-  uninstall, the test hook).
+  `KeychainReview`, `Keychain2Review` and `Keychain3Review` (a declined saved-keys prompt: package
+  keys, migration, uninstall, the test hook).
 - A test's name says the right behaviour; its comment says what went wrong.
 - Tests that touch `ChatController.shared` make their own conversation and close it. Tests that need
   packages use their own `PackageStore` in a temporary folder, never this Mac's.

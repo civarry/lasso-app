@@ -326,12 +326,6 @@ final class PackageStore {
         try fm.moveItem(at: staging, to: dir)
         var records = self.records
         let old = records[package.id]
-        // A fresh install starts empty: a key an earlier uninstall couldn't remove (the saved keys were
-        // closed) doesn't come back with it. Only when they open without asking; never a wipe otherwise.
-        if old == nil {
-            let secrets = package.settings.filter { $0.kind == .secret }.map { secretAccount(package.id, $0.id) }
-            Keychain.removeAll(secrets, retryIfRefused: false)
-        }
         // Full access survives an update only when no script changed.
         let keepsFullAccess = old?.fullAccess == true && (old?.files ?? [:]) == Self.hashes(files)
         // So does running by itself, and only if its event commands are the same ones.
@@ -378,8 +372,9 @@ final class PackageStore {
 
     /// Deletes the package, its preferences and its Keychain items. Its usage counts stay, so removing
     /// and reinstalling can't spend a free tier twice; files it saved to the workspace are the user's.
-    /// false when its keys couldn't be removed (the saved keys wouldn't open): they stay saved, and a
-    /// fresh install of this id clears them (`install`).
+    /// All or nothing: the keys go first, and when they can't (the saved keys wouldn't open, also on the
+    /// one retry) nothing else is removed and it returns false. So no later package with this id ever
+    /// finds an old key.
     @discardableResult
     func remove(_ id: String) -> Bool {
         // Every version it had, not just the one on disk now: a broken package has none readable, and a
@@ -390,15 +385,17 @@ final class PackageStore {
         if let disk = manifestData(id), let package = PackageValidator.validate(disk).package { versions.append(package) }
         if let previous = try? Data(contentsOf: previousFolder(id).appending(path: "lasso.json")),
            let package = PackageValidator.validate(previous).package { versions.append(package) }
-        var secrets: Set<String> = []
-        for package in versions {
-            PackageHotkeys.clear(package)
-            for setting in package.settings where setting.kind == .secret { secrets.insert(secretAccount(id, setting.id)) }
+        let secrets = Set(versions.flatMap { package in
+            package.settings.filter { $0.kind == .secret }.map { secretAccount(id, $0.id) }
+        })
+        // One write for all of them: one prompt at most, not one per version. The user is removing it,
+        // so a refused vault may ask once more.
+        guard Keychain.removeAll(secrets.sorted()) else {
+            Log.app.error("packages · \(id, privacy: .public) wasn't removed: its keys couldn't be (the saved keys are closed)")
+            return false
         }
-        // One write for all of them: one prompt at most, not one per version.
-        let keysRemoved = Keychain.removeAll(secrets.sorted())
-        if !keysRemoved { Log.app.error("packages · \(id, privacy: .public)'s keys couldn't be removed: the saved keys are closed") }
         unreadSecrets.subtract(secrets)
+        for package in versions { PackageHotkeys.clear(package) }
         let prefix = "package.\(id).setting."
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) { defaults.removeObject(forKey: key) }
         try? FileManager.default.removeItem(at: root.appending(path: id, directoryHint: .isDirectory))
@@ -413,7 +410,7 @@ final class PackageStore {
         PackageEvents.setAllowed(false, id, defaults)
         reload()
         Log.app.notice("packages · removed \(id, privacy: .public)")
-        return keysRemoved
+        return true
     }
 
     /// The on/off switch. It never approves a manifest changed on disk: that takes the review

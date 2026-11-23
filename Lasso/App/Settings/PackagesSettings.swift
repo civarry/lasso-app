@@ -1001,8 +1001,8 @@ struct PackagePage: View {
     private var catalog: PackageCatalog { .shared }
     @State private var goBackError: String?
     @State private var confirmRemove = false
-    /// Removed, but macOS kept the saved keys closed, so its key is still saved.
-    @State private var keysWaiting = false
+    /// Remove stopped: macOS kept the saved keys closed, so nothing was removed.
+    @State private var removeRefused = false
     @State private var confirmFullAccess = false
     @State private var confirmEvents = false
     /// Developer mode: which command the Test card runs.
@@ -1040,8 +1040,8 @@ struct PackagePage: View {
         }
         // So the page knows about an update without a trip to Browse.
         .task { if !localOnly, catalog.state != .loading, catalog.isStale { await catalog.refresh() } }
-        // On the page, not the header: the header is gone once the package is.
-        .modifier(KeysWaitingAlert(isPresented: $keysWaiting, done: removed))
+        // On the page, beside the Remove buttons in both of its layouts.
+        .modifier(RemoveRefusedAlert(isPresented: $removeRefused))
     }
 
     /// A newer version in the catalog, on the package's own page: Update…, or what it needs first.
@@ -1173,7 +1173,7 @@ struct PackagePage: View {
     }
 
     private func remove(_ id: String) {
-        if store.remove(id) { removed() } else { keysWaiting = true }
+        if store.remove(id) { removed() } else { removeRefused = true }
     }
 
     private func header(_ package: LassoPackage, origin: PackageStore.Origin) -> some View {
@@ -1470,16 +1470,15 @@ struct PackagePage: View {
     }
 }
 
-/// After a removal whose key couldn't be deleted yet: says so, then leaves the page.
-private struct KeysWaitingAlert: ViewModifier {
+/// A removal that stopped because its key couldn't be deleted: the package is still installed.
+private struct RemoveRefusedAlert: ViewModifier {
     @Binding var isPresented: Bool
-    let done: () -> Void
 
     func body(content: Content) -> some View {
-        content.alert("Removed, but its key is still saved", isPresented: $isPresented) {
-            Button("OK", action: done)
+        content.alert("Couldn't remove it", isPresented: $isPresented) {
+            Button("OK") {}
         } message: {
-            Text("macOS didn't allow Lasso to open its saved keys, so its key couldn't be deleted. Installing it again starts without it.")
+            Text("macOS didn't let Lasso open its saved keys. Try again and choose Allow.")
         }
     }
 }
