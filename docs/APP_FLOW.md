@@ -981,8 +981,29 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
     Bora") and "is is". Keychain: a key that isn't saved is looked up once per launch, not on every
     draw. Settings no longer puts back a model switched from the chat header when any other setting
     changes (untouched fields adopt the live value). Not yet tested: the dictation and Settings fixes
-    (need a microphone or the Settings view's state); and a key typed in Settings after the vault
-    prompt was declined is still dropped silently.
+    (need a microphone or the Settings view's state).
+  - **QA round 7, a declined Keychain prompt, fixed** (`Regression/AppShellRegressionTests`): after the
+    saved-keys prompt was cancelled, `Keychain.set` dropped every key typed later without a word. Now a
+    save (and a delete) asks once more, since the user is there; if that's cancelled too it returns false,
+    writes nothing (a refused vault is never replaced) and Settings and a package's key field say so in
+    orange with Try again, keeping the typed value. Background reads still never ask again, and
+    `getMigrating` keeps the old copy until the move saved. Not tested: the Settings messages (view state).
+  - **Its four reviews** (`Regression/KeychainReviewRegressionTests`, `Keychain2…`, `Keychain3…`,
+    `Keychain4ReviewRegressionTests`). Tested: a package key read while the keys were closed shows "" and
+    that "" is never saved back over the real key; the Tavily/SerpApi migration never prompts, keeps the
+    old key until it's saved, isn't marked done while the old key couldn't be read, and never reinstalls
+    a package the user removed; uninstall is all or nothing: every key saved under the package's id goes
+    first, by account prefix (`Keychain.removeAll(prefix:)`, so also one a version dropped two updates
+    ago, and never another package's whose id extends it), in one write (one prompt at most), and if it
+    can't, nothing is removed and it returns false; a package with no keys in any version it still has
+    uninstalls without asking while the keys are closed; installing never touches keys (another build sharing the vault keeps
+    its key); a key saved after a refused removal stays; the test hook has its own launch state per task,
+    so a simulated refusal doesn't leak into suites running alongside. Not tested (view state, or no
+    isolated UserDefaults): Settings and package rows reload once the vault opens
+    (`Keychain.didOpenAfterRefusal`); the package page's "Couldn't remove it" alert; a model on another
+    connection isn't switched while its key is unknown, and the chat and translation card say why; vault
+    writes change memory only once the item is written and put the old contents back if the write
+    fails; Hermes doesn't cache an unknown key; a refused package row doesn't re-ask on every pause.
   - **QA round 8, regressions from the earlier fixes, 10 fixed** (`Regression/ChatRound8RegressionTests`,
     `MarkdownRound8RegressionTests`): Regenerate on a /command that can't run now keeps the exchange
     (checked before anything is removed). Stop after a /help note mid-reply settles the real reply, and

@@ -365,23 +365,38 @@ final class IntelligenceCoordinator {
     ///
     /// `keyID` is "" for a hand-typed model in the "Manually added" group; its endpoint is then
     /// resolved by name, the same fallback the settings panel uses.
-    func selectRegistryModel(keyID: String, model: String) {
-        // A new choice is a fresh start: whatever the old one kept doing is no longer this model's story.
-        primaryCircuit.reset()
-        cloudContextTokens = nil
-        routedAround = nil
+    ///
+    /// false, and nothing switched, when the connection's key couldn't be read or saved (the saved-keys
+    /// prompt was cancelled): switching the address but not the key would send this key to that server.
+    @discardableResult
+    func selectRegistryModel(keyID: String, model: String) -> Bool {
         let registry = KeysRegistry.load()
         let entry = keyID.isEmpty ? registry.enabledKey(exposingModel: model)
                                   : registry.key(withID: keyID)
         if let entry {
+            // The user just picked it, so the saved keys may ask once more. Still unreadable: a nil key
+            // is unknown, not empty.
+            let key = Keychain.get(entry.keychainAccount, retryIfRefused: true)
+            guard key != nil || !Keychain.isRefused else {
+                Log.app.error("keychain · couldn't read the chosen connection's key; the model wasn't switched")
+                return false
+            }
+            guard Keychain.set(key ?? "", for: "openai.apiKey", retryIfRefused: false) else {
+                Log.app.error("keychain · couldn't save the language model's key; the model wasn't switched")
+                return false
+            }
             openAIBaseURL = entry.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
             openAIConnectionKind = entry.kind
-            Keychain.set(Keychain.get(entry.keychainAccount) ?? "", for: "openai.apiKey")
         }
+        // A new choice is a fresh start: whatever the old one kept doing is no longer this model's story.
+        primaryCircuit.reset()
+        cloudContextTokens = nil
+        routedAround = nil
         openAIModel = model
         UserDefaults.standard.set(keyID.isEmpty ? "manual:\(model)" : "model:\(keyID)\t\(model)",
                                   forKey: Self.languageSelectionKey)
         preferred = .openAICompatible
+        return true
     }
 
     /// Whether this connection's model is the active one — drives the switcher's checkmarks.
@@ -1065,11 +1080,14 @@ final class IntelligenceCoordinator {
     }
 
     /// Make the stand-in the user's own choice. Only for a registry model (a pool candidate always is).
-    func switchToSubstitute() {
-        guard let routed = routedAround, let ref = routed.substitute?.ref else { return }
-        selectRegistryModel(keyID: ref.keyID, model: ref.model)
+    /// false when it couldn't switch (the saved keys wouldn't open): the notice stays.
+    @discardableResult
+    func switchToSubstitute() -> Bool {
+        guard let routed = routedAround, let ref = routed.substitute?.ref,
+              selectRegistryModel(keyID: ref.keyID, model: ref.model) else { return false }
         primaryCircuit.reset()
         routedAround = nil
+        return true
     }
 
     /// "Try again" / "Stop racing": the next request goes to the selected model on its own terms. The

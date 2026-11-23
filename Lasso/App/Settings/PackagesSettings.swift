@@ -1001,6 +1001,8 @@ struct PackagePage: View {
     private var catalog: PackageCatalog { .shared }
     @State private var goBackError: String?
     @State private var confirmRemove = false
+    /// Remove stopped: macOS kept the saved keys closed, so nothing was removed.
+    @State private var removeRefused = false
     @State private var confirmFullAccess = false
     @State private var confirmEvents = false
     /// Developer mode: which command the Test card runs.
@@ -1038,6 +1040,8 @@ struct PackagePage: View {
         }
         // So the page knows about an update without a trip to Browse.
         .task { if !localOnly, catalog.state != .loading, catalog.isStale { await catalog.refresh() } }
+        // On the page, beside the Remove buttons in both of its layouts.
+        .modifier(RemoveRefusedAlert(isPresented: $removeRefused))
     }
 
     /// A newer version in the catalog, on the package's own page: Update…, or what it needs first.
@@ -1163,9 +1167,13 @@ struct PackagePage: View {
             }
         }
         .confirmationDialog("Remove \(broken.id)?", isPresented: $confirmRemove, titleVisibility: .visible) {
-            Button("Remove", role: .destructive) { store.remove(broken.id); removed() }
+            Button("Remove", role: .destructive) { remove(broken.id) }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    private func remove(_ id: String) {
+        if store.remove(id) { removed() } else { removeRefused = true }
     }
 
     private func header(_ package: LassoPackage, origin: PackageStore.Origin) -> some View {
@@ -1454,10 +1462,23 @@ struct PackagePage: View {
             }
         }
         .confirmationDialog("Remove \(package.name)?", isPresented: $confirmRemove, titleVisibility: .visible) {
-            Button("Remove", role: .destructive) { store.remove(package.id); removed() }
+            Button("Remove", role: .destructive) { remove(package.id) }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Its settings, keys and data are deleted from this Mac. Files it saved in ~/LassoWorkspace and this month's usage count are kept.")
+        }
+    }
+}
+
+/// A removal that stopped because its key couldn't be deleted: the package is still installed.
+private struct RemoveRefusedAlert: ViewModifier {
+    @Binding var isPresented: Bool
+
+    func body(content: Content) -> some View {
+        content.alert("Couldn't remove it", isPresented: $isPresented) {
+            Button("OK") {}
+        } message: {
+            Text("macOS didn't let Lasso open its saved keys. Try again and choose Allow.")
         }
     }
 }
@@ -1472,6 +1493,13 @@ private struct PackageSettingRow: View {
 
     @State private var text = ""
     @State private var save: Task<Void, Never>?
+    /// The Keychain wouldn't save the typed secret (its prompt was cancelled); the text stays to retry.
+    @State private var saveFailed = false
+    /// That text: not retried on every pause or on leaving the page while the vault stays closed, only
+    /// by Try again or an edit.
+    @State private var failedText: String?
+    /// What the field held when it was read (an untouched field reloads once the vault opens).
+    @State private var loaded = ""
     @Environment(\.openURL) private var openURL
     private var store: PackageStore { .shared }
 
@@ -1485,6 +1513,10 @@ private struct PackageSettingRow: View {
                             .foregroundStyle(caption.warn ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    if saveFailed {
+                        Button("Try again") { commit(force: true) }
+                            .buttonStyle(.link).font(SettingsFont.sub)
+                    }
                     if let help = setting.help {
                         Button(setting.kind == .secret ? "Get a key" : "Help") { openURL(help) }
                             .buttonStyle(.link).font(SettingsFont.sub)
@@ -1497,12 +1529,19 @@ private struct PackageSettingRow: View {
             .padding(.vertical, SettingsMetrics.rowPaddingV)
             Divider()
         }
-        .onAppear { text = store.value(packageID, setting) }
+        .onAppear { text = store.value(packageID, setting); loaded = text }
         .onDisappear { commit() }
+        // Read while the saved keys wouldn't open, it showed "": now the real key, unless it was edited.
+        .onReceive(NotificationCenter.default.publisher(for: Keychain.didOpenAfterRefusal)) { _ in
+            guard setting.kind == .secret, text == loaded else { return }
+            text = store.value(packageID, setting)
+            loaded = text
+        }
     }
 
     private var caption: (text: String, warn: Bool)? {
-        switch setting.kind {
+        if saveFailed { return ("Couldn't save the key: macOS didn't allow Lasso to open its saved keys. Try again and choose Allow.", true) }
+        return switch setting.kind {
         case .secret where text.isEmpty: ("Required. Searches skip \(packageName) until it's added.", true)
         case .server:
             if text.isEmpty { ("Searches are sent here.", false) }
@@ -1551,7 +1590,7 @@ private struct PackageSettingRow: View {
             TextField("", text: $text, prompt: Text(setting.kind == .server ? "http://localhost:8888" : ""))
                 .textFieldStyle(.roundedBorder)
                 .settingsFieldWidth()
-                .onSubmit(commit)
+                .onSubmit { commit() }
                 .onChange(of: text) { _, _ in later() }
         case .choice:
             Picker("", selection: Binding(get: { text }, set: { text = $0; commit() })) {
@@ -1571,11 +1610,19 @@ private struct PackageSettingRow: View {
         }
     }
 
-    private func commit() {
+    private func commit(force: Bool = false) {
         save?.cancel()
-        guard text != store.value(packageID, setting) else { return }
+        guard text != store.value(packageID, setting) else { saveFailed = false; failedText = nil; return }
         if setting.kind == .server, !text.isEmpty, caption?.warn == true { return }
-        store.setValue(text, packageID, setting)
+        if setting.kind == .secret {
+            // Untouched and empty: it only looked empty because the key couldn't be read.
+            if text.isEmpty, text == loaded { return }
+            if !force, text == failedText, Keychain.isRefused { return }
+        }
+        let saved = store.setValue(text, packageID, setting)
+        saveFailed = !saved
+        failedText = saved ? nil : text
+        if saved { loaded = text }
         changed()
     }
 }

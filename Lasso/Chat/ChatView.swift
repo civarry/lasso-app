@@ -118,7 +118,7 @@ struct ChatView: View {
                     .lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 6)
                 if routed.substitute?.ref != nil {
-                    Button("Switch") { intelligence.switchToSubstitute() }
+                    Button("Switch") { chat.switchToSubstitute() }
                         .buttonStyle(.link).font(.caption)
                         .help("Make \(Self.shortModel(routed.substituteName)) your model")
                 }

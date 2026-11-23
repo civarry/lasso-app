@@ -372,7 +372,13 @@ final class PackageStore {
 
     /// Deletes the package, its preferences and its Keychain items. Its usage counts stay, so removing
     /// and reinstalling can't spend a free tier twice; files it saved to the workspace are the user's.
-    func remove(_ id: String) {
+    /// All or nothing: every key saved under its id goes first (`Keychain.removeAll(prefix:)`), and when
+    /// they can't (the saved keys wouldn't open, also on the one retry) nothing else is removed and it
+    /// returns false. One exception: a package none of whose readable versions declares a key uninstalls
+    /// without asking while the saved keys are closed, so an older key it no longer declares can stay
+    /// then. Otherwise no later package with this id finds an old key.
+    @discardableResult
+    func remove(_ id: String) -> Bool {
         // Every version it had, not just the one on disk now: a broken package has none readable, and a
         // setting an update dropped is still stored. A later package with this id must start empty.
         var versions: [LassoPackage] = []
@@ -381,10 +387,21 @@ final class PackageStore {
         if let disk = manifestData(id), let package = PackageValidator.validate(disk).package { versions.append(package) }
         if let previous = try? Data(contentsOf: previousFolder(id).appending(path: "lasso.json")),
            let package = PackageValidator.validate(previous).package { versions.append(package) }
-        for package in versions {
-            PackageHotkeys.clear(package)
-            for setting in package.settings where setting.kind == .secret { Keychain.delete(secretAccount(id, setting.id)) }
+        let secrets = Set(versions.flatMap { package in
+            package.settings.filter { $0.kind == .secret }.map { secretAccount(id, $0.id) }
+        })
+        // Every key saved under this id, also one a version no longer readable declared (dropped two
+        // updates ago, a developer folder, a broken manifest): by prefix, in one write, one prompt at
+        // most. Ids and setting ids have no dots, so "package.abc." never matches "package.abc-d.".
+        // The user is removing it, so a refused vault may ask once more; but not for a package with no
+        // keys in any version it still has, which uninstalls without asking while the keys are closed.
+        let keysGone = Keychain.removeAll(prefix: secretAccount(id, ""), retryIfRefused: !secrets.isEmpty)
+        guard keysGone || (secrets.isEmpty && Keychain.isRefused) else {
+            Log.app.error("packages · \(id, privacy: .public) wasn't removed: its keys couldn't be (the saved keys are closed)")
+            return false
         }
+        unreadSecrets = unreadSecrets.filter { !$0.hasPrefix(secretAccount(id, "")) }
+        for package in versions { PackageHotkeys.clear(package) }
         let prefix = "package.\(id).setting."
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) { defaults.removeObject(forKey: key) }
         try? FileManager.default.removeItem(at: root.appending(path: id, directoryHint: .isDirectory))
@@ -399,6 +416,7 @@ final class PackageStore {
         PackageEvents.setAllowed(false, id, defaults)
         reload()
         Log.app.notice("packages · removed \(id, privacy: .public)")
+        return true
     }
 
     /// The on/off switch. It never approves a manifest changed on disk: that takes the review
@@ -480,18 +498,44 @@ final class PackageStore {
     nonisolated func secretAccount(_ id: String, _ setting: String) -> String { "package.\(id).\(setting)" }
 
     func value(_ id: String, _ setting: PackageSetting) -> String {
-        if setting.kind == .secret { return Keychain.get(secretAccount(id, setting.id)) ?? "" }
+        if setting.kind == .secret {
+            let account = secretAccount(id, setting.id)
+            if let value = Keychain.get(account) { return value }
+            if Keychain.isRefused { observeVaultOpening(); unreadSecrets.insert(account) }
+            return ""
+        }
         return defaults.string(forKey: settingKey(id, setting.id)) ?? setting.defaultValue ?? ""
     }
 
-    func setValue(_ value: String, _ id: String, _ setting: PackageSetting) {
+    /// Secrets handed out as "" because the saved keys couldn't be opened: "" from them is unknown, not
+    /// cleared, so writing it back (a settings row that loaded then, leaving the page after the vault
+    /// opened) mustn't delete the real key. Cleared once the vault has opened and the rows reloaded.
+    private var unreadSecrets: Set<String> = []
+    private var vaultObserver: NSObjectProtocol?
+
+    private func observeVaultOpening() {
+        guard vaultObserver == nil else { return }
+        vaultObserver = NotificationCenter.default.addObserver(forName: Keychain.didOpenAfterRefusal, object: nil,
+                                                               queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.unreadSecrets = [] }
+        }
+    }
+
+    /// false when a secret wasn't saved (the Keychain's saved-keys prompt was cancelled). `retryIfRefused`
+    /// as in `Keychain.set`: false for a write the user didn't just make (the launch's migration).
+    @discardableResult
+    func setValue(_ value: String, _ id: String, _ setting: PackageSetting, retryIfRefused: Bool = true) -> Bool {
+        var saved = true
         if setting.kind == .secret {
             let account = secretAccount(id, setting.id)
-            if value.isEmpty { Keychain.delete(account) } else { Keychain.set(value, for: account) }
+            if value.isEmpty, unreadSecrets.contains(account) { return true }   // unknown, not cleared
+            saved = Keychain.set(value, for: account, retryIfRefused: retryIfRefused)   // empty deletes
+            if saved { unreadSecrets.remove(account) }
         } else {
             defaults.set(value, forKey: settingKey(id, setting.id))
         }
         reload()
+        return saved
     }
 
     /// `settings.<id>` values for templates, and the secrets among them (for redaction).

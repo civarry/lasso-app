@@ -146,6 +146,14 @@ struct SettingsView: View {
     @State private var connectionsTestNote: String?
     @State private var discoveringKeyIDs: Set<String> = []
     @State private var savedRegistryKeyValues: [String: String] = [:]   // baseline for "unsaved changes" diff
+    /// Keys the Keychain wouldn't save (its saved-keys prompt was cancelled), by account: the value typed,
+    /// still in its field, saved by Try again or the next edit.
+    @State private var unsavedKeys: [String: String] = [:]
+    /// The saved keys couldn't be read when Settings opened, so its key fields start empty: an empty one
+    /// the user didn't touch is unknown, never a key to remove.
+    @State private var keysUnreadAtLoad = false
+    /// A model on another connection was chosen while its key couldn't be read: not switched yet.
+    @State private var switchWaitsForKeys = false
     @State private var showMigrationNotice = false
     @State private var ollamaStatus: OllamaEndpoint.Status?
     @State private var mlxDownload: MLXDownloadState = .idle
@@ -204,6 +212,7 @@ struct SettingsView: View {
                             .toolbar { backForward }
                     }
             }
+            .safeAreaInset(edge: .bottom, spacing: 0) { unsavedKeysNote }
         }
         .frame(width: 740)
         .frame(minHeight: 560, idealHeight: 640)
@@ -222,6 +231,7 @@ struct SettingsView: View {
         .onAppear { columns = .all }
         .onChange(of: draft) { _, _ in scheduleApply() }
         .onChange(of: registryKeyValues) { _, _ in scheduleApply() }
+        .onReceive(NotificationCenter.default.publisher(for: Keychain.didOpenAfterRefusal)) { _ in readKeysAfterUnlock() }
         .onDisappear { flushApply() }
     }
 
@@ -829,6 +839,29 @@ struct SettingsView: View {
             onChanged: { connectionsDidChange() },
             dismiss: { showConnections = false },
             primary: draftPrimaryRef)
+        .safeAreaInset(edge: .bottom, spacing: 0) { unsavedKeysNote }
+    }
+
+    /// Under the page (and the connections sheet, where keys are typed too) while a typed key isn't saved.
+    @ViewBuilder private var unsavedKeysNote: some View {
+        if !unsavedKeys.isEmpty || switchWaitsForKeys {
+            VStack(spacing: 0) {
+                Divider()
+                HStack(spacing: 10) {
+                    Text(unsavedKeys.isEmpty
+                         ? "The model wasn't switched: macOS didn't allow Lasso to open its saved keys, so its key is unknown. Try again and choose Allow."
+                         : "Couldn't save \(unsavedKeys.count == 1 ? "the key" : "\(unsavedKeys.count) keys"): macOS didn't allow Lasso to open its saved keys. Try again and choose Allow.")
+                        .font(SettingsFont.sub).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Try again") { retryUnsavedKeys() }
+                        .controlSize(.small)
+                }
+                .padding(.horizontal, SettingsMetrics.rowPaddingH)
+                .padding(.vertical, 10)
+            }
+            .background(.background)
+        }
     }
 
     // MARK: - The three model sections (one template, three instances)
@@ -2647,6 +2680,7 @@ struct SettingsView: View {
             d.connectorEnabled[connector.id] = connector.isEnabled
             if connector.keyAccount != nil { d.connectorKeys[connector.id] = connector.key() }
         }
+        keysUnreadAtLoad = Keychain.isRefused
         d.localOnly = UserDefaults.standard.bool(forKey: "privacy.localOnly")
         d.lensSearch = UserDefaults.standard.bool(forKey: LensSearchAction.enabledKey)
         d.pretranslate = UserDefaults.standard.object(forKey: "translation.pretranslate") as? Bool ?? true
@@ -2725,6 +2759,55 @@ struct SettingsView: View {
         }
     }
 
+    /// Saves one key; false when the Keychain wouldn't open the saved keys. (Hermes keeps its own copy.)
+    private static func writeKey(_ value: String, _ account: String) -> Bool {
+        account == HermesAgent.keychainAccount ? HermesAgent.setAPIKey(value) : Keychain.set(value, for: account)
+    }
+
+    /// Try again: one prompt, and the rest wait if it's cancelled again.
+    private func retryUnsavedKeys() {
+        for (account, value) in unsavedKeys.sorted(by: { $0.key < $1.key }) {
+            guard Self.writeKey(value, account) else { return }
+            unsavedKeys[account] = nil
+        }
+        // Nothing to save, only keys to read (a model switch waiting for its connection's key).
+        if keysUnreadAtLoad, Keychain.isRefused { _ = Keychain.get(HermesAgent.keychainAccount, retryIfRefused: true) }
+        if keysUnreadAtLoad, !Keychain.isRefused { readKeysAfterUnlock() }
+    }
+
+    /// The saved keys opened after Settings showed them empty: the fields nobody edited get their real
+    /// keys, and a waiting model switch goes through.
+    private func readKeysAfterUnlock() {
+        guard keysUnreadAtLoad, !Keychain.isRefused else { return }
+        keysUnreadAtLoad = false
+        func fill(_ field: WritableKeyPath<Draft, String>, _ account: String) {
+            guard draft[keyPath: field].isEmpty, saved[keyPath: field].isEmpty else { return }
+            let value = Keychain.get(account) ?? ""
+            draft[keyPath: field] = value
+            saved[keyPath: field] = value
+        }
+        fill(\.anthropicKey, "anthropic.apiKey")
+        fill(\.visionAnthropicKey, "vision.anthropic.apiKey")
+        if draft.hermesKey.isEmpty, saved.hermesKey.isEmpty {
+            draft.hermesKey = HermesAgent.apiKey
+            saved.hermesKey = draft.hermesKey
+        }
+        for connector in Connectors.all {
+            guard let account = connector.keyAccount, (draft.connectorKeys[connector.id] ?? "").isEmpty,
+                  (saved.connectorKeys[connector.id] ?? "").isEmpty else { continue }
+            let value = Keychain.get(account) ?? ""
+            draft.connectorKeys[connector.id] = value
+            saved.connectorKeys[connector.id] = value
+        }
+        for entry in draft.registry.entries
+        where (registryKeyValues[entry.id] ?? "").isEmpty && (savedRegistryKeyValues[entry.id] ?? "").isEmpty {
+            let value = Keychain.get(entry.keychainAccount) ?? ""
+            registryKeyValues[entry.id] = value
+            savedRegistryKeyValues[entry.id] = value
+        }
+        if switchWaitsForKeys { apply() }
+    }
+
     private func apply() {
         // A model switched from the chat header since Settings loaded wins over the untouched field
         // here: applying a toggle must not put the old model back.
@@ -2752,9 +2835,41 @@ struct SettingsView: View {
             Task { await OllamaEndpoint.autodetect() }   // re-resolve the effective server after a change
         }
         // Applied on every change now, so each secret is written only when it changed: a toggle must
-        // not rewrite every Keychain item.
+        // not rewrite every Keychain item. A key the Keychain won't take is kept in `unsavedKeys` (and its
+        // field) and shown; after one refusal the rest of this apply doesn't ask again.
+        var refusedNow = false
+        func store(_ value: String, _ account: String) {
+            // Already waiting with this value: Try again or an edit saves it, not every other change.
+            if refusedNow || (Keychain.isRefused && unsavedKeys[account] == value) {
+                unsavedKeys[account] = value
+            } else if Self.writeKey(value, account) {
+                unsavedKeys[account] = nil
+            } else {
+                refusedNow = true
+                unsavedKeys[account] = value
+            }
+        }
         func key(_ new: String, _ old: String, _ account: String) {
-            if new != old { Keychain.set(new, for: account) }
+            if new != old { store(new, account) }
+        }
+        /// The language/image/embedding key, copied from the chosen connection's.
+        /// false when it couldn't be saved.
+        func copied(_ value: String, _ account: String) -> Bool {
+            if keysUnreadAtLoad, value.isEmpty { return true }
+            if value == (Keychain.get(account) ?? "") { unsavedKeys[account] = nil; return true }
+            store(value, account)
+            return unsavedKeys[account] == nil
+        }
+        /// Copies the chosen connection's key first; the address and model follow only if it's there. A
+        /// switch to a connection whose key Settings couldn't read, or couldn't save, waits: moving the
+        /// address but not the key would send the current key to that server.
+        switchWaitsForKeys = false
+        func keyReady(_ key: RegisteredKey?, _ account: String, from currentBaseURL: String) -> Bool {
+            guard let key else { return true }
+            let value = registryKeyValues[key.id] ?? ""
+            let sameServer = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines) == currentBaseURL
+            if keysUnreadAtLoad, value.isEmpty, !sameServer { switchWaitsForKeys = true; return false }
+            return copied(value, account) || sameServer
         }
         intelligence.visionModel = draft.visionModel
         intelligence.visionMLXModel = draft.visionMLXModel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2763,7 +2878,7 @@ struct SettingsView: View {
         key(draft.anthropicKey, saved.anthropicKey, "anthropic.apiKey")
         UserDefaults.standard.set(draft.hermesBaseURL.trimmingCharacters(in: .whitespacesAndNewlines),
                                   forKey: HermesAgent.baseURLKey)
-        if draft.hermesKey != saved.hermesKey { HermesAgent.setAPIKey(draft.hermesKey) }
+        key(draft.hermesKey, saved.hermesKey, HermesAgent.keychainAccount)
         UserDefaults.standard.set(draft.hermesLetDecide, forKey: HermesAgent.letHermesDecideKey)
         if draft.hermesUseOwn != HermesAgent.usesOwnHermes { HermesRuntime.shared.stop() }
         UserDefaults.standard.set(draft.hermesUseOwn, forKey: HermesAgent.useOwnHermesKey)
@@ -2804,23 +2919,23 @@ struct SettingsView: View {
         // has no connection of its own: it rides on whichever endpoint is already configured, exactly
         // as the chat switcher's "Manually added" group does. Requiring a connection here meant Save &
         // Apply stored the choice and then kept sending requests to the previous model.
-        if let lang = resolveRegistrySelection(draft.langSelection, capability: .language) {
+        if let lang = resolveRegistrySelection(draft.langSelection, capability: .language),
+           keyReady(lang.key, "openai.apiKey", from: intelligence.openAIBaseURL) {
             intelligence.openAIModel = lang.model
             if let key = lang.key {
                 intelligence.openAIBaseURL = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
                 // The connection's protocol travels with the flattened config, because that's what
                 // decides which transport `buildProvider()` constructs.
                 intelligence.openAIConnectionKind = key.kind
-                Keychain.set(registryKeyValues[key.id] ?? "", for: "openai.apiKey", ifChangedFrom: Keychain.get("openai.apiKey"))
             }
         }
         // Effective image config (resolving "same as language" against the language selection).
-        if let vis = resolveRegistrySelection(draft.visionSelection, capability: .vision) {
+        if let vis = resolveRegistrySelection(draft.visionSelection, capability: .vision),
+           keyReady(vis.key, "vision.openai.apiKey", from: intelligence.visionOpenAIBaseURL) {
             intelligence.visionOpenAIModel = vis.model
             if let key = vis.key {
                 intelligence.visionOpenAIBaseURL = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
                 intelligence.visionOpenAIConnectionKind = key.kind
-                Keychain.set(registryKeyValues[key.id] ?? "", for: "vision.openai.apiKey", ifChangedFrom: Keychain.get("vision.openai.apiKey"))
             }
         }
 
@@ -2858,12 +2973,12 @@ struct SettingsView: View {
         intelligence.embeddingOllamaModel = draft.embeddingOllamaModel.trimmingCharacters(in: .whitespacesAndNewlines)
         intelligence.embeddingMLXModel = draft.embeddingMLXModel.trimmingCharacters(in: .whitespacesAndNewlines)
         // Effective embedding config (its own endpoint, resolved from the shared registry).
-        if let emb = resolveRegistrySelection(draft.embeddingSelection, capability: .embedding) {
+        if let emb = resolveRegistrySelection(draft.embeddingSelection, capability: .embedding),
+           keyReady(emb.key, "embedding.openai.apiKey", from: intelligence.embeddingOpenAIBaseURL) {
             intelligence.embeddingOpenAIModel = emb.model.trimmingCharacters(in: .whitespacesAndNewlines)
             if let key = emb.key {
                 intelligence.embeddingOpenAIBaseURL = key.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
                 intelligence.embeddingOpenAIConnectionKind = key.kind
-                Keychain.set(registryKeyValues[key.id] ?? "", for: "embedding.openai.apiKey", ifChangedFrom: Keychain.get("embedding.openai.apiKey"))
             }
         }
         if embeddingChanged { ChatController.shared.embeddingConfigChanged() }
