@@ -33,7 +33,7 @@ struct HTMLPreviewTests {
         }
         var hits: [String] { ((try? String(contentsOf: log, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init) }
         func ready() async throws {
-            for _ in 0..<50 {
+            for _ in 0..<200 {   // a slow CI machine can take seconds to start python
                 if (try? await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/ready")!)) != nil { return }
                 try await Task.sleep(for: .milliseconds(100))
             }
