@@ -65,6 +65,28 @@ struct Keychain4ReviewTests {
         }
     }
 
+    // Added with the fix: `remove` deletes by account prefix ("package.<id>."), which must stop at the
+    // id. Ids have no dots, so a package whose id extends another's (abc, abc-d) keeps its key.
+    @Test func removingAPackageLeavesTheKeyOfOneWhoseIdExtendsIt() throws {
+        let (store, root) = makeStore()
+        let id = "qa4p-\(UUID().uuidString.prefix(6).lowercased())"
+        let longer = "\(id)-d"
+        defer {
+            launch(refusals: 0) { _ in _ = Keychain.removeAll([store.secretAccount(id, "key"), store.secretAccount(longer, "key")]) }
+            try? FileManager.default.removeItem(at: root); PackageStore.shared.reload()
+        }
+        try launch(refusals: 0) { _ in
+            for pid in [id, longer] {
+                let p = try store.install(manifest(id: pid, version: "1.0.0"), origin: .catalog)
+                #expect(store.setValue("sk-\(pid)", pid, try #require(p.setting("key"))), "precondition")
+            }
+            #expect(store.remove(id), "precondition")
+            #expect(Keychain.get(store.secretAccount(id, "key")) == nil)
+            #expect(Keychain.get(store.secretAccount(longer, "key")) == "sk-\(longer)",
+                    "removing a package deleted the key of another whose id starts with its id")
+        }
+    }
+
     // Check for question 2 (expected to pass): a package with no keys uninstalls even while the saved
     // keys are refused, and without asking.
     @Test func aKeylessPackageUninstallsWhileRefusedWithoutAsking() throws {

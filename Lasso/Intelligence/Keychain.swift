@@ -238,6 +238,43 @@ enum Keychain {
         return removed
     }
 
+    /// Removes every key whose account starts with `prefix` (a package's, whatever settings it declared
+    /// over time), in one write, as `removeAll`. An older version's own items that match go too, only
+    /// once the vault write worked.
+    @discardableResult
+    static func removeAll(prefix: String, retryIfRefused: Bool = true) -> Bool {
+        guard !prefix.isEmpty else { return false }
+        lock.lock()
+        var removed = false
+        var accounts: [String] = []
+        if let values = vault(retryIfRefused: retryIfRefused) {
+            accounts = values.keys.filter { $0.hasPrefix(prefix) }
+            removed = update { values in accounts.forEach { values[$0] = nil } }
+            if removed {
+                let legacy = legacyAccounts().filter { $0.hasPrefix(prefix) && $0 != vaultAccount }
+                for account in legacy { SecItemDelete(query(account) as CFDictionary) }
+                accounts += legacy
+            }
+        }
+        lock.unlock()
+        // Outside the lock, as in `get`.
+        if removed { for account in Set(accounts) { UserDefaults.standard.removeObject(forKey: openKey(account)) } }
+        return removed
+    }
+
+    /// The accounts of this service's items (names only: reading names doesn't ask).
+    private static func legacyAccounts() -> [String] {
+        _ = noPromptsUnderTests
+        let request: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                      kSecAttrService as String: service,
+                                      kSecReturnAttributes as String: true,
+                                      kSecMatchLimit as String: kSecMatchLimitAll]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(request as CFDictionary, &result) == errSecSuccess,
+              let list = result as? [[String: Any]] else { return [] }
+        return list.compactMap { $0[kSecAttrAccount as String] as? String }
+    }
+
     /// A key an older version saved as its own item (this read may ask, once per key).
     private static func readLegacy(_ account: String) -> String? {
         var request = query(account)

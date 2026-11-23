@@ -372,9 +372,11 @@ final class PackageStore {
 
     /// Deletes the package, its preferences and its Keychain items. Its usage counts stay, so removing
     /// and reinstalling can't spend a free tier twice; files it saved to the workspace are the user's.
-    /// All or nothing: the keys go first, and when they can't (the saved keys wouldn't open, also on the
-    /// one retry) nothing else is removed and it returns false. So no later package with this id ever
-    /// finds an old key.
+    /// All or nothing: every key saved under its id goes first (`Keychain.removeAll(prefix:)`), and when
+    /// they can't (the saved keys wouldn't open, also on the one retry) nothing else is removed and it
+    /// returns false. One exception: a package none of whose readable versions declares a key uninstalls
+    /// without asking while the saved keys are closed, so an older key it no longer declares can stay
+    /// then. Otherwise no later package with this id finds an old key.
     @discardableResult
     func remove(_ id: String) -> Bool {
         // Every version it had, not just the one on disk now: a broken package has none readable, and a
@@ -388,13 +390,17 @@ final class PackageStore {
         let secrets = Set(versions.flatMap { package in
             package.settings.filter { $0.kind == .secret }.map { secretAccount(id, $0.id) }
         })
-        // One write for all of them: one prompt at most, not one per version. The user is removing it,
-        // so a refused vault may ask once more.
-        guard Keychain.removeAll(secrets.sorted()) else {
+        // Every key saved under this id, also one a version no longer readable declared (dropped two
+        // updates ago, a developer folder, a broken manifest): by prefix, in one write, one prompt at
+        // most. Ids and setting ids have no dots, so "package.abc." never matches "package.abc-d.".
+        // The user is removing it, so a refused vault may ask once more; but not for a package with no
+        // keys in any version it still has, which uninstalls without asking while the keys are closed.
+        let keysGone = Keychain.removeAll(prefix: secretAccount(id, ""), retryIfRefused: !secrets.isEmpty)
+        guard keysGone || (secrets.isEmpty && Keychain.isRefused) else {
             Log.app.error("packages · \(id, privacy: .public) wasn't removed: its keys couldn't be (the saved keys are closed)")
             return false
         }
-        unreadSecrets.subtract(secrets)
+        unreadSecrets = unreadSecrets.filter { !$0.hasPrefix(secretAccount(id, "")) }
         for package in versions { PackageHotkeys.clear(package) }
         let prefix = "package.\(id).setting."
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) { defaults.removeObject(forKey: key) }

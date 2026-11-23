@@ -988,13 +988,15 @@ ladder, toolbelt exposure policy, plan→act→check, verification, skills):
     writes nothing (a refused vault is never replaced) and Settings and a package's key field say so in
     orange with Try again, keeping the typed value. Background reads still never ask again, and
     `getMigrating` keeps the old copy until the move saved. Not tested: the Settings messages (view state).
-  - **Its three reviews** (`Regression/KeychainReviewRegressionTests`, `Keychain2ReviewRegressionTests`,
-    `Keychain3ReviewRegressionTests`). Tested: a package key read while the keys were closed shows "" and
+  - **Its four reviews** (`Regression/KeychainReviewRegressionTests`, `Keychain2…`, `Keychain3…`,
+    `Keychain4ReviewRegressionTests`). Tested: a package key read while the keys were closed shows "" and
     that "" is never saved back over the real key; the Tavily/SerpApi migration never prompts, keeps the
     old key until it's saved, isn't marked done while the old key couldn't be read, and never reinstalls
-    a package the user removed; uninstall is all or nothing: every version's keys go first in one write
-    (one prompt at most), and if they can't, nothing is removed and it returns false, so no later package
-    with the id finds an old key; installing never touches keys (another build sharing the vault keeps
+    a package the user removed; uninstall is all or nothing: every key saved under the package's id goes
+    first, by account prefix (`Keychain.removeAll(prefix:)`, so also one a version dropped two updates
+    ago, and never another package's whose id extends it), in one write (one prompt at most), and if it
+    can't, nothing is removed and it returns false; a package with no keys in any version it still has
+    uninstalls without asking while the keys are closed; installing never touches keys (another build sharing the vault keeps
     its key); a key saved after a refused removal stays; the test hook has its own launch state per task,
     so a simulated refusal doesn't leak into suites running alongside. Not tested (view state, or no
     isolated UserDefaults): Settings and package rows reload once the vault opens
