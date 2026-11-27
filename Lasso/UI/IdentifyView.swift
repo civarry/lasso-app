@@ -174,7 +174,7 @@ struct IdentifyView: View {
 
     private var header: some View {
         HStack(spacing: 6) {
-            Label("Identify", systemImage: "sparkle.magnifyingglass").font(.headline)
+            Label("Identify", systemImage: BuiltInContent.Symbol.identify).font(.headline)
             if busy { ProgressView().controlSize(.small) }
             Spacer()
             if !summary.isEmpty {
@@ -202,7 +202,7 @@ struct IdentifyView: View {
     private var sourceFootnote: String? {
         let offDevice = activeSources.filter { $0.leavesDevice }
         guard !offDevice.isEmpty else { return nil }
-        return "\(offDevice.map(\.title).joined(separator: " · ")) — leaves your Mac."
+        return "\(offDevice.map(\.title).joined(separator: " · ")): leaves your Mac."
     }
 
     private func confidenceChip(_ c: (level: String, color: Color)) -> some View {
@@ -216,8 +216,8 @@ struct IdentifyView: View {
     @ViewBuilder
     private func sourceSection(_ label: String, @ViewBuilder content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(label.uppercased())
-                .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            Text(label)
+                .font(.caption.weight(.medium)).foregroundStyle(.secondary)
                 .padding(.leading, 2).padding(.bottom, 2)
             content()
         }
@@ -645,7 +645,7 @@ private struct TextActionsView: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
                 }
                 pill("Translate", "translate", active: mode == .translate) { toggle(.translate) }
-                pill("Ask AI", "sparkles", active: mode == .ask) { toggle(.ask) }
+                pill("Ask AI", "questionmark.bubble", active: mode == .ask) { toggle(.ask) }
                 pill("Chat", "bubble.left.and.bubble.right") {
                     ChatPanelController.shared.open(seedText: text, seedImage: image)
                     FloatingPanelController.shared.close()
@@ -658,7 +658,7 @@ private struct TextActionsView: View {
                 toggle(.clean)
                 startCleanupIfNeeded()
             } label: {
-                Label(mode == .clean ? "Hide AI cleanup" : "Clean up misreads with AI", systemImage: "sparkles")
+                Label(mode == .clean ? "Hide AI cleanup" : "Clean up misreads with AI", systemImage: "text.badge.checkmark")
                     .font(.caption)
             }
             .buttonStyle(.plain)
@@ -692,8 +692,8 @@ private struct TextActionsView: View {
     @ViewBuilder
     private var cleanupView: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label("AI-cleaned — corrected lines highlighted (compare with the source above)",
-                  systemImage: "sparkles")
+            Label("Cleaned by AI. Corrected lines are highlighted, compare them with the source above",
+                  systemImage: "text.badge.checkmark")
                 .font(.caption2).foregroundStyle(.secondary)
             if cleaning && cleaned.isEmpty {
                 HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Cleaning up…") }

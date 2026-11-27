@@ -205,7 +205,7 @@ struct SettingsHubHeader: View {
     var body: some View {
         VStack(spacing: 8) {
             SettingsTile(symbol: pane.symbol, color: pane.color, size: 56)
-            Text(pane.title).font(.title2.bold())
+            Text(pane.title).font(.title2.weight(.semibold))
             Text(pane.summary).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)

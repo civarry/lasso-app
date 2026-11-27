@@ -395,15 +395,14 @@ struct InlineTranslationView: View {
             case .running:
                 let done = translatable.filter { llm[$0.id] != nil }.count
                 HStack(spacing: 6) {
-                    Image(systemName: "sparkles")
-                        .symbolEffect(.variableColor.iterative, options: .repeating)
+                    ProgressView().controlSize(.small)
                     Text(done == 0 ? "Improving…" : "Improving \(done)/\(translatable.count)")
                         .font(.caption).monospacedDigit().foregroundStyle(.primary)
                 }
                 .help("Retranslating with \(IntelligenceCoordinator.shared.textEngineLabel)")
             case .improved(let model):
                 // The model name can be long ("OpenRouter · nvidia/…:free"), so it lives in the tooltip.
-                Label("Improved", systemImage: "sparkles")
+                Label("Improved", systemImage: "checkmark.circle")
                     .font(.caption).foregroundStyle(.primary)
                     .help("Improved by \(model). Blocks it missed keep the on-device translation.")
             case .idle, .failed:
@@ -420,13 +419,13 @@ struct InlineTranslationView: View {
                         modelNeededMenu
                     } else if case .failed(let reason) = modelPass, modelAvailable {
                         Button { startModelPass() } label: {
-                            Image(systemName: "sparkles").foregroundStyle(.orange)
+                            Image(systemName: "arrow.clockwise").foregroundStyle(.orange)
                         }
                         .buttonStyle(IconButtonStyle())
                         .help("AI pass failed: \(reason)\nShowing the on-device translation. Click to try again.")
                     } else if LLMTranslation.Mode.current == .ask, modelAvailable {
                         Button { startModelPass() } label: {
-                            Image(systemName: "sparkles")
+                            Image(systemName: "arrow.triangle.2.circlepath")
                         }
                         .buttonStyle(IconButtonStyle())
                         .help("Improve with AI: retranslate the whole selection with \(IntelligenceCoordinator.shared.textEngineLabel), using the surrounding text as context.")

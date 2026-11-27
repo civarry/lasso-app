@@ -165,6 +165,6 @@ enum OllamaEndpoint {
         let where_ = "\(host)\(port)"
         return Status(ok: ok, url: url,
                       label: ok ? "Connected to Ollama at \(where_)"
-                                : "Can't reach Ollama at \(where_) — open the Ollama app (or run `ollama serve`).")
+                                : "Can't reach Ollama at \(where_). Open the Ollama app (or run `ollama serve`).")
     }
 }

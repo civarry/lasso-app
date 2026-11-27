@@ -45,7 +45,7 @@ enum GeminiAPI {
         case 400: "Check the model name."
         case 401, 403: "Check the Gemini API key."
         case 404: "That model isn't available to this key."
-        case 429: "Rate limited — try again shortly."
+        case 429: "Rate limited. Try again shortly."
         default: "Check the Gemini API key and model."
         }
     }

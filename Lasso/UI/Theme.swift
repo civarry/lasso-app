@@ -97,7 +97,7 @@ let resultTextBaseSize: CGFloat = 15
 struct PressableStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .opacity(configuration.isPressed ? 0.75 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
@@ -128,7 +128,7 @@ struct IconButtonStyle: ButtonStyle {
                         .fill(Color.accentColor.opacity(hovering && isEnabled ? 0.22 : 0))
                 )
                 .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
-                .scaleEffect(configuration.isPressed ? 0.88 : 1)
+                .scaleEffect(configuration.isPressed ? 0.96 : 1)
                 .opacity(isEnabled ? 1 : 0.35)
                 .onHover { hovering = $0 }
                 .animation(.easeOut(duration: 0.12), value: hovering)

@@ -210,7 +210,7 @@ struct OnDeviceProvider: IntelligenceProvider {
         if description.contains("unsafe") || description.contains("guardrail")
             || description.contains("safety") {
             return IntelligenceError.server(
-                "Apple's on-device model declined this content (its built-in safety filter — the "
+                "Apple's on-device model declined this content (its built-in safety filter, the "
                 + "content may be fine). Switch the model to Ollama or a cloud model in Settings ▸ "
                 + "Intelligence for fewer restrictions.")
         }
