@@ -52,9 +52,14 @@ struct CaptureRegressionTests {
         let before = flag.pulled
         #expect(before > 0, "the card never started reading its stream")
         FloatingPanelController.shared.close()   // ✕ / Esc
-        for _ in 0..<80 where !flag.terminated { try await Task.sleep(for: .milliseconds(50)) }
-        #expect(flag.terminated,
-                "card closed, but its stream is still running (\(flag.pulled - before) more pieces after close)")
+        // "Stopped" means the card reads nothing more. The probe's `terminated` flag alone can't say so:
+        // a cancel that lands after a piece arrives but before the card takes it makes the card leave its
+        // loop without asking again, so the stream is never told (failed once on CI with the card stopped).
+        // At most the piece in flight when the card closed; a card still reading pulls one every 50ms.
+        let atClose = flag.pulled
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(flag.pulled <= atClose + 1,
+                "card closed, but it kept reading its stream (\(flag.pulled - atClose) more pieces after close)")
     }
 
     /// Control for the test above: cancelling the consumer does terminate this kind of stream, so the
