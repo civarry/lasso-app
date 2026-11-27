@@ -61,6 +61,8 @@ final class CaptureCoordinator {
     }
     /// Tests: hold a selection's pre-pass this long before it reads the text (to order two of them).
     var prePassDelayForTesting: ((CGRect) -> Duration?)?
+    /// Tests: stands in for the save panel; return where the user saved, or nil for Cancel.
+    var savePanelForTesting: ((NSSavePanel) -> URL?)?
     #endif
 
     /// When set, the session skips the action bar and auto-runs this action's `id` once the selection
@@ -462,17 +464,28 @@ final class CaptureCoordinator {
 
     func saveImageAndClose() {
         guard let crop = context?.image else { return }
+        // Close the frozen screen first. Its windows sit at screen-saver level, so a save panel opened
+        // while they showed stayed hidden under them until Esc.
+        teardown()
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
         panel.nameFieldStringValue = "Lasso \(Self.timestamp()).png"
-        panel.begin { [weak self] response in
-            if response == .OK, let url = panel.url {
-                let rep = NSBitmapImageRep(cgImage: crop)
-                if let data = rep.representation(using: .png, properties: [:]) {
-                    try? data.write(to: url)
-                }
-            }
-            self?.teardown()
+        #if DEBUG
+        if let choose = savePanelForTesting {
+            if let url = choose(panel) { Self.writePNG(crop, to: url) }
+            return
+        }
+        #endif
+        NSApp.activate(ignoringOtherApps: true)   // a menu bar app: bring the panel in front of the app you were in
+        panel.begin { response in
+            if response == .OK, let url = panel.url { Self.writePNG(crop, to: url) }
+        }
+    }
+
+    private static func writePNG(_ image: CGImage, to url: URL) {
+        guard let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
+        do { try data.write(to: url) } catch {
+            StatusHUD.shared.show(icon: "exclamationmark.triangle", text: "Couldn't save the image: \(error.localizedDescription)", persist: 4)
         }
     }
 
