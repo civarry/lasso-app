@@ -39,6 +39,8 @@
 - **0.30.1, a polish pass:** no more sparkle icons for AI (each button's icon now says what it
   does), section labels in normal case, plainer wording in tooltips and Settings, and Identify's
   icon is now an eye.
+- **0.30.2:** **Save** in the action bar shows its save panel right away; before, it stayed
+  hidden until you pressed Esc.
 
 <p align="center"><img src="screenshots/app/reply-versions.png" width="420" alt="A regenerated reply with 2/2 to switch between its answers"></p>
 <p align="center"><img src="screenshots/app/chat-search.png" width="420" alt="Search chats showing a title match and a chat that mentions adobo"></p>
