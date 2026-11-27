@@ -92,7 +92,7 @@ struct ChatView: View {
             modelChip
             Button { ChatPanelController.shared.close() } label: { Image(systemName: "xmark") }
                 .buttonStyle(IconButtonStyle())
-                .help("Close — \(KeyboardShortcuts.Name.chat.displayString ?? "shortcut") or Esc")
+                .help("Close: \(KeyboardShortcuts.Name.chat.displayString ?? "shortcut") or Esc")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -179,7 +179,7 @@ struct ChatView: View {
         // the window (`.fixedSize()` here made the content 547pt wide at any window width).
         .fixedSize(horizontal: false, vertical: true)
         .layoutPriority(1)
-        .help("Conversations — switch or start a new one")
+        .help("Conversations: switch or start a new one")
     }
 
     /// Compact model indicator that doubles as a quick switcher — pick any model you've already set

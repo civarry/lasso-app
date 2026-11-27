@@ -24,7 +24,7 @@ rules are in [PACKAGES.md](PACKAGES.md#patches-changing-lassos-own-content).
 | `action.ai.ask.symbol` | `set` | The icon of Ask AI: an SF Symbol name. | bubble.left.and.bubble.right |
 | `action.qr.open.symbol` | `set` | The icon of Open code: an SF Symbol name. | qrcode.viewfinder |
 | `action.color.pick.symbol` | `set` | The icon of Pick color: an SF Symbol name. | eyedropper |
-| `action.identify.symbol` | `set` | The icon of Identify: an SF Symbol name. | sparkle.magnifyingglass |
+| `action.identify.symbol` | `set` | The icon of Identify: an SF Symbol name. | eye |
 | `action.lens.search.symbol` | `set` | The icon of Lens: an SF Symbol name. | photo.badge.magnifyingglass |
 | `chat.greeting` | `set` | The line at the top of an empty chat. | How can I help? |
 | `chat.placeholder` | `set` | The hint in an empty message box (Lasso adds "or @ …" when you have sources). | Message… |

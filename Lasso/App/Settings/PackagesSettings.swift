@@ -684,7 +684,7 @@ struct AddPackageSheet: View {
     // MARK: Add
 
     @ViewBuilder private var addStep: some View {
-        Text("Add a Package").font(.title3.bold())
+        Text("Add a Package").font(.title3.weight(.semibold))
         let builtIn = BundledPackages.all().filter { !store.isInstalled($0.package.id) }
         if !builtIn.isEmpty {
             SettingsCard(title: "Built into Lasso") {
@@ -879,7 +879,7 @@ struct AddPackageSheet: View {
         HStack(alignment: .top, spacing: 12) {
             PackageIcon(package: c.package, size: 40)
             VStack(alignment: .leading, spacing: 4) {
-                Text(c.package.name).font(.title3.bold())
+                Text(c.package.name).font(.title3.weight(.semibold))
                 Text("By \(c.package.author) · Version \(c.package.version)").font(SettingsFont.label).foregroundStyle(.secondary)
                 originLine(c.origin)
                 Text(c.package.summary).font(SettingsFont.label).fixedSize(horizontal: false, vertical: true)
@@ -949,7 +949,7 @@ struct AddPackageSheet: View {
     // MARK: Problems
 
     @ViewBuilder private var problemsStep: some View {
-        Text(headline).font(.title3.bold()).fixedSize(horizontal: false, vertical: true)
+        Text(headline).font(.title3.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
         if let detail { Text(detail).font(SettingsFont.label).foregroundStyle(.secondary) }
         if !problems.isEmpty {
             ScrollView {
@@ -1179,7 +1179,7 @@ struct PackagePage: View {
     private func header(_ package: LassoPackage, origin: PackageStore.Origin) -> some View {
         VStack(spacing: 8) {
             PackageIcon(package: package, size: 56)
-            Text(package.name).font(.title2.bold())
+            Text(package.name).font(.title2.weight(.semibold))
             Text(package.summary).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
             Text("Version \(package.version) · By \(package.author) · \(Self.originText(origin))")
                 .font(SettingsFont.sub).foregroundStyle(.secondary)

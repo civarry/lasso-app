@@ -805,7 +805,7 @@ struct SettingsView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text("The Intelligence settings format changed in this update. Your OpenAI-compatible "
-                 + "connection needs to be re-added under Language model — add it again as a "
+                 + "connection needs to be re-added under Language model. Add it again as a "
                  + "connection to restore it.")
         }
     }
@@ -1127,7 +1127,7 @@ struct SettingsView: View {
     private var ollamaSection: some View {
         SettingsCard(title: "Ollama") {
             SettingsRow("Server") {
-                TextField("", text: $draft.ollamaBaseURL, prompt: Text("Auto — localhost:11434"))
+                TextField("", text: $draft.ollamaBaseURL, prompt: Text("Auto: localhost:11434"))
                     .textFieldStyle(.roundedBorder)
                     .settingsFieldWidth()
                     .onChange(of: draft.ollamaBaseURL) { _, _ in scheduleOllamaStatus() }
@@ -1314,7 +1314,7 @@ struct SettingsView: View {
         var parts = [draft.provider.label]
         switch draft.provider {
         case .onDevice:
-            parts.append("text-only — images need their own provider")
+            parts.append("text-only: images need their own provider")
         case .ollama:
             parts.append(draft.ollamaModel.isEmpty ? "Auto" : draft.ollamaModel)
         case .mlx:
@@ -1394,38 +1394,38 @@ struct SettingsView: View {
         switch choice {
         case .apple:
             return apple.isAvailable
-                ? (true, "Active — \(apple.label). Runs on this Mac.")
-                : (false, "Not available on this Mac for this language — \(appleNote).")
+                ? (true, "Active: \(apple.label). Runs on this Mac.")
+                : (false, "Not available on this Mac for this language: \(appleNote).")
 
         case .automatic:
             if await ollamaEmbeds("nomic-embed-text") {
-                return (true, "Active — Ollama nomic-embed-text (local).")
+                return (true, "Active: Ollama nomic-embed-text (local).")
             }
             return apple.isAvailable
-                ? (true, "Active — \(apple.label). Upgrades to Ollama automatically if you run it.")
-                : (false, "No embedder available — \(appleNote).")
+                ? (true, "Active: \(apple.label). Upgrades to Ollama automatically if you run it.")
+                : (false, "No embedder available: \(appleNote).")
 
         case .ollama:
             // "Auto" → the best installed embedding model, so the probe targets the real one.
             let model = ollamaModel.isEmpty
                 ? (availableModels.first(where: OllamaModels.isEmbedding) ?? "nomic-embed-text")
                 : ollamaModel
-            if await ollamaEmbeds(model) { return (true, "Active — Ollama \(model) (local).") }
+            if await ollamaEmbeds(model) { return (true, "Active: Ollama \(model) (local).") }
             return apple.isAvailable
-                ? (true, "Ollama \(model) not reachable — using Apple on-device instead.")
-                : (false, "Ollama \(model) not reachable and no on-device embedder — \(appleNote).")
+                ? (true, "Ollama \(model) not reachable. Using Apple on-device instead.")
+                : (false, "Ollama \(model) not reachable and no on-device embedder: \(appleNote).")
 
         case .mlx:
             let model = mlxModel.isEmpty ? MLXEmbeddings.defaultModelID : mlxModel
             let short = model.components(separatedBy: "/").last ?? model
             if !MLXEmbeddings.isDownloaded(model) {
-                return (false, "MLX \(short) isn't downloaded yet — download it below (using Apple on-device until then).")
+                return (false, "MLX \(short) isn't downloaded yet. Download it below (using Apple on-device until then).")
             }
             let ok = (await MLXEmbeddings.embed(["probe"], modelID: model))?.first?.isEmpty == false
-            if ok { return (true, "Active — MLX \(short) (local, on-device).") }
+            if ok { return (true, "Active: MLX \(short) (local, on-device).") }
             return apple.isAvailable
-                ? (true, "MLX \(short) couldn't run — using Apple on-device instead.")
-                : (false, "MLX \(short) couldn't run and no on-device embedder — \(appleNote).")
+                ? (true, "MLX \(short) couldn't run. Using Apple on-device instead.")
+                : (false, "MLX \(short) couldn't run and no on-device embedder: \(appleNote).")
 
         case .openAICompatible:
             // Resolve the embedding card's selection through the shared registry: which key backs the
@@ -1433,21 +1433,21 @@ struct SettingsView: View {
             // for a dedicated embedder, so it resolves to the embedding selection directly.
             guard let resolved = resolveRegistrySelection(draft.embeddingSelection, capability: .embedding) else {
                 return apple.isAvailable
-                    ? (true, "No embedding model selected yet — using Apple on-device instead.")
-                    : (false, "No embedding model selected and no on-device embedder — \(appleNote).")
+                    ? (true, "No embedding model selected yet. Using Apple on-device instead.")
+                    : (false, "No embedding model selected and no on-device embedder: \(appleNote).")
             }
             let model = resolved.model
             guard let entry = resolved.key else {
                 // Manually-added model with no backing key — can't probe an endpoint.
                 return apple.isAvailable
-                    ? (true, "Manual model “\(model)” has no registered key — using Apple on-device instead.")
-                    : (false, "Manual model “\(model)” has no registered key — \(appleNote).")
+                    ? (true, "Manual model “\(model)” has no registered key. Using Apple on-device instead.")
+                    : (false, "Manual model “\(model)” has no registered key: \(appleNote).")
             }
             let key = registryKeyValue(entry.id)
             if !entry.keyNotRequired, key.isEmpty {
                 return apple.isAvailable
-                    ? (true, "“\(entry.name)” needs a key — using Apple on-device instead.")
-                    : (false, "“\(entry.name)” needs a key and no on-device embedder — \(appleNote).")
+                    ? (true, "“\(entry.name)” needs a key. Using Apple on-device instead.")
+                    : (false, "“\(entry.name)” needs a key and no on-device embedder: \(appleNote).")
             }
             let embedder: ChatEmbedder = entry.kind == .gemini
                 ? GeminiEmbedder(apiKey: key, model: model)
@@ -1456,11 +1456,11 @@ struct SettingsView: View {
                                  apiKey: key, model: model)
             let ok = (await embedder.embed(["probe"]))?.first?.isEmpty == false
             if ok {
-                return (true, "Active — cloud \(model) via “\(entry.name)”. Conversation text is sent to your provider.")
+                return (true, "Active: cloud \(model) via “\(entry.name)”. Conversation text is sent to your provider.")
             }
             return apple.isAvailable
-                ? (true, "Cloud \(model) didn't return embeddings (check the endpoint + model) — using Apple on-device instead.")
-                : (false, "Cloud \(model) failed and no on-device embedder — \(appleNote).")
+                ? (true, "Cloud \(model) didn't return embeddings (check the endpoint + model). Using Apple on-device instead.")
+                : (false, "Cloud \(model) failed and no on-device embedder: \(appleNote).")
         }
     }
 
@@ -1525,22 +1525,22 @@ struct SettingsView: View {
         switch draft.embeddingProvider {
         case .automatic:
             return "Recalls relevant earlier messages in long chats. Uses a local Ollama embed model if "
-                + "you have one, otherwise Apple's built-in on-device embeddings — no download needed."
+                + "you have one, otherwise Apple's built-in on-device embeddings, no download needed."
         case .apple:
-            return "Apple's built-in on-device embeddings (NaturalLanguage) — bundled with macOS, no "
+            return "Apple's built-in on-device embeddings (NaturalLanguage), bundled with macOS, no "
                 + "download. Uses sentence embeddings where available, otherwise word embeddings, so it "
                 + "works on nearly any Mac. Instant and never leaves your device."
         case .ollama:
-            return "A local Ollama embedding model — higher quality and multilingual. Install once with "
+            return "A local Ollama embedding model, higher quality and multilingual. Install once with "
                 + "`ollama pull \(draft.embeddingOllamaModel.isEmpty ? "nomic-embed-text" : draft.embeddingOllamaModel)` "
                 + "(~275 MB). Falls back to Apple on-device if it's unavailable."
         case .mlx:
-            return "A local, Apple-Silicon embedding model (e5 / bge), downloaded in-app — strong and "
+            return "A local, Apple-Silicon embedding model (e5 / bge), downloaded in-app, strong and "
                 + "multilingual, no Ollama. Uses Apple on-device until it's downloaded."
         case .openAICompatible:
             return "Cloud embeddings from an OpenAI-compatible service of your choice (e.g. "
-                + "text-embedding-3-small or -large) — pick a service that serves /embeddings, which may "
-                + "differ from your Language model. ⚠️ Conversation text is sent to that provider to be "
+                + "text-embedding-3-small or -large). Pick a service that serves /embeddings, which may "
+                + "differ from your Language model. Conversation text is sent to that provider to be "
                 + "embedded; this option is hidden in local-only mode."
         }
     }
@@ -1710,8 +1710,8 @@ struct SettingsView: View {
                 // A local server needs no key (see OpenAICompatibleProvider.checkAvailability), so don't
                 // send the user hunting for an API key that was never required.
                 modelLoadNote = found ? nil : (isLocal
-                    ? "No models returned — check the base URL and that the server is running."
-                    : "No models returned — check the base URL and API key.")
+                    ? "No models returned. Check the base URL and that the server is running."
+                    : "No models returned. Check the base URL and API key.")
             }
         } label: {
             if loadingModels { ProgressView().controlSize(.small) }
@@ -1755,30 +1755,30 @@ struct SettingsView: View {
         case .matchText:
             switch draft.provider {
             case .onDevice:
-                return "Apple Intelligence is text-only and can’t see images — choose “Ollama (local)” "
+                return "Apple Intelligence is text-only and can’t see images. Choose “Ollama (local)” "
                     + "or a cloud image provider for Identify."
             case .ollama:
                 return "Images use your Ollama model if it’s multimodal, else your best installed vision model."
             case .mlx:
                 return MLXProvider.isVision(draft.mlxModel)
-                    ? "Your MLX model is a vision-language model, so it handles images too — one local model for both."
-                    : "Your MLX language model can’t see images — pick a vision-language model above, or choose a dedicated image provider below."
+                    ? "Your MLX model is a vision-language model, so it handles images too. One local model for both."
+                    : "Your MLX language model can’t see images. Pick a vision-language model above, or choose a dedicated image provider below."
             case .openAICompatible:
-                return "Images go to your \(serviceName(resolvedLanguageBaseURL)) language model — it must be "
+                return "Images go to your \(serviceName(resolvedLanguageBaseURL)) language model. It must be "
                     + "multimodal. Otherwise pick a dedicated image provider below."
             case .anthropic:
-                return "Images go to your Anthropic language model — use a vision Claude, or pick a "
+                return "Images go to your Anthropic language model. Use a vision Claude, or pick a "
                     + "dedicated image provider below."
             }
         case .ollama:
-            return "Images are identified locally by Ollama — nothing leaves your Mac."
+            return "Images are identified locally by Ollama. Nothing leaves your Mac."
         case .mlx:
-            return "Images are identified locally by a native MLX vision model — nothing leaves your Mac."
+            return "Images are identified locally by a native MLX vision model. Nothing leaves your Mac."
         case .openAICompatible:
-            return "Images are sent to \(serviceName(resolvedVisionBaseURL)) — use a multimodal "
+            return "Images are sent to \(serviceName(resolvedVisionBaseURL)). Use a multimodal "
                 + "model (e.g. gpt-4o)."
         case .anthropic:
-            return "Images are sent to Anthropic — use a vision Claude model (e.g. claude-3-5-sonnet)."
+            return "Images are sent to Anthropic. Use a vision Claude model (e.g. claude-3-5-sonnet)."
         }
     }
 
@@ -2004,7 +2004,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     if groups.isEmpty {
                         Text(draft.registry.entries.isEmpty
-                             ? "No connections yet — add one to discover models"
+                             ? "No connections yet. Add one to discover models"
                              : "No models found on your connections")
                             .font(.caption).foregroundStyle(.secondary)
                             .padding(.horizontal, 10).padding(.vertical, 8)
@@ -2013,8 +2013,8 @@ struct SettingsView: View {
                     // One group per connection: the list is the union of every endpoint's models, and
                     // the header is what tells you where a model will actually be routed.
                     ForEach(groups) { group in
-                        Text(group.name.uppercased())
-                            .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                        Text(group.name)
+                            .font(.caption.weight(.medium)).foregroundStyle(.secondary)
                             .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 2)
                         ForEach(group.models) { model in
                             modelPickerItem(
@@ -2428,7 +2428,7 @@ struct SettingsView: View {
     }
 
     private static let mlxSuggestions: [(name: String, id: String)] = [
-        ("Qwen3 0.6B · 4-bit — tiny & fast", "mlx-community/Qwen3-0.6B-4bit"),
+        ("Qwen3 0.6B · 4-bit, tiny & fast", "mlx-community/Qwen3-0.6B-4bit"),
         ("Llama 3.2 1B · 4-bit", "mlx-community/Llama-3.2-1B-Instruct-4bit"),
         ("Llama 3.2 3B · 4-bit", "mlx-community/Llama-3.2-3B-Instruct-4bit"),
         ("Qwen2.5 3B · 4-bit", "mlx-community/Qwen2.5-3B-Instruct-4bit"),
@@ -2440,7 +2440,7 @@ struct SettingsView: View {
 
     /// Curated mlx-community vision-language (VLM) models for the Image role.
     static let mlxVisionSuggestions: [(name: String, id: String)] = [
-        ("Qwen2-VL 2B · 4-bit — small", "mlx-community/Qwen2-VL-2B-Instruct-4bit"),
+        ("Qwen2-VL 2B · 4-bit, small", "mlx-community/Qwen2-VL-2B-Instruct-4bit"),
         ("Qwen2.5-VL 3B · 4-bit", "mlx-community/Qwen2.5-VL-3B-Instruct-4bit"),
         ("Qwen2.5-VL 7B · 4-bit", "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"),
     ]
@@ -2503,30 +2503,30 @@ struct SettingsView: View {
         if draft.localOnly, !draft.provider.isLocalKind {
             let service = serviceName(resolvedLanguageBaseURL)
             if service == Self.unrecognizedServiceName {
-                return "Local-only is on, but the base URL doesn't look valid — check it in Settings."
+                return "Local-only is on, but the base URL doesn't look valid. Check it in Settings."
             }
-            return "Local-only is on, but \(service) is a cloud model — your "
+            return "Local-only is on, but \(service) is a cloud model, so your "
                 + "selection still goes to that endpoint. Use Apple or Ollama for full isolation."
         }
         switch draft.provider {
         case .onDevice, .ollama, .mlx:
-            return "Runs on this Mac — nothing leaves your device."
+            return "Runs on this Mac. Nothing leaves your device."
         case .openAICompatible:
             // Privacy depends on the key that backs the *selected* language model, not one global URL.
             guard let resolved = resolveRegistrySelection(draft.langSelection, capability: .language) else {
-                return "No model selected yet — pick one under Language model."
+                return "No model selected yet. Pick one under Language model."
             }
             guard let entry = resolved.key else {
-                return "“\(resolved.model)” is a manually-added model with no registered key — register a key for it before use."
+                return "“\(resolved.model)” is a manually-added model with no registered key. Register a key for it before use."
             }
-            if entry.isLocal { return "Local server (“\(entry.name)”) — stays on this Mac." }
+            if entry.isLocal { return "Local server (“\(entry.name)”). Stays on this Mac." }
             let service = serviceName(entry.baseURL)
             if service == Self.unrecognizedServiceName {
-                return "“\(entry.name)” base URL doesn't look valid — check it before this model can be used."
+                return "“\(entry.name)” base URL doesn't look valid. Check it before this model can be used."
             }
-            return "Cloud — your selection is sent to \(service) via “\(entry.name)”. Use a multimodal model for image questions."
+            return "Cloud: your selection is sent to \(service) via “\(entry.name)”. Use a multimodal model for image questions."
         case .anthropic:
-            return "Cloud — your selection is sent to Anthropic. A vision Claude model also handles images."
+            return "Cloud: your selection is sent to Anthropic. A vision Claude model also handles images."
         }
     }
 
@@ -2600,7 +2600,7 @@ struct SettingsView: View {
                         .font(.system(size: 46, weight: .regular))
                         .foregroundStyle(.tint)
                     VStack(spacing: 4) {
-                        Text("Lasso").font(.title.bold())
+                        Text("Lasso").font(.title.weight(.semibold))
                         Text("Version \(appVersion)").font(.caption).foregroundStyle(.secondary)
                     }
                     Text("On-device screen intelligence for Apple Silicon.")
@@ -3196,7 +3196,7 @@ enum ConnectionTest {
             return .failure("Couldn't reach \(url.host ?? base).")
         }
         guard http.statusCode == 200 else {
-            return .failure("HTTP \(http.statusCode) — " + OpenAICompatibleProvider.hint(for: http.statusCode))
+            return .failure("HTTP \(http.statusCode): " + OpenAICompatibleProvider.hint(for: http.statusCode))
         }
         return model.isEmpty ? .failure("Connected, but no model name is set.") : .ok(ms())
     }
@@ -3221,8 +3221,8 @@ enum ConnectionTest {
         switch http.statusCode {
         case 200: return .ok(ms())
         case 401, 403: return .failure("Check the API key.")
-        case 404: return .failure("Model not found — check the model name.")
-        default: return .failure("HTTP \(http.statusCode) — check the model name and key.")
+        case 404: return .failure("Model not found. Check the model name.")
+        default: return .failure("HTTP \(http.statusCode): check the model name and key.")
         }
     }
 }

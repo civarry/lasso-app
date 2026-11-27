@@ -467,9 +467,9 @@ flowchart LR
 ```
 
   The source chip reads `Detected · X`, `Mixed · X, Y, Z +N` or `Unknown source`; the status reads
-  `On-device · N blocks` (with a ✦ `sparkles` "Improve with AI" button under When I ask), then, while the
-  model works, an animated ✦ `Improving n/N` and a sweep over each plate it hasn't reached yet, then
-  `✦ Improved`, the answering model named in its tooltip. A failed pass shows an orange ✦ to retry. Pass 2 goes through the coordinator, so routing,
+  `On-device · N blocks` (with an `arrow.triangle.2.circlepath` "Improve with AI" button under When I ask), then, while the
+  model works, a spinner with `Improving n/N` and a sweep over each plate it hasn't reached yet, then
+  `✓ Improved`, the answering model named in its tooltip. A failed pass shows an orange `arrow.clockwise` to retry. Pass 2 goes through the coordinator, so routing,
   the free-model fallback and local-only mode apply as they do for Chat.
 
 ---

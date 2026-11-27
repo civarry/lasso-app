@@ -47,7 +47,7 @@ struct PackageBrowseSheet: View {
     @ViewBuilder private var list: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Browse Packages").font(.title3.bold())
+                Text("Browse Packages").font(.title3.weight(.semibold))
                 Spacer()
                 TextField("Search", text: $query).textFieldStyle(.roundedBorder).frame(width: 180)
             }

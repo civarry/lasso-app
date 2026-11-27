@@ -102,7 +102,7 @@ struct ActionBar: View {
             Image(systemName: "xmark").font(.callout)
         }
         .buttonStyle(IconButtonStyle())
-        .help("Close — press the capture shortcut again or Esc")
+        .help("Close: press the capture shortcut again or Esc")
         .accessibilityLabel("Close")
     }
 

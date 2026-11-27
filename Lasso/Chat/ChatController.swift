@@ -351,10 +351,10 @@ final class ChatController {
 
     /// How an attached image will reach the model this turn, for the attach button's tooltip.
     var imageHandlingNote: String {
-        if hermesActive { return "Attach images or files — the agent gets them" }
+        if hermesActive { return "Attach images or files for the agent" }
         return imageInputAvailable
-            ? "Attach images or files — or paste (⌘V) or drag them onto the panel"
-            : "Attach images or files — this model can't see images, so it gets the text read from them"
+            ? "Attach images or files, or paste (⌘V) or drag them onto the panel"
+            : "Attach images or files. This model can't see images, so it gets the text read from them"
     }
     func clearSeededContext() { seededContext = nil }
 
@@ -1410,7 +1410,7 @@ final class ChatController {
                     completeStep(assistantID, stepID, text: "Couldn't read the image\(multi ? "s" : "") · \(label)")
                     finishError(assistantID, ordered.compactMap(\.error).first.map {
                         "The image model (\(label)) couldn't read \(multi ? "these images" : "this image"): "
-                        + "\($0) It may be slow, rate-limited, or offline — try again, "
+                        + "\($0) It may be slow, rate-limited, or offline. Try again, "
                         + "or switch image models in Settings ▸ Models ▸ Image model."
                     } ?? "The image model (\(label)) returned no description. Try again, or switch models in "
                         + "Settings ▸ Models ▸ Image model.")
@@ -3570,7 +3570,7 @@ final class ChatController {
         update(id) {
             $0.isStreaming = false
             if $0.text.isEmpty {
-                $0.text = $0.reasoning.isEmpty ? "(No response.)" : "(No answer — see the thinking above.)"
+                $0.text = $0.reasoning.isEmpty ? "(No response.)" : "(No answer. See the thinking above.)"
             }
         }
         // Packages the user lets run on every finished reply.

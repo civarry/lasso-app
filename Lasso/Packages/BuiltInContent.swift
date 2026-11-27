@@ -20,7 +20,7 @@ enum BuiltInContent {
     enum Symbol {
         static let askAI = "bubble.left.and.bubble.right"
         static let copyText = "text.viewfinder"
-        static let identify = "sparkle.magnifyingglass"
+        static let identify = "eye"
         static let lens = "photo.badge.magnifyingglass"
         static let openCode = "qrcode.viewfinder"
         static let pickColor = "eyedropper"

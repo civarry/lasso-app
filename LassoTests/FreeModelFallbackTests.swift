@@ -274,7 +274,7 @@ struct FreeModelFallbackTests {
     // MARK: - F. Failures and health
 
     @Test func failuresClassifyFromTheWayProvidersReportThem() {
-        #expect(ModelFailure.classify(IntelligenceError.server("Groq HTTP 429 at https://x. Rate limited — try again shortly.")) == .rateLimited)
+        #expect(ModelFailure.classify(IntelligenceError.server("Groq HTTP 429 at https://x. Rate limited. Try again shortly.")) == .rateLimited)
         #expect(ModelFailure.classify(IntelligenceError.server("Google Gemini HTTP 404. That model isn't available to this key.")) == .modelGone)
         #expect(ModelFailure.classify(IntelligenceError.server("OpenRouter HTTP 401 at https://x. Check the API key.")) == .unauthorized)
         #expect(ModelFailure.classify(IntelligenceError.server("Groq HTTP 413 at https://x.")) == .rejected)

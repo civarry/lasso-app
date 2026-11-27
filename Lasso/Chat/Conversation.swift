@@ -33,7 +33,7 @@ final class Conversation: Identifiable {
             case .general: "bubble.left.and.text.bubble.right"
             case .selection: "text.viewfinder"
             case .image: "photo"
-            case .askAI: "sparkles"
+            case .askAI: "questionmark.bubble"
             }
         }
         var label: String {

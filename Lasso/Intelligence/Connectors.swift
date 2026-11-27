@@ -90,13 +90,13 @@ enum Connectors {
         icon: "globe",
         iconDomain: "duckduckgo.com",
         usesImage: false,
-        summary: "Text web search (Wikipedia, DuckDuckGo, Reddit) for context — no account needed.",
+        summary: "Text web search (Wikipedia, DuckDuckGo, Reddit) for context. No account needed.",
         leavesDevice: true,
         enabledKey: "imageSearch.enabled",
         defaultEnabled: true,
         keyAccount: nil,
         guide: SetupGuide([
-            .init("On by default — it uses free public sources over plain HTTP (no embedded browser)."),
+            .init("On by default. It uses free public sources over plain HTTP (no embedded browser)."),
             .init("Optional: add a search package (Tavily, SerpApi or your own) in Settings › Packages for stronger, ranked results."),
         ], note: "Leaves your Mac. Paused automatically in local-only mode."),
         test: { _ in
@@ -126,7 +126,7 @@ enum ConnectorTests {
         }
         switch http.statusCode {
         case 200: return .ok(ms(since: start))
-        case 401, 403: return .failure(unauthorizedNote ?? "Unauthorized — check the API key.")
+        case 401, 403: return .failure(unauthorizedNote ?? "Unauthorized. Check the API key.")
         default: return .failure("HTTP \(http.statusCode).")
         }
     }

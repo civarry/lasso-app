@@ -123,7 +123,7 @@ struct OpenAICompatibleProvider: IntelligenceProvider {
         switch code {
         case 401, 403: "Check the API key."
         case 404: "Check the base URL (e.g. Groq must end in /openai/v1) and the model name."
-        case 429: "Rate limited — try again shortly."
+        case 429: "Rate limited. Try again shortly."
         default: "Check the API key, base URL, and model."
         }
     }
