@@ -186,6 +186,22 @@ struct CaptureSessionRegressionTests {
         }
     }
 
+    /// Save opened its panel under the frozen screen (screen-saver level), so nothing showed until Esc.
+    /// The session has to be closed by the time the panel is up, and the chosen file gets the crop.
+    @Test func saveClosesTheFrozenScreenBeforeItsPanelShows() async throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: "lasso-save-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: url); CaptureCoordinator.shared.savePanelForTesting = nil }
+        try await session { capture in
+            capture.commitSelection(rectInPoints: CGRect(x: 10, y: 10, width: 200, height: 100), displayID: 99_999)
+            var sessionOpenAtPanel: Bool?
+            capture.savePanelForTesting = { _ in sessionOpenAtPanel = capture.isActive; return url }
+            capture.saveImageAndClose()
+            #expect(sessionOpenAtPanel == false, "the save panel came up while the frozen screen still covered it")
+            let saved = try #require(NSImage(contentsOf: url)?.representations.first)
+            #expect(saved.pixelsWide == 200 && saved.pixelsHigh == 100)
+        }
+    }
+
     /// The Lens card's button, drawn before local-only mode was turned on, still uploaded.
     @Test func lensNeverOpensInLocalOnlyMode() throws {
         let defaults = UserDefaults.standard
